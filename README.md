@@ -104,6 +104,40 @@ npm run dev
 
 Runs at `http://localhost:3000`.
 
+### Run two web instances (3000 / 3001) with separate keys
+
+If you run two windows at the same time, each instance can use its own settings file.
+
+`web/lib/settings-store.ts` supports:
+- `SETTINGS_NAMESPACE` -> `web/data/settings.{namespace}.json`
+- `SETTINGS_FILE` -> exact custom file path (higher priority than namespace)
+
+PowerShell example:
+
+```powershell
+# Window A (3000)
+cd web
+$env:PORT="3000"
+$env:SETTINGS_NAMESPACE="dev-3000"
+npm run dev
+```
+
+```powershell
+# Window B (3001)
+cd web
+$env:PORT="3001"
+$env:SETTINGS_NAMESPACE="dev-3001"
+npm run dev -- -p 3001
+```
+
+Result:
+- 3000 -> `web/data/settings.dev-3000.json`
+- 3001 -> `web/data/settings.dev-3001.json`
+
+Note:
+- Changing `SETTINGS_NAMESPACE` / `SETTINGS_FILE` requires process restart.
+- Editing the target settings JSON file itself is reflected on next API request.
+
 ## 3) Video Engine Setup (FastAPI + FFmpeg)
 
 Install FFmpeg first and ensure `ffmpeg`/`ffprobe` are in PATH.

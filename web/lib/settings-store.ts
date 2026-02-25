@@ -2,9 +2,27 @@ import { promises as fs } from "fs";
 import path from "path";
 import { AppSettings } from "@/lib/types";
 
-const settingsFile = path.join(process.cwd(), "data", "settings.json");
+function sanitizeNamespace(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  return normalized.replace(/^-+|-+$/g, "") || "default";
+}
+
+function resolveSettingsFile(): string {
+  const explicit = (process.env.SETTINGS_FILE || "").trim();
+  if (explicit) {
+    return path.isAbsolute(explicit) ? explicit : path.join(process.cwd(), explicit);
+  }
+
+  const namespace = (process.env.SETTINGS_NAMESPACE || "").trim();
+  if (namespace) {
+    return path.join(process.cwd(), "data", `settings.${sanitizeNamespace(namespace)}.json`);
+  }
+
+  return path.join(process.cwd(), "data", "settings.json");
+}
 
 async function ensureSettingsFile(): Promise<void> {
+  const settingsFile = resolveSettingsFile();
   await fs.mkdir(path.dirname(settingsFile), { recursive: true });
 
   try {
@@ -16,6 +34,7 @@ async function ensureSettingsFile(): Promise<void> {
 
 /** Read locally saved settings used as a fallback to environment variables. */
 export async function getSettings(): Promise<AppSettings> {
+  const settingsFile = resolveSettingsFile();
   await ensureSettingsFile();
   const raw = await fs.readFile(settingsFile, "utf8");
 
@@ -28,6 +47,7 @@ export async function getSettings(): Promise<AppSettings> {
 
 /** Persist settings to local disk for development and self-hosted usage. */
 export async function saveSettings(settings: AppSettings): Promise<AppSettings> {
+  const settingsFile = resolveSettingsFile();
   await ensureSettingsFile();
   await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2), "utf8");
   return settings;

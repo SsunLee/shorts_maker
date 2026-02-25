@@ -3116,9 +3116,9 @@ export function CreateVideoForm(): React.JSX.Element {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <div
-        className="inline-flex w-full gap-1 rounded-xl border bg-card p-1"
+        className="inline-flex min-w-0 w-full gap-1 rounded-xl border bg-card p-1"
         role="tablist"
         aria-label="Create panels"
       >
@@ -3154,8 +3154,8 @@ export function CreateVideoForm(): React.JSX.Element {
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={submitForm}>
-            <div className="space-y-3 rounded-lg border bg-muted/25 p-3">
-              <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="min-w-0 space-y-3 rounded-lg border bg-muted/25 p-3">
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1fr),auto]">
                 <Input
                   value={sheetName}
                   onChange={(event) => setSheetName(event.target.value)}
@@ -3170,7 +3170,7 @@ export function CreateVideoForm(): React.JSX.Element {
                   {loadingSheetRows ? "Loading..." : "Load Sheet Rows"}
                 </Button>
               </div>
-              <div className="grid gap-2 sm:grid-cols-[1fr,auto]">
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1fr),auto]">
                 <Select value={selectedSheetRowId} onValueChange={handleSheetRowSelection}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select a subject row" />
@@ -3193,7 +3193,7 @@ export function CreateVideoForm(): React.JSX.Element {
                 </Button>
               </div>
               {selectedSheetRow ? (
-                <p className="text-xs text-muted-foreground">
+                <p className="break-words text-xs text-muted-foreground">
                   Row {selectedSheetRow.rowNumber} | status: {selectedSheetRow.status} | keyword:{" "}
                   {selectedSheetRow.keyword || "-"} | subject:{" "}
                   {selectedSheetRow.subject || "-"} | description:{" "}

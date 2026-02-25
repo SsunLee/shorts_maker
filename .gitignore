@@ -14,6 +14,7 @@ venv/
 # Local runtime data
 web/data/rows.json
 web/data/settings.json
+web/data/settings.*.json
 web/data/workflows.json
 web/public/generated/*
 !web/public/generated/.gitkeep

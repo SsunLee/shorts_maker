@@ -13,10 +13,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <div className="flex min-h-screen bg-background text-foreground">
+        <div className="flex min-h-screen overflow-x-hidden bg-background text-foreground">
           <AppNav />
-          <main className="min-w-0 flex-1">
-            <div className="mx-auto w-full max-w-[1680px] px-4 pb-8 pt-4 sm:px-6">{children}</div>
+          <main className="min-w-0 flex-1 overflow-x-hidden">
+            <div className="mx-auto w-full max-w-[1480px] px-4 pb-8 pt-4 sm:px-6">{children}</div>
           </main>
         </div>
       </body>

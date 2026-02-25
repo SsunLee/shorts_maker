@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { generateIdeas } from "@/lib/idea-generator";
 import { loadIdeasSheetTable } from "@/lib/ideas-sheet";
-import { IdeaDraftRow } from "@/lib/types";
+import { IdeaDraftRow, IdeaLanguage } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -10,7 +10,8 @@ const schema = z.object({
   topic: z.string().min(1),
   count: z.number().int().min(1).max(10).default(1),
   sheetName: z.string().optional(),
-  idBase: z.string().optional()
+  idBase: z.string().optional(),
+  language: z.enum(["ko", "en", "ja", "es"]).optional()
 });
 
 function normalizeIdBase(raw: string | undefined): string {
@@ -90,7 +91,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const items = await generateIdeas({
       topic: payload.topic,
       count: payload.count,
-      existingKeywords
+      existingKeywords,
+      language: (payload.language || "ko") as IdeaLanguage
     });
     const idBase = normalizeIdBase(payload.idBase || payload.topic);
     const withIds = attachIdeaIds({

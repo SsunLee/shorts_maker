@@ -233,6 +233,8 @@ export interface IdeaDraftRow {
   publish: string;
 }
 
+export type IdeaLanguage = "ko" | "en" | "ja" | "es";
+
 export type AutomationScheduleCadence = "interval_hours" | "daily";
 
 export interface AutomationScheduleConfig {

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { AppSettings, IdeaDraftRow } from "@/lib/types";
+import { AppSettings, IdeaDraftRow, IdeaLanguage } from "@/lib/types";
 
 const IDEA_DRAFT_KEY = "shorts-maker:ideas-draft:v1";
 const defaultHeaders = ["id", "status", "keyword", "subject", "description", "narration", "publish"];
@@ -61,6 +61,7 @@ function getPreviewRowKey(row: IdeaDraftRow, index: number): string {
 export function IdeasClient(): React.JSX.Element {
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState("1");
+  const [language, setLanguage] = useState<IdeaLanguage>("ko");
   const [sheetName, setSheetName] = useState("");
   const [loadingSheet, setLoadingSheet] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -183,6 +184,7 @@ export function IdeasClient(): React.JSX.Element {
         topic?: string;
         count?: string;
         sheetName?: string;
+        language?: IdeaLanguage;
       };
       if (typeof parsed.topic === "string") {
         setTopic(parsed.topic);
@@ -192,6 +194,14 @@ export function IdeasClient(): React.JSX.Element {
       }
       if (typeof parsed.sheetName === "string") {
         setSheetName(parsed.sheetName);
+      }
+      if (
+        parsed.language === "ko" ||
+        parsed.language === "en" ||
+        parsed.language === "ja" ||
+        parsed.language === "es"
+      ) {
+        setLanguage(parsed.language);
       }
     } catch {
       // ignore
@@ -204,10 +214,11 @@ export function IdeasClient(): React.JSX.Element {
       JSON.stringify({
         topic,
         count,
-        sheetName
+        sheetName,
+        language
       })
     );
-  }, [topic, count, sheetName]);
+  }, [topic, count, sheetName, language]);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -259,7 +270,8 @@ export function IdeasClient(): React.JSX.Element {
           topic: topic.trim(),
           count: Number.parseInt(count, 10) || 1,
           sheetName: sheetName.trim() || undefined,
-          idBase: topic.trim() || undefined
+          idBase: topic.trim() || undefined,
+          language
         })
       });
       const data = (await response.json()) as GenerateIdeasResponse;
@@ -364,7 +376,7 @@ export function IdeasClient(): React.JSX.Element {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-[1fr,140px,1fr]">
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),140px,160px,minmax(0,1fr)]">
             <div className="space-y-2">
               <Label htmlFor="ideas-topic">원하는 주제를 입력해보세요</Label>
               <Input
@@ -386,6 +398,20 @@ export function IdeasClient(): React.JSX.Element {
                       {value}개
                     </SelectItem>
                   ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>생성 언어</Label>
+              <Select value={language} onValueChange={(value) => setLanguage(value as IdeaLanguage)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ko">한국어</SelectItem>
+                  <SelectItem value="en">English</SelectItem>
+                  <SelectItem value="ja">日本語</SelectItem>
+                  <SelectItem value="es">Español</SelectItem>
                 </SelectContent>
               </Select>
             </div>

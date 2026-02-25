@@ -62,6 +62,9 @@ export function DashboardClient(): React.JSX.Element {
   const [automationUploadMode, setAutomationUploadMode] = useState<"youtube" | "pre_upload">(
     "youtube"
   );
+  const [automationPrivacyStatus, setAutomationPrivacyStatus] = useState<
+    "private" | "public" | "unlisted"
+  >("private");
   const [automationError, setAutomationError] = useState<string>();
   const [schedule, setSchedule] = useState<AutomationScheduleState>();
   const [scheduleBusy, setScheduleBusy] = useState(false);
@@ -75,6 +78,9 @@ export function DashboardClient(): React.JSX.Element {
   const [scheduleItemsPerRun, setScheduleItemsPerRun] = useState("1");
   const [scheduleSheetName, setScheduleSheetName] = useState("");
   const [scheduleUploadMode, setScheduleUploadMode] = useState<"youtube" | "pre_upload">("youtube");
+  const [schedulePrivacyStatus, setSchedulePrivacyStatus] = useState<
+    "private" | "public" | "unlisted"
+  >("private");
 
   function hydrateScheduleForm(next: AutomationScheduleState): void {
     setScheduleEnabled(next.config.enabled);
@@ -84,6 +90,7 @@ export function DashboardClient(): React.JSX.Element {
     setScheduleItemsPerRun(String(next.config.itemsPerRun));
     setScheduleSheetName(next.config.sheetName || "");
     setScheduleUploadMode(next.config.uploadMode);
+    setSchedulePrivacyStatus(next.config.privacyStatus);
     setScheduleDraftDirty(false);
   }
 
@@ -169,7 +176,7 @@ export function DashboardClient(): React.JSX.Element {
           itemsPerRun: Number.parseInt(scheduleItemsPerRun, 10) || 1,
           sheetName: scheduleSheetName.trim() || undefined,
           uploadMode: scheduleUploadMode,
-          privacyStatus: "private"
+          privacyStatus: schedulePrivacyStatus
         })
       });
       const data = (await response.json()) as AutomationScheduleResponse;
@@ -214,7 +221,7 @@ export function DashboardClient(): React.JSX.Element {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sheetName: automationSheetName.trim() || undefined,
-          privacyStatus: "private",
+          privacyStatus: automationPrivacyStatus,
           uploadMode: automationUploadMode
         })
       });
@@ -341,7 +348,7 @@ export function DashboardClient(): React.JSX.Element {
           준비 상태 row를 순서대로 처리합니다. 마지막으로 사용한 옵션/최근 템플릿(renderOptions)을 기준으로
           반복하며, 기본 모드는 YouTube 업로드 포함입니다.
         </p>
-        <div className="grid gap-2 sm:grid-cols-[1fr,220px,auto,auto]">
+        <div className="grid gap-2 sm:grid-cols-[1fr,190px,190px,auto,auto]">
           <Input
             value={automationSheetName}
             onChange={(event) => setAutomationSheetName(event.target.value)}
@@ -359,6 +366,24 @@ export function DashboardClient(): React.JSX.Element {
             <SelectContent>
               <SelectItem value="youtube">유튜브 업로드(기본)</SelectItem>
               <SelectItem value="pre_upload">업로드 전 단계까지</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={automationPrivacyStatus}
+            onValueChange={(value) =>
+              setAutomationPrivacyStatus(
+                value === "public" || value === "unlisted" ? value : "private"
+              )
+            }
+            disabled={automationUploadMode === "pre_upload"}
+          >
+            <SelectTrigger className="bg-card dark:bg-zinc-900">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="public">공개(즉시 게시)</SelectItem>
+              <SelectItem value="unlisted">일부 공개</SelectItem>
+              <SelectItem value="private">비공개</SelectItem>
             </SelectContent>
           </Select>
           <Button
@@ -514,7 +539,7 @@ export function DashboardClient(): React.JSX.Element {
             </Select>
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 sm:grid-cols-3">
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">스케줄 업로드 모드</p>
             <Select
@@ -530,6 +555,28 @@ export function DashboardClient(): React.JSX.Element {
               <SelectContent>
                 <SelectItem value="youtube">유튜브 업로드</SelectItem>
                 <SelectItem value="pre_upload">업로드 전 단계</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">유튜브 공개 범위</p>
+            <Select
+              value={schedulePrivacyStatus}
+              onValueChange={(value) => {
+                setSchedulePrivacyStatus(
+                  value === "public" || value === "unlisted" ? value : "private"
+                );
+                setScheduleDraftDirty(true);
+              }}
+              disabled={scheduleUploadMode === "pre_upload"}
+            >
+              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="public">공개(즉시 게시)</SelectItem>
+                <SelectItem value="unlisted">일부 공개</SelectItem>
+                <SelectItem value="private">비공개</SelectItem>
               </SelectContent>
             </Select>
           </div>

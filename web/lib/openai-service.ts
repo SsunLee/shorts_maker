@@ -214,14 +214,18 @@ export async function generateNarration(args: {
 
   if (provider === "gemini") {
     const client = await getGeminiClient();
-    const response = await client.models.generateContent({
-      model: getGeminiTextModel(),
-      contents:
-        "You write concise viral short-video narration scripts. Keep it spoken and punchy. " +
-        `Write narration for a ${args.targetLengthSec}-second short.\n` +
-        `Title: ${args.title}\n` +
-        `Topic: ${args.topic ?? "N/A"}\n` +
-        "Include a hook, value, and CTA."
+    const response = await runGeminiWithRetry({
+      label: "Narration generation",
+      task: () =>
+        client.models.generateContent({
+          model: getGeminiTextModel(),
+          contents:
+            "You write concise viral short-video narration scripts. Keep it spoken and punchy. " +
+            `Write narration for a ${args.targetLengthSec}-second short.\n` +
+            `Title: ${args.title}\n` +
+            `Topic: ${args.topic ?? "N/A"}\n` +
+            "Include a hook, value, and CTA."
+        })
     });
 
     const text = response.text?.trim();
@@ -273,14 +277,18 @@ export async function generateImagePrompts(args: {
 
   if (provider === "gemini") {
     const client = await getGeminiClient();
-    const response = await client.models.generateContent({
-      model: getGeminiTextModel(),
-      contents:
-        `Output only a JSON array with exactly ${sceneCount} short image prompts. ` +
-        "Prompts must be non-graphic, educational, and safe for general audiences. " +
-        "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
-        `${compositionGuide}\n` +
-        `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}`
+    const response = await runGeminiWithRetry({
+      label: "Image prompt generation",
+      task: () =>
+        client.models.generateContent({
+          model: getGeminiTextModel(),
+          contents:
+            `Output only a JSON array with exactly ${sceneCount} short image prompts. ` +
+            "Prompts must be non-graphic, educational, and safe for general audiences. " +
+            "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
+            `${compositionGuide}\n` +
+            `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}`
+        })
     });
 
     const prompts = parseStringArray(response.text || "", sceneCount);
@@ -334,15 +342,19 @@ export async function splitNarrationToScenes(args: {
 
   if (provider === "gemini") {
     const client = await getGeminiClient();
-    const response = await client.models.generateContent({
-      model: getGeminiTextModel(),
-      contents:
-        `Return only JSON array with exactly ${sceneCount} objects: sceneTitle, narrationText, imagePrompt. ` +
-        "All imagePrompt values must be non-graphic, educational, and safe for general audiences. " +
-        "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
-        `${compositionGuide}\n` +
-        `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}\n` +
-        `Split the narration flow into ${sceneCount} logical scenes and write one visual prompt per scene.`
+    const response = await runGeminiWithRetry({
+      label: "Scene split generation",
+      task: () =>
+        client.models.generateContent({
+          model: getGeminiTextModel(),
+          contents:
+            `Return only JSON array with exactly ${sceneCount} objects: sceneTitle, narrationText, imagePrompt. ` +
+            "All imagePrompt values must be non-graphic, educational, and safe for general audiences. " +
+            "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
+            `${compositionGuide}\n` +
+            `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}\n` +
+            `Split the narration flow into ${sceneCount} logical scenes and write one visual prompt per scene.`
+        })
     });
 
     const parsed = safeParseScenes(response.text || "", sceneCount);
@@ -428,6 +440,54 @@ function getErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error ?? "");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableProviderError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("503") ||
+    message.includes("unavailable") ||
+    message.includes("high demand") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("resource exhausted") ||
+    message.includes("rate limit") ||
+    message.includes("429") ||
+    message.includes("deadline exceeded") ||
+    message.includes("internal error")
+  );
+}
+
+async function runGeminiWithRetry<T>(args: {
+  task: () => Promise<T>;
+  label: string;
+  retryCount?: number;
+  baseDelayMs?: number;
+}): Promise<T> {
+  const retryCount =
+    args.retryCount ?? parsePositiveInt(process.env.GEMINI_RETRY_COUNT, 3);
+  const baseDelayMs =
+    args.baseDelayMs ?? parsePositiveInt(process.env.GEMINI_RETRY_BASE_MS, 800);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    try {
+      return await args.task();
+    } catch (error) {
+      lastError = error;
+      const isRetryable = isRetryableProviderError(error);
+      if (!isRetryable || attempt >= retryCount) {
+        break;
+      }
+      const waitMs = baseDelayMs * Math.max(1, 2 ** attempt) + Math.floor(Math.random() * 200);
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(`${args.label} failed.`);
 }
 
 function isSafetyRejectionError(error: unknown): boolean {
@@ -646,13 +706,17 @@ async function rewritePromptForSafetyGemini(args: {
   prompt: string;
   imageAspectRatio?: ImageAspectRatio;
 }): Promise<string> {
-  const response = await args.client.models.generateContent({
-    model: getGeminiTextModel(),
-    contents:
-      "Rewrite image prompts to be policy-safe for general audiences while preserving topic/style intent. " +
-      "No explicit violence, injury, blood, death moments, or self-harm depiction. " +
-      "Return exactly one single-line prompt.\n" +
-      args.prompt
+  const response = await runGeminiWithRetry({
+    label: "Safety prompt rewrite",
+    task: () =>
+      args.client.models.generateContent({
+        model: getGeminiTextModel(),
+        contents:
+          "Rewrite image prompts to be policy-safe for general audiences while preserving topic/style intent. " +
+          "No explicit violence, injury, blood, death moments, or self-harm depiction. " +
+          "Return exactly one single-line prompt.\n" +
+          args.prompt
+      })
   });
 
   const rewritten = (response.text || "").trim();
@@ -872,20 +936,24 @@ async function synthesizeSpeechAudio(args: {
       args.input;
 
     const makeRequest = async (responseMimeType?: string) =>
-      client.models.generateContent({
-        model: getGeminiTtsModel(),
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          responseMimeType,
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: toGeminiVoiceName(args.voice)
+      runGeminiWithRetry({
+        label: "TTS generation",
+        task: () =>
+          client.models.generateContent({
+            model: getGeminiTtsModel(),
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            config: {
+              responseModalities: [Modality.AUDIO],
+              responseMimeType,
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: toGeminiVoiceName(args.voice)
+                  }
+                }
               }
             }
-          }
-        }
+          })
       });
 
     let response;

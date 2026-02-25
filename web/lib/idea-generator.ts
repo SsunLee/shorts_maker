@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
 import { getSettings } from "@/lib/settings-store";
-import { IdeaDraftRow } from "@/lib/types";
+import { IdeaDraftRow, IdeaLanguage } from "@/lib/types";
 
 type Provider = "openai" | "gemini";
 
@@ -66,6 +66,58 @@ function formatExcludedKeywords(values: string[]): string {
   return limited.join(", ");
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error ?? "");
+}
+
+function isRetryableProviderError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("503") ||
+    message.includes("unavailable") ||
+    message.includes("high demand") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("resource exhausted") ||
+    message.includes("rate limit") ||
+    message.includes("429") ||
+    message.includes("deadline exceeded") ||
+    message.includes("internal error")
+  );
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runGeminiWithRetry<T>(task: () => Promise<T>): Promise<T> {
+  const retryCount = parsePositiveInt(process.env.GEMINI_RETRY_COUNT, 3);
+  const baseDelayMs = parsePositiveInt(process.env.GEMINI_RETRY_BASE_MS, 800);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableProviderError(error) || attempt >= retryCount) {
+        break;
+      }
+      const waitMs = baseDelayMs * Math.max(1, 2 ** attempt) + Math.floor(Math.random() * 200);
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Idea generation failed.");
+}
+
 async function resolveKeys(): Promise<{ openaiKey?: string; geminiKey?: string }> {
   const settings = await getSettings();
   return {
@@ -98,38 +150,57 @@ async function resolveProvider(): Promise<Provider> {
   throw new Error("No AI provider key found. Add GEMINI_API_KEY or OPENAI_API_KEY.");
 }
 
-function buildPrompt(topic: string, count: number, excludedKeywords: string[]): string {
+function resolveLanguageInstruction(language: IdeaLanguage): string {
+  if (language === "en") {
+    return "Write Keyword, Subject, Description, Narration in English.";
+  }
+  if (language === "ja") {
+    return "Write Keyword, Subject, Description, Narration in Japanese.";
+  }
+  if (language === "es") {
+    return "Write Keyword, Subject, Description, Narration in Spanish.";
+  }
+  return "Write Keyword, Subject, Description, Narration in Korean.";
+}
+
+function buildPrompt(
+  topic: string,
+  count: number,
+  excludedKeywords: string[],
+  language: IdeaLanguage
+): string {
   const excludedText = formatExcludedKeywords(excludedKeywords);
   const duplicateRule = excludedText
-    ? `- 아래 기존 keyword와 중복되면 안 됨: ${excludedText}\n`
-    : "- 기존 keyword와 중복되지 않게 생성할 것\n";
+    ? `- Do not reuse existing keywords: ${excludedText}\n`
+    : "- Do not duplicate existing keywords.\n";
 
   return (
-    `당신은 ${topic} 쇼츠 생성하는 Assistant입니다.\n\n` +
-    `${topic} 관련 컨텐츠를 뽑아내야합니다. ex) “고대 이집트 하트셉수트”\n` +
-    "아래의 Google Sheet row 구조에 맞는 JSON 배열을 출력하세요.\n\n" +
-    "[출력 형식]\n" +
-    "- 최종 출력은 반드시 JSON 배열이어야 함 → [ {…}, {…}, ... ]\n" +
-    `- 배열 길이는 ${count}개\n` +
-    "- 값은 모두 string\n\n" +
-    "[object 구조]\n" +
+    `You are a short-video content idea assistant for topic "${topic}".\n\n` +
+    "Return JSON array following Google Sheet row schema.\n\n" +
+    "[Output Format]\n" +
+    "- Output must be a JSON array only: [ { ... }, { ... } ]\n" +
+    `- Array length must be exactly ${count}\n` +
+    "- Every value must be string\n\n" +
+    "[Object Keys]\n" +
     "- Status\n" +
     "- Keyword\n" +
     "- Subject\n" +
     "- Description\n" +
     "- Narration\n" +
     "- publish\n\n" +
-    "[규칙]\n" +
-    `- ${topic} 관련 주제에 맞는 주제를 ${count}개 생성할 것\n` +
-    '- Status : 는 반드시 "준비" 로 쓸 것\n' +
+    "[Rules]\n" +
+    `- Generate exactly ${count} ideas strictly related to "${topic}"\n` +
+    "- Do not force Ancient Egypt or any unrelated domain unless the topic explicitly asks for it\n" +
+    '- Status must be "준비"\n' +
+    '- publish must be "대기중"\n' +
     duplicateRule +
-    "- 이번 응답 내에서도 Keyword는 서로 중복되지 않아야 함\n" +
-    "- Keyword : 핵심 키워드 ex) 하트셉수트\n" +
-    "- Subject : 후킹 문장 ex) 최초의 여성 파라오?\n" +
-    `- Description : 유투브 설명 영역에 올릴 주제 관련 설명, 해시태그 추가, 고대이집트, 고대이집트문명, 이집트문명, ${topic} 관련 태그\n` +
-    "- Narration : 200 ~ 250 단어 분량의 스토리 기반 고대 이집트 관련 나레이션, 영상용 음성 설명에 맞게 매끄러운 문장\n" +
-    '- publish : 항상 "대기중"\n' +
-    "- JSON 외 아무것도 출력하지 말 것"
+    "- Keywords must also be unique within this response\n" +
+    "- Keyword: concise core keyword for the idea\n" +
+    "- Subject: one strong hook sentence\n" +
+    "- Description: YouTube-ready summary + hashtags (#shorts + topic-related tags)\n" +
+    "- Narration: smooth story-driven voiceover script, around 200-250 words\n" +
+    `- Language: ${resolveLanguageInstruction(language)}\n` +
+    "- Output JSON only, no markdown, no explanation"
   );
 }
 
@@ -169,10 +240,12 @@ async function requestIdeaRows(provider: Provider, prompt: string): Promise<Idea
   if (provider === "gemini") {
     const keys = await resolveKeys();
     const client = new GoogleGenAI({ apiKey: keys.geminiKey });
-    const response = await client.models.generateContent({
-      model: process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash-lite",
-      contents: prompt
-    });
+    const response = await runGeminiWithRetry(() =>
+      client.models.generateContent({
+        model: process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash-lite",
+        contents: prompt
+      })
+    );
     return safeParseIdeaRows(response.text || "");
   }
 
@@ -195,13 +268,52 @@ async function requestIdeaRows(provider: Provider, prompt: string): Promise<Idea
   return safeParseIdeaRows(response.output_text || "");
 }
 
+async function requestIdeaRowsWithFallback(provider: Provider, prompt: string): Promise<IdeaDraftRow[]> {
+  try {
+    return await requestIdeaRows(provider, prompt);
+  } catch (error) {
+    const message = getErrorMessage(error).toLowerCase();
+    const isGeminiUnavailable = provider === "gemini" && isRetryableProviderError(error);
+    if (!isGeminiUnavailable) {
+      throw error;
+    }
+    const keys = await resolveKeys();
+    if (!keys.openaiKey) {
+      throw error;
+    }
+    const fallbackResponse = await new OpenAI({ apiKey: keys.openaiKey }).responses.create({
+      model: process.env.OPENAI_TEXT_MODEL || "gpt-4.1-mini",
+      input: [
+        {
+          role: "system",
+          content:
+            "You output only a strict JSON array. Do not include markdown fences or extra text."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ]
+    });
+    if (!fallbackResponse.output_text) {
+      throw new Error(message || "Idea generation failed.");
+    }
+    return safeParseIdeaRows(fallbackResponse.output_text || "");
+  }
+}
+
 export async function generateIdeas(args: {
   topic: string;
   count: number;
   existingKeywords?: string[];
+  language?: IdeaLanguage;
 }): Promise<IdeaDraftRow[]> {
   const topic = args.topic.trim();
   const count = Math.max(1, Math.min(10, Math.floor(args.count)));
+  const language: IdeaLanguage =
+    args.language === "en" || args.language === "ja" || args.language === "es"
+      ? args.language
+      : "ko";
   if (!topic) {
     throw new Error("주제를 입력해 주세요.");
   }
@@ -217,8 +329,8 @@ export async function generateIdeas(args: {
 
   for (let attempt = 1; attempt <= maxAttempts && collected.length < count; attempt += 1) {
     const remaining = count - collected.length;
-    const prompt = buildPrompt(topic, remaining, Array.from(blockedKeywords));
-    const rows = await requestIdeaRows(provider, prompt);
+    const prompt = buildPrompt(topic, remaining, Array.from(blockedKeywords), language);
+    const rows = await requestIdeaRowsWithFallback(provider, prompt);
     if (rows.length === 0) {
       parseFailureCount += 1;
       continue;
