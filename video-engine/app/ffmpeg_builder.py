@@ -6,7 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 import math
-import textwrap
+import re
+import unicodedata
 
 
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
@@ -19,17 +20,40 @@ def _safe_strip(value: Any) -> str:
     return str(value).strip()
 
 
+def _safe_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    raw = str(value).strip().lower()
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
+def _decode_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="replace").strip()
+        except Exception:  # pylint: disable=broad-except
+            return value.decode(errors="replace").strip()
+    return str(value).strip()
+
+
 def run_cmd(command: list[str]) -> None:
     completed = subprocess.run(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=False,
         check=False,
     )
     if completed.returncode != 0:
+        stderr_text = _decode_output(completed.stderr)
+        stdout_text = _decode_output(completed.stdout)
+        combined = stderr_text or stdout_text or "(ffmpeg returned non-zero with no output)"
         raise RuntimeError(
-            f"Command failed: {' '.join(command)}\n{_safe_strip(completed.stderr)}"
+            f"Command failed: {' '.join(command)}\n{combined}"
         )
 
 
@@ -388,9 +412,12 @@ def _zoompan_motion_filter(
 
 
 def _escape_drawtext(value: str) -> str:
+    # ffmpeg drawtext parser can break on ASCII apostrophe (') when complex options
+    # and chained filters are used. Normalize to typographic apostrophe to preserve
+    # readability while keeping filter parsing stable.
+    value = value.replace("'", "’")
     escaped = value.replace("\\", "\\\\")
     escaped = escaped.replace(":", "\\:")
-    escaped = escaped.replace("'", "\\'")
     escaped = escaped.replace(",", "\\,")
     return escaped
 
@@ -409,6 +436,157 @@ def _escape_filter_path(path_text: str) -> str:
         safe_path = f"{safe_path[0]}\\:{safe_path[2:]}"
     safe_path = safe_path.replace("'", "\\'")
     return safe_path
+
+
+def _char_visual_units(char: str) -> float:
+    if not char:
+        return 0.0
+    if char.isspace():
+        return 0.5
+
+    east_asian = unicodedata.east_asian_width(char)
+    if east_asian in {"F", "W"}:
+        return 2.0
+
+    if ord(char) < 128:
+        if char in "ilI.,'`!|:;":
+            return 0.5
+        if char in "mwMW@#%&":
+            return 1.1
+        return 0.8
+
+    return 1.0
+
+
+def _text_wrap_safety_multiplier(text: str) -> float:
+    """
+    Return a conservative multiplier for wrapping estimation.
+    Some scripts (e.g. Devanagari/Arabic) and emoji tend to render wider than
+    simple per-character heuristics, so we wrap earlier to avoid clipping.
+    """
+    if not text:
+        return 1.0
+
+    has_devanagari = False
+    has_arabic = False
+    has_emoji_or_symbol = False
+    has_non_ascii = False
+
+    for ch in text:
+        code = ord(ch)
+        if code > 127:
+            has_non_ascii = True
+        if 0x0900 <= code <= 0x097F:
+            has_devanagari = True
+        elif 0x0600 <= code <= 0x06FF:
+            has_arabic = True
+        elif unicodedata.category(ch).startswith("So"):
+            has_emoji_or_symbol = True
+
+    if has_devanagari:
+        return 1.38
+    if has_arabic:
+        return 1.28
+    if has_emoji_or_symbol:
+        return 1.22
+    if has_non_ascii:
+        return 1.14
+    return 1.0
+
+
+def _contains_devanagari(text: str) -> bool:
+    for ch in text:
+        code = ord(ch)
+        if 0x0900 <= code <= 0x097F:
+            return True
+    return False
+
+
+def _resolve_devanagari_font_file() -> str:
+    """
+    Resolve a concrete Devanagari-capable font file path.
+    drawtext `font=` can fail to resolve family names depending on ffmpeg build,
+    so prefer `fontfile=` when possible.
+    """
+    configured = str(os.getenv("DEVANAGARI_FONT_FILE") or "").strip()
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.exists():
+            return str(configured_path)
+
+    windir = os.getenv("WINDIR", "C:/Windows").strip() or "C:/Windows"
+    windows_candidates = [
+        Path(windir) / "Fonts" / "Nirmala.ttc",
+        Path(windir) / "Fonts" / "Nirmala.ttf",
+        Path(windir) / "Fonts" / "NirmalaB.ttf",
+        Path(windir) / "Fonts" / "Mangal.ttf",
+        Path(windir) / "Fonts" / "Aparaj.ttf",
+        Path(windir) / "Fonts" / "Kokila.ttf",
+    ]
+    linux_candidates = [
+        Path("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoSerifDevanagari-Regular.ttf"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf"),
+        Path("/usr/share/fonts/noto/NotoSansDevanagari-Regular.ttf"),
+    ]
+
+    for candidate in [*windows_candidates, *linux_candidates]:
+        try:
+            if candidate.exists():
+                return str(candidate)
+        except OSError:
+            continue
+    return ""
+
+
+def _wrap_text_by_visual_width(text: str, max_units: float) -> list[str]:
+    max_units = max(6.0, float(max_units))
+    wrapped_lines: list[str] = []
+
+    for paragraph in (text.splitlines() or [text]):
+        if paragraph == "":
+            wrapped_lines.append("")
+            continue
+
+        tokens = re.findall(r"\S+|\s+", paragraph)
+        current = ""
+        current_units = 0.0
+
+        def flush_line() -> None:
+            nonlocal current, current_units
+            line = current.rstrip()
+            if line or not wrapped_lines:
+                wrapped_lines.append(line)
+            current = ""
+            current_units = 0.0
+
+        for token in tokens:
+            token_units = sum(_char_visual_units(ch) for ch in token)
+
+            if current and (current_units + token_units) > max_units:
+                flush_line()
+
+            if not current and token.isspace():
+                continue
+
+            if not token.isspace() and token_units > max_units:
+                for ch in token:
+                    char_units = _char_visual_units(ch)
+                    if current and (current_units + char_units) > max_units:
+                        flush_line()
+                    current += ch
+                    current_units += char_units
+                continue
+
+            current += token
+            current_units += token_units
+
+        if current:
+            flush_line()
+        elif tokens:
+            wrapped_lines.append("")
+
+    return wrapped_lines or [text]
 
 
 def _build_title_template_filter(
@@ -452,21 +630,36 @@ def _build_title_template_filter(
         else ""
     )
     font_name = str(template.get("fontName") or "").strip()
+    font_bold = _safe_bool(template.get("fontBold"))
+    font_italic = _safe_bool(template.get("fontItalic"))
     font_file = str(template.get("fontFile") or "").strip()
 
+    # Devanagari text often breaks with Arial. Prefer a Hindi-capable font unless
+    # user explicitly set fontFile.
+    if _contains_devanagari(text) and not font_file:
+        font_file = _resolve_devanagari_font_file()
+        if not font_file:
+            unsafe_font_names = {
+                "",
+                "arial",
+                "arial black",
+                "malgun gothic",
+                "nanumgothic",
+                "noto sans kr",
+                "segoe ui",
+            }
+            if font_name.strip().lower() in unsafe_font_names:
+                # Windows 기본 탑재 + Devanagari 지원
+                font_name = "Nirmala UI"
+
     # Approximate wrapping by template width so preview/editor box and ffmpeg output are closer.
+    # Use conservative width + script-aware multiplier to reduce clipping in non-Latin text.
     width_px = 1080 * (width_pct / 100.0)
-    avg_char_px = max(6.0, fontsize * 0.56)
-    max_chars = max(6, min(80, int(width_px / avg_char_px)))
-    wrapped_lines: list[str] = []
-    for paragraph in text.splitlines() or [text]:
-        pieces = textwrap.wrap(
-            paragraph,
-            width=max_chars,
-            break_long_words=True,
-            break_on_hyphens=False,
-        )
-        wrapped_lines.extend(pieces or [""])
+    effective_width_px = width_px * 0.86
+    wrap_multiplier = _text_wrap_safety_multiplier(text)
+    unit_px = max(4.0, fontsize * 0.56 * wrap_multiplier)
+    max_units = max(6.0, min(220.0, effective_width_px / unit_px))
+    wrapped_lines = _wrap_text_by_visual_width(text, max_units)
     if not wrapped_lines:
         return []
 
@@ -474,7 +667,15 @@ def _build_title_template_filter(
     if font_file:
         font_expr = f"fontfile='{_escape_filter_path(font_file)}':"
     elif font_name:
-        font_expr = f"font='{_escape_drawtext_value(font_name)}':"
+        font_pattern = font_name
+        style_tokens: list[str] = []
+        if font_bold:
+            style_tokens.append("Bold")
+        if font_italic:
+            style_tokens.append("Italic")
+        if style_tokens:
+            font_pattern = f"{font_pattern}:style={' '.join(style_tokens)}"
+        font_expr = f"font='{_escape_drawtext_value(font_pattern)}':"
 
     # Keep text background transparent regardless of editor padding settings.
     box_expr = ""
@@ -543,6 +744,8 @@ def _drawtext_filter_values(
                 "shadowOpacity": 1.0,
                 "fontThickness": int(options.get("titleFontThickness") or 0),
                 "fontName": str(options.get("titleFontName") or "Malgun Gothic").strip(),
+                "fontBold": _safe_bool(options.get("titleFontBold")),
+                "fontItalic": _safe_bool(options.get("titleFontItalic")),
                 "fontFile": str(options.get("titleFontFile") or "").strip(),
             }
             filters.extend(_build_title_template_filter(legacy_template))

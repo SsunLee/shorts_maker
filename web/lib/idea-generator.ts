@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
-import { getSettings } from "@/lib/settings-store";
+import { resolveApiKeys, resolveModelForTask, resolveProviderForTask } from "@/lib/ai-provider";
 import { IdeaDraftRow, IdeaLanguage } from "@/lib/types";
 
 type Provider = "openai" | "gemini";
@@ -118,36 +118,8 @@ async function runGeminiWithRetry<T>(task: () => Promise<T>): Promise<T> {
   throw lastError instanceof Error ? lastError : new Error("Idea generation failed.");
 }
 
-async function resolveKeys(): Promise<{ openaiKey?: string; geminiKey?: string }> {
-  const settings = await getSettings();
-  return {
-    openaiKey: process.env.OPENAI_API_KEY || settings.openaiApiKey,
-    geminiKey: process.env.GEMINI_API_KEY || settings.geminiApiKey
-  };
-}
-
 async function resolveProvider(): Promise<Provider> {
-  const requested = String(process.env.AI_PROVIDER || "auto").toLowerCase();
-  const keys = await resolveKeys();
-  if (requested === "gemini") {
-    if (!keys.geminiKey) {
-      throw new Error("Gemini API key is missing. Configure it in /settings.");
-    }
-    return "gemini";
-  }
-  if (requested === "openai") {
-    if (!keys.openaiKey) {
-      throw new Error("OpenAI API key is missing. Configure it in /settings.");
-    }
-    return "openai";
-  }
-  if (keys.geminiKey) {
-    return "gemini";
-  }
-  if (keys.openaiKey) {
-    return "openai";
-  }
-  throw new Error("No AI provider key found. Add GEMINI_API_KEY or OPENAI_API_KEY.");
+  return resolveProviderForTask("text");
 }
 
 function resolveLanguageInstruction(language: IdeaLanguage): string {
@@ -160,7 +132,63 @@ function resolveLanguageInstruction(language: IdeaLanguage): string {
   if (language === "es") {
     return "Write Keyword, Subject, Description, Narration in Spanish.";
   }
+  if (language === "hi") {
+    return "Write Keyword, Subject, Description, Narration in Hindi.";
+  }
   return "Write Keyword, Subject, Description, Narration in Korean.";
+}
+
+function subscribeCtaByLanguage(language: IdeaLanguage): string {
+  if (language === "en") {
+    return "Subscribe for more stories like this.";
+  }
+  if (language === "ja") {
+    return "続きが気になる方は、ぜひチャンネル登録してください。";
+  }
+  if (language === "es") {
+    return "Si te gustó, suscríbete para más historias.";
+  }
+  if (language === "hi") {
+    return "ऐसी और कहानियों के लिए चैनल को सब्सक्राइब करें।";
+  }
+  return "더 많은 이야기, 구독하고 함께해 주세요.";
+}
+
+function hasSubscribeCta(text: string): boolean {
+  const lowered = text.toLowerCase();
+  return (
+    /구독/.test(text) ||
+    /subscribe/.test(lowered) ||
+    /suscr[ií]bete/.test(lowered) ||
+    /チャンネル登録/.test(text) ||
+    /सब्सक्राइब/.test(text)
+  );
+}
+
+function removeTrailingHashtags(text: string): string {
+  let output = String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+
+  // Remove trailing hashtag-only lines.
+  output = output.replace(/(?:\n\s*(?:#[\p{L}\p{N}_-]+\s*)+)+$/u, "").trim();
+
+  // Remove trailing inline hashtag tokens at the end.
+  output = output.replace(/\s*(?:#[\p{L}\p{N}_-]+\s*)+$/u, "").trim();
+
+  return output;
+}
+
+function normalizeNarrationForIdeas(narration: string, language: IdeaLanguage): string {
+  const cleaned = removeTrailingHashtags(narration);
+  if (!cleaned) {
+    return cleaned;
+  }
+  if (hasSubscribeCta(cleaned)) {
+    return cleaned;
+  }
+  return `${cleaned}\n\n${subscribeCtaByLanguage(language)}`;
 }
 
 function buildPrompt(
@@ -199,6 +227,8 @@ function buildPrompt(
     "- Subject: one strong hook sentence\n" +
     "- Description: YouTube-ready summary + hashtags (#shorts + topic-related tags)\n" +
     "- Narration: smooth story-driven voiceover script, around 200-250 words\n" +
+    "- Narration must NOT contain hashtags (#...) anywhere, especially at the end\n" +
+    `- Narration must end with this exact CTA sentence: "${subscribeCtaByLanguage(language)}"\n` +
     `- Language: ${resolveLanguageInstruction(language)}\n` +
     "- Output JSON only, no markdown, no explanation"
   );
@@ -208,6 +238,7 @@ function enforceRules(args: {
   rows: IdeaDraftRow[];
   count: number;
   blockedKeywords: Set<string>;
+  language: IdeaLanguage;
 }): IdeaDraftRow[] {
   const output: IdeaDraftRow[] = [];
   const seenInBatch = new Set<string>();
@@ -229,7 +260,7 @@ function enforceRules(args: {
       Keyword: keyword,
       Subject: normalizeField(row.Subject),
       Description: normalizeField(row.Description),
-      Narration: normalizeField(row.Narration),
+      Narration: normalizeNarrationForIdeas(normalizeField(row.Narration), args.language),
       publish: "대기중"
     });
   });
@@ -237,22 +268,23 @@ function enforceRules(args: {
 }
 
 async function requestIdeaRows(provider: Provider, prompt: string): Promise<IdeaDraftRow[]> {
+  const keys = await resolveApiKeys();
+  const textModel = await resolveModelForTask(provider, "text");
+
   if (provider === "gemini") {
-    const keys = await resolveKeys();
     const client = new GoogleGenAI({ apiKey: keys.geminiKey });
     const response = await runGeminiWithRetry(() =>
       client.models.generateContent({
-        model: process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash-lite",
+        model: textModel,
         contents: prompt
       })
     );
     return safeParseIdeaRows(response.text || "");
   }
 
-  const keys = await resolveKeys();
   const client = new OpenAI({ apiKey: keys.openaiKey });
   const response = await client.responses.create({
-    model: process.env.OPENAI_TEXT_MODEL || "gpt-4.1-mini",
+    model: textModel,
     input: [
       {
         role: "system",
@@ -268,40 +300,6 @@ async function requestIdeaRows(provider: Provider, prompt: string): Promise<Idea
   return safeParseIdeaRows(response.output_text || "");
 }
 
-async function requestIdeaRowsWithFallback(provider: Provider, prompt: string): Promise<IdeaDraftRow[]> {
-  try {
-    return await requestIdeaRows(provider, prompt);
-  } catch (error) {
-    const message = getErrorMessage(error).toLowerCase();
-    const isGeminiUnavailable = provider === "gemini" && isRetryableProviderError(error);
-    if (!isGeminiUnavailable) {
-      throw error;
-    }
-    const keys = await resolveKeys();
-    if (!keys.openaiKey) {
-      throw error;
-    }
-    const fallbackResponse = await new OpenAI({ apiKey: keys.openaiKey }).responses.create({
-      model: process.env.OPENAI_TEXT_MODEL || "gpt-4.1-mini",
-      input: [
-        {
-          role: "system",
-          content:
-            "You output only a strict JSON array. Do not include markdown fences or extra text."
-        },
-        {
-          role: "user",
-          content: prompt
-        }
-      ]
-    });
-    if (!fallbackResponse.output_text) {
-      throw new Error(message || "Idea generation failed.");
-    }
-    return safeParseIdeaRows(fallbackResponse.output_text || "");
-  }
-}
-
 export async function generateIdeas(args: {
   topic: string;
   count: number;
@@ -311,7 +309,10 @@ export async function generateIdeas(args: {
   const topic = args.topic.trim();
   const count = Math.max(1, Math.min(10, Math.floor(args.count)));
   const language: IdeaLanguage =
-    args.language === "en" || args.language === "ja" || args.language === "es"
+    args.language === "en" ||
+    args.language === "ja" ||
+    args.language === "es" ||
+    args.language === "hi"
       ? args.language
       : "ko";
   if (!topic) {
@@ -330,7 +331,7 @@ export async function generateIdeas(args: {
   for (let attempt = 1; attempt <= maxAttempts && collected.length < count; attempt += 1) {
     const remaining = count - collected.length;
     const prompt = buildPrompt(topic, remaining, Array.from(blockedKeywords), language);
-    const rows = await requestIdeaRowsWithFallback(provider, prompt);
+    const rows = await requestIdeaRows(provider, prompt);
     if (rows.length === 0) {
       parseFailureCount += 1;
       continue;
@@ -338,7 +339,8 @@ export async function generateIdeas(args: {
     const accepted = enforceRules({
       rows,
       count: remaining,
-      blockedKeywords
+      blockedKeywords,
+      language
     });
     accepted.forEach((item) => {
       const key = normalizeKeywordKey(item.Keyword);

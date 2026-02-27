@@ -31,6 +31,8 @@ class OverlayOptions(BaseModel):
     titleFontSize: int = Field(default=48, ge=16, le=120)
     titleColor: str = Field(default="#FFFFFF", min_length=4, max_length=16)
     titleFontName: str = Field(default="Malgun Gothic", min_length=1, max_length=80)
+    titleFontBold: bool = False
+    titleFontItalic: bool = False
     titleFontFile: str | None = Field(default=None, max_length=260)
     sceneMotionPreset: str = Field(default="gentle_zoom")
     motionSpeedPercent: float = Field(default=135.0, ge=60.0, le=220.0)
@@ -61,6 +63,8 @@ class TitleTemplate(BaseModel):
     shadowOpacity: float = Field(default=1.0, ge=0.0, le=1.0)
     fontThickness: int = Field(default=0, ge=0, le=8)
     fontName: str | None = Field(default=None, max_length=80)
+    fontBold: bool = False
+    fontItalic: bool = False
     fontFile: str | None = Field(default=None, max_length=260)
 
 

@@ -11,7 +11,7 @@ const schema = z.object({
   count: z.number().int().min(1).max(10).default(1),
   sheetName: z.string().optional(),
   idBase: z.string().optional(),
-  language: z.enum(["ko", "en", "ja", "es"]).optional()
+  language: z.enum(["ko", "en", "ja", "es", "hi"]).optional()
 });
 
 function normalizeIdBase(raw: string | undefined): string {

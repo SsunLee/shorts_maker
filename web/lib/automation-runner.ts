@@ -28,7 +28,6 @@ interface AutomationDefaults {
   useSfx: boolean;
   videoLengthSec: number;
   sceneCount: number;
-  tags: string[];
   templateMode: AutomationTemplateMode;
   templateApplied: boolean;
   templateName?: string;
@@ -57,7 +56,6 @@ const DEFAULTS: AutomationDefaults = {
   useSfx: true,
   videoLengthSec: 30,
   sceneCount: 5,
-  tags: [],
   templateMode: "applied_template",
   templateApplied: false
 };
@@ -131,6 +129,19 @@ function uniqueTags(values: string[]): string[] {
     output.push(value);
   });
   return output;
+}
+
+function extractRowTags(
+  row: Awaited<ReturnType<typeof listSheetContentRows>>[number]
+): string[] {
+  // Do not inherit sheet tags column here.
+  // The cell can contain stale tags from previous themes when rows are reused/updated.
+  // Build tags only from current row semantic fields.
+  return uniqueTags([
+    row.keyword || "",
+    ...extractHashTags(row.description),
+    ...extractHashTags(row.narration)
+  ]);
 }
 
 function normalizeComparableText(value: string | undefined): string {
@@ -268,6 +279,8 @@ async function resolveDefaultsFromLatestWorkflow(
         sourceTitle: selectedTemplate.sourceTitle,
         sourceTopic: selectedTemplate.sourceTopic,
         templateName: selectedTemplate.templateName,
+        voice: selectedTemplate.voice,
+        voiceSpeed: selectedTemplate.voiceSpeed,
         updatedAt: selectedTemplate.updatedAt
       }
     : await getAutomationTemplateSnapshot();
@@ -287,6 +300,11 @@ async function resolveDefaultsFromLatestWorkflow(
         templateMode,
         templateApplied: true,
         templateName: persistedTemplate.templateName,
+        voice: persistedTemplate.voice || DEFAULTS.voice,
+        voiceSpeed:
+          typeof persistedTemplate.voiceSpeed === "number"
+            ? persistedTemplate.voiceSpeed
+            : DEFAULTS.voiceSpeed,
         renderOptions: persistedTemplate.renderOptions,
         templateSourceTitle: persistedTemplate.sourceTitle,
         templateSourceTopic: persistedTemplate.sourceTopic
@@ -327,9 +345,16 @@ async function resolveDefaultsFromLatestWorkflow(
   return {
     imageStyle: latestAny.input.imageStyle || DEFAULTS.imageStyle,
     imageAspectRatio: latestAny.input.imageAspectRatio === "16:9" ? "16:9" : "9:16",
-    voice: latestAny.input.voice || DEFAULTS.voice,
+    voice:
+      templateMode === "applied_template" && persistedTemplate?.voice
+        ? persistedTemplate.voice
+        : latestAny.input.voice || DEFAULTS.voice,
     voiceSpeed:
-      typeof latestAny.input.voiceSpeed === "number" ? latestAny.input.voiceSpeed : DEFAULTS.voiceSpeed,
+      templateMode === "applied_template" && typeof persistedTemplate?.voiceSpeed === "number"
+        ? persistedTemplate.voiceSpeed
+        : typeof latestAny.input.voiceSpeed === "number"
+          ? latestAny.input.voiceSpeed
+          : DEFAULTS.voiceSpeed,
     useSfx: typeof latestAny.input.useSfx === "boolean" ? latestAny.input.useSfx : DEFAULTS.useSfx,
     videoLengthSec:
       typeof latestAny.input.videoLengthSec === "number"
@@ -337,7 +362,6 @@ async function resolveDefaultsFromLatestWorkflow(
         : DEFAULTS.videoLengthSec,
     sceneCount:
       typeof latestAny.input.sceneCount === "number" ? latestAny.input.sceneCount : DEFAULTS.sceneCount,
-    tags: latestAny.input.tags || [],
     templateMode,
     templateApplied,
     templateName,
@@ -381,12 +405,7 @@ async function processOneRow(args: {
 }): Promise<{ fatal: boolean }> {
   const state = getStateRef();
   const row = args.row;
-  const tags = uniqueTags([
-    ...args.defaults.tags,
-    row.keyword || "",
-    ...extractHashTags(row.description),
-    ...extractHashTags(row.narration)
-  ]);
+  const tags = extractRowTags(row);
 
   const createPayload: CreateVideoRequest = {
     id: row.id,

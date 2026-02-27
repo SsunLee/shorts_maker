@@ -4,6 +4,8 @@ export interface VoiceOption {
   provider: "openai" | "gemini" | "both";
 }
 
+export type VoiceProviderFilter = "openai" | "gemini" | "both";
+
 export const OPENAI_VOICE_IDS = [
   "alloy",
   "echo",
@@ -65,3 +67,48 @@ export function toOpenAiVoiceName(input: string): string {
   return "alloy";
 }
 
+export function filterVoiceOptions(provider: VoiceProviderFilter): VoiceOption[] {
+  if (provider === "both") {
+    return ALL_VOICE_OPTIONS;
+  }
+  return ALL_VOICE_OPTIONS.filter((item) => item.provider === provider || item.provider === "both");
+}
+
+export function resolveTtsVoiceProvider(args: {
+  aiMode?: string;
+  aiTtsProvider?: string;
+  openaiApiKey?: string;
+  geminiApiKey?: string;
+}): VoiceProviderFilter {
+  const mode = String(args.aiMode || "auto").trim().toLowerCase();
+  const tts = String(args.aiTtsProvider || "").trim().toLowerCase();
+  const hasOpenAi = Boolean(String(args.openaiApiKey || "").trim());
+  const hasGemini = Boolean(String(args.geminiApiKey || "").trim());
+
+  if (mode === "openai") {
+    return "openai";
+  }
+  if (mode === "gemini") {
+    return "gemini";
+  }
+  if (mode === "mixed") {
+    if (tts === "openai" || tts === "gemini") {
+      return tts;
+    }
+    if (hasGemini && !hasOpenAi) {
+      return "gemini";
+    }
+    if (hasOpenAi && !hasGemini) {
+      return "openai";
+    }
+    return "both";
+  }
+
+  if (hasGemini && !hasOpenAi) {
+    return "gemini";
+  }
+  if (hasOpenAi && !hasGemini) {
+    return "openai";
+  }
+  return "both";
+}

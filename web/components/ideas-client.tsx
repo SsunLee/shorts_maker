@@ -199,7 +199,8 @@ export function IdeasClient(): React.JSX.Element {
         parsed.language === "ko" ||
         parsed.language === "en" ||
         parsed.language === "ja" ||
-        parsed.language === "es"
+        parsed.language === "es" ||
+        parsed.language === "hi"
       ) {
         setLanguage(parsed.language);
       }
@@ -412,6 +413,7 @@ export function IdeasClient(): React.JSX.Element {
                   <SelectItem value="en">English</SelectItem>
                   <SelectItem value="ja">日本語</SelectItem>
                   <SelectItem value="es">Español</SelectItem>
+                  <SelectItem value="hi">हिन्दी</SelectItem>
                 </SelectContent>
               </Select>
             </div>

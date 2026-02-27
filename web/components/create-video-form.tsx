@@ -11,8 +11,9 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { ALL_VOICE_OPTIONS } from "@/lib/voice-options";
+import { ALL_VOICE_OPTIONS, filterVoiceOptions, resolveTtsVoiceProvider } from "@/lib/voice-options";
 import {
+  AppSettings,
   ImageAspectRatio,
   RenderOptions,
   SheetContentRow,
@@ -1005,6 +1006,9 @@ function toDisplayMediaUrl(raw?: string, cacheTag?: string): string | undefined 
 }
 
 export function CreateVideoForm(): React.JSX.Element {
+  const [ttsProviderSettings, setTtsProviderSettings] = useState<
+    Pick<AppSettings, "aiMode" | "aiTtsProvider" | "openaiApiKey" | "geminiApiKey">
+  >({});
   const [title, setTitle] = useState("");
   const [topic, setTopic] = useState("");
   const [narration, setNarration] = useState("");
@@ -1110,6 +1114,11 @@ export function CreateVideoForm(): React.JSX.Element {
     const parsed = Number.parseInt(sceneCount, 10);
     return Number.isFinite(parsed) ? Math.max(3, Math.min(12, parsed)) : 5;
   }, [sceneCount]);
+  const availableVoiceOptions = useMemo(() => {
+    const provider = resolveTtsVoiceProvider(ttsProviderSettings);
+    const filtered = filterVoiceOptions(provider);
+    return filtered.length > 0 ? filtered : ALL_VOICE_OPTIONS;
+  }, [ttsProviderSettings]);
   const estimatedSceneSplitTokens = useMemo(() => {
     const videoLength = Number.parseInt(videoLengthSec, 10);
     return estimateSceneSplitTokens({
@@ -1125,6 +1134,37 @@ export function CreateVideoForm(): React.JSX.Element {
     const videoLength = Number.parseInt(videoLengthSec, 10);
     return estimateTtsInputTokens(previewText, Number.isFinite(videoLength) ? videoLength : 30);
   }, [previewText, videoLengthSec]);
+  useEffect(() => {
+    let mounted = true;
+    void (async () => {
+      try {
+        const response = await fetch("/api/settings", { cache: "no-store" });
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as Partial<AppSettings>;
+        if (!mounted) {
+          return;
+        }
+        setTtsProviderSettings({
+          aiMode: data.aiMode,
+          aiTtsProvider: data.aiTtsProvider,
+          openaiApiKey: data.openaiApiKey,
+          geminiApiKey: data.geminiApiKey
+        });
+      } catch {
+        // Fallback to showing all voices when settings are unavailable.
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!availableVoiceOptions.some((item) => item.id === voice)) {
+      setVoice(availableVoiceOptions[0]?.id || "alloy");
+    }
+  }, [availableVoiceOptions, voice]);
   const assetsGenerationEstimatedTokens = useMemo(() => {
     if (!workflow || workflow.stage !== "scene_split_review") {
       return 0;
@@ -3294,7 +3334,7 @@ export function CreateVideoForm(): React.JSX.Element {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {ALL_VOICE_OPTIONS.map((item) => (
+                    {availableVoiceOptions.map((item) => (
                       <SelectItem key={item.id} value={item.id}>
                         {item.label}
                       </SelectItem>

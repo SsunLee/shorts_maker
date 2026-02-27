@@ -31,6 +31,8 @@ export interface AutomationTemplateSnapshot {
   sourceTitle?: string;
   sourceTopic?: string;
   templateName?: string;
+  voice?: string;
+  voiceSpeed?: number;
   updatedAt: string;
 }
 
@@ -64,11 +66,17 @@ function normalizeSnapshot(parsed: Partial<AutomationTemplateSnapshot>): Automat
   if (!parsed.renderOptions || typeof parsed.renderOptions !== "object") {
     return undefined;
   }
+  const rawVoice = typeof parsed.voice === "string" ? parsed.voice.trim().toLowerCase() : "";
+  const rawVoiceSpeed = Number(parsed.voiceSpeed);
   return {
     renderOptions: parsed.renderOptions as RenderOptions,
     sourceTitle: typeof parsed.sourceTitle === "string" ? parsed.sourceTitle : undefined,
     sourceTopic: typeof parsed.sourceTopic === "string" ? parsed.sourceTopic : undefined,
     templateName: typeof parsed.templateName === "string" ? parsed.templateName : undefined,
+    voice: rawVoice || undefined,
+    voiceSpeed: Number.isFinite(rawVoiceSpeed)
+      ? Math.max(0.5, Math.min(2, rawVoiceSpeed))
+      : undefined,
     updatedAt:
       typeof parsed.updatedAt === "string" && parsed.updatedAt
         ? parsed.updatedAt
@@ -205,6 +213,8 @@ export async function setActiveAutomationTemplate(
     sourceTitle: selected.sourceTitle,
     sourceTopic: selected.sourceTopic,
     templateName: selected.templateName,
+    voice: selected.voice,
+    voiceSpeed: selected.voiceSpeed,
     updatedAt: selected.updatedAt
   };
 }
@@ -228,6 +238,8 @@ export async function updateAutomationTemplate(args: {
   sourceTitle?: string;
   sourceTopic?: string;
   templateName?: string;
+  voice?: string;
+  voiceSpeed?: number;
 }): Promise<AutomationTemplateSnapshot> {
   const catalog = await readCatalog();
   const index = catalog.templates.findIndex((item) => item.id === args.templateId);
@@ -242,6 +254,11 @@ export async function updateAutomationTemplate(args: {
     sourceTitle: args.sourceTitle,
     sourceTopic: args.sourceTopic,
     templateName: args.templateName || prev.templateName,
+    voice: args.voice?.trim().toLowerCase() || prev.voice,
+    voiceSpeed:
+      Number.isFinite(Number(args.voiceSpeed))
+        ? Math.max(0.5, Math.min(2, Number(args.voiceSpeed)))
+        : prev.voiceSpeed,
     updatedAt: new Date().toISOString()
   };
 
@@ -257,6 +274,8 @@ export async function updateAutomationTemplate(args: {
     sourceTitle: updated.sourceTitle,
     sourceTopic: updated.sourceTopic,
     templateName: updated.templateName,
+    voice: updated.voice,
+    voiceSpeed: updated.voiceSpeed,
     updatedAt: updated.updatedAt
   };
 }
@@ -277,6 +296,8 @@ export async function getAutomationTemplateSnapshot(): Promise<AutomationTemplat
     sourceTitle: active.sourceTitle,
     sourceTopic: active.sourceTopic,
     templateName: active.templateName,
+    voice: active.voice,
+    voiceSpeed: active.voiceSpeed,
     updatedAt: active.updatedAt
   };
 }
@@ -291,6 +312,11 @@ export async function saveAutomationTemplateSnapshot(
     sourceTitle: value.sourceTitle,
     sourceTopic: value.sourceTopic,
     templateName: value.templateName,
+    voice: value.voice?.trim().toLowerCase() || undefined,
+    voiceSpeed:
+      Number.isFinite(Number(value.voiceSpeed))
+        ? Math.max(0.5, Math.min(2, Number(value.voiceSpeed)))
+        : undefined,
     updatedAt: value.updatedAt || new Date().toISOString()
   };
   const nextTemplates = sortByUpdatedAtDesc([entry, ...catalog.templates]).slice(0, 100);
@@ -304,6 +330,8 @@ export async function saveAutomationTemplateSnapshot(
     sourceTitle: entry.sourceTitle,
     sourceTopic: entry.sourceTopic,
     templateName: entry.templateName,
+    voice: entry.voice,
+    voiceSpeed: entry.voiceSpeed,
     updatedAt: entry.updatedAt
   };
   return snapshot;

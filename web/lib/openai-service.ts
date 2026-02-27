@@ -2,95 +2,19 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import OpenAI from "openai";
 import { promises as fs } from "fs";
 import path from "path";
-import { getSettings } from "@/lib/settings-store";
+import { resolveApiKeys, resolveModelForTask, resolveProviderForTask } from "@/lib/ai-provider";
 import type { ImageAspectRatio, WorkflowScene } from "@/lib/types";
 import { toGeminiVoiceName, toOpenAiVoiceName } from "@/lib/voice-options";
-
-type AiProvider = "openai" | "gemini";
 
 type GeminiInlineData = {
   data: string;
   mimeType?: string;
 };
 
-async function resolveOpenAiKey(): Promise<string | undefined> {
-  if (process.env.OPENAI_API_KEY) {
-    return process.env.OPENAI_API_KEY;
-  }
-  const settings = await getSettings();
-  return settings.openaiApiKey;
-}
-
-async function resolveGeminiKey(): Promise<string | undefined> {
-  if (process.env.GEMINI_API_KEY) {
-    return process.env.GEMINI_API_KEY;
-  }
-  const settings = await getSettings();
-  return settings.geminiApiKey;
-}
-
-async function resolveProvider(): Promise<AiProvider> {
-  const requested = (process.env.AI_PROVIDER || "auto").toLowerCase();
-  const geminiKey = await resolveGeminiKey();
-  const openAiKey = await resolveOpenAiKey();
-
-  if (requested === "gemini") {
-    if (!geminiKey) {
-      throw new Error(
-        "Gemini API key is missing. Set GEMINI_API_KEY or save it in /settings."
-      );
-    }
-    return "gemini";
-  }
-
-  if (requested === "openai") {
-    if (!openAiKey) {
-      throw new Error(
-        "OpenAI API key is missing. Set OPENAI_API_KEY or save it in /settings."
-      );
-    }
-    return "openai";
-  }
-
-  if (geminiKey) {
-    return "gemini";
-  }
-  if (openAiKey) {
-    return "openai";
-  }
-
-  throw new Error(
-    "No AI provider key found. Add GEMINI_API_KEY or OPENAI_API_KEY in /settings."
-  );
-}
-
-function getOpenAiTextModel(): string {
-  return process.env.OPENAI_TEXT_MODEL || "gpt-4.1-mini";
-}
-
-function getOpenAiImageModel(): string {
-  return process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
-}
-
-function getOpenAiTtsModel(): string {
-  return process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
-}
-
-function getGeminiTextModel(): string {
-  return process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash-lite";
-}
-
-function getGeminiImageModel(): string {
-  return process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
-}
-
-function getGeminiTtsModel(): string {
-  return process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
-}
-
 /** Create an OpenAI client from env/settings and throw if no key exists. */
 export async function getOpenAiClient(): Promise<OpenAI> {
-  const apiKey = await resolveOpenAiKey();
+  const keys = await resolveApiKeys();
+  const apiKey = keys.openaiKey;
   if (!apiKey) {
     throw new Error(
       "OpenAI API key is missing. Set OPENAI_API_KEY or save it in /settings."
@@ -101,7 +25,8 @@ export async function getOpenAiClient(): Promise<OpenAI> {
 
 /** Create a Gemini client from env/settings and throw if no key exists. */
 async function getGeminiClient(): Promise<GoogleGenAI> {
-  const apiKey = await resolveGeminiKey();
+  const keys = await resolveApiKeys();
+  const apiKey = keys.geminiKey;
   if (!apiKey) {
     throw new Error(
       "Gemini API key is missing. Set GEMINI_API_KEY or save it in /settings."
@@ -136,6 +61,62 @@ function stripJsonFence(raw: string): string {
 
   const withoutStart = trimmed.replace(/^```(?:json)?\s*/i, "");
   return withoutStart.replace(/\s*```$/, "").trim();
+}
+
+type CtaLanguage = "ko" | "en" | "ja" | "es";
+
+function detectNarrationLanguage(source: string): CtaLanguage {
+  if (/[가-힣]/.test(source)) {
+    return "ko";
+  }
+  if (/[\u3040-\u30ff]/.test(source)) {
+    return "ja";
+  }
+
+  const lowered = source.toLowerCase();
+  if (
+    /[¿¡áéíóúñ]/i.test(source) ||
+    /\b(el|la|los|las|de|del|historia|civilizaci[oó]n|antiguo|egipto)\b/.test(lowered)
+  ) {
+    return "es";
+  }
+  return "en";
+}
+
+function subscribeCtaByLanguage(language: CtaLanguage): string {
+  if (language === "ko") {
+    return "더 많은 이야기, 구독하고 함께해 주세요.";
+  }
+  if (language === "ja") {
+    return "続きが気になる方は、ぜひチャンネル登録してください。";
+  }
+  if (language === "es") {
+    return "Si te gustó, suscríbete para más historias.";
+  }
+  return "Subscribe for more stories like this.";
+}
+
+function hasSubscribeCta(text: string): boolean {
+  const lowered = text.toLowerCase();
+  return (
+    /구독/.test(text) ||
+    /subscribe/.test(lowered) ||
+    /suscr[ií]bete/.test(lowered) ||
+    /チャンネル登録/.test(text)
+  );
+}
+
+function appendSubscribeCta(args: { narration: string; title: string; topic?: string }): string {
+  const narration = args.narration.trim();
+  if (!narration) {
+    return narration;
+  }
+  if (hasSubscribeCta(narration)) {
+    return narration;
+  }
+  const language = detectNarrationLanguage(`${args.title}\n${args.topic || ""}\n${narration}`);
+  const cta = subscribeCtaByLanguage(language);
+  return `${narration}\n\n${cta}`;
 }
 
 function safeParseScenes(raw: string, sceneCount: number): WorkflowScene[] | null {
@@ -210,7 +191,8 @@ export async function generateNarration(args: {
   topic?: string;
   targetLengthSec: number;
 }): Promise<string> {
-  const provider = await resolveProvider();
+  const provider = await resolveProviderForTask("text");
+  const textModel = await resolveModelForTask(provider, "text");
 
   if (provider === "gemini") {
     const client = await getGeminiClient();
@@ -218,7 +200,7 @@ export async function generateNarration(args: {
       label: "Narration generation",
       task: () =>
         client.models.generateContent({
-          model: getGeminiTextModel(),
+          model: textModel,
           contents:
             "You write concise viral short-video narration scripts. Keep it spoken and punchy. " +
             `Write narration for a ${args.targetLengthSec}-second short.\n` +
@@ -232,12 +214,16 @@ export async function generateNarration(args: {
     if (!text) {
       throw new Error("Gemini did not return narration text.");
     }
-    return text;
+    return appendSubscribeCta({
+      narration: text,
+      title: args.title,
+      topic: args.topic
+    });
   }
 
   const client = await getOpenAiClient();
   const response = await client.responses.create({
-    model: getOpenAiTextModel(),
+    model: textModel,
     input: [
       {
         role: "system",
@@ -256,7 +242,11 @@ export async function generateNarration(args: {
     throw new Error("OpenAI did not return narration text.");
   }
 
-  return text;
+  return appendSubscribeCta({
+    narration: text,
+    title: args.title,
+    topic: args.topic
+  });
 }
 
 /** Create stylized image prompts from narration text. */
@@ -273,7 +263,8 @@ export async function generateImagePrompts(args: {
     imageAspectRatio === "16:9"
       ? "Use cinematic landscape 16:9 composition with strong horizontal framing."
       : "Use vertical storytelling composition optimized for 9:16 mobile shorts.";
-  const provider = await resolveProvider();
+  const provider = await resolveProviderForTask("text");
+  const textModel = await resolveModelForTask(provider, "text");
 
   if (provider === "gemini") {
     const client = await getGeminiClient();
@@ -281,7 +272,7 @@ export async function generateImagePrompts(args: {
       label: "Image prompt generation",
       task: () =>
         client.models.generateContent({
-          model: getGeminiTextModel(),
+          model: textModel,
           contents:
             `Output only a JSON array with exactly ${sceneCount} short image prompts. ` +
             "Prompts must be non-graphic, educational, and safe for general audiences. " +
@@ -300,7 +291,7 @@ export async function generateImagePrompts(args: {
 
   const client = await getOpenAiClient();
   const response = await client.responses.create({
-    model: getOpenAiTextModel(),
+    model: textModel,
     input: [
       {
         role: "system",
@@ -338,7 +329,8 @@ export async function splitNarrationToScenes(args: {
     imageAspectRatio === "16:9"
       ? "All image prompts must explicitly request landscape 16:9 composition."
       : "All image prompts must explicitly request vertical 9:16 composition.";
-  const provider = await resolveProvider();
+  const provider = await resolveProviderForTask("text");
+  const textModel = await resolveModelForTask(provider, "text");
 
   if (provider === "gemini") {
     const client = await getGeminiClient();
@@ -346,7 +338,7 @@ export async function splitNarrationToScenes(args: {
       label: "Scene split generation",
       task: () =>
         client.models.generateContent({
-          model: getGeminiTextModel(),
+          model: textModel,
           contents:
             `Return only JSON array with exactly ${sceneCount} objects: sceneTitle, narrationText, imagePrompt. ` +
             "All imagePrompt values must be non-graphic, educational, and safe for general audiences. " +
@@ -372,7 +364,7 @@ export async function splitNarrationToScenes(args: {
 
   const client = await getOpenAiClient();
   const response = await client.responses.create({
-    model: getOpenAiTextModel(),
+    model: textModel,
     input: [
       {
         role: "system",
@@ -674,9 +666,10 @@ async function rewritePromptForSafetyOpenAi(args: {
   client: OpenAI;
   prompt: string;
   imageAspectRatio?: ImageAspectRatio;
+  textModel: string;
 }): Promise<string> {
   const response = await args.client.responses.create({
-    model: getOpenAiTextModel(),
+    model: args.textModel,
     input: [
       {
         role: "system",
@@ -705,12 +698,13 @@ async function rewritePromptForSafetyGemini(args: {
   client: GoogleGenAI;
   prompt: string;
   imageAspectRatio?: ImageAspectRatio;
+  textModel: string;
 }): Promise<string> {
   const response = await runGeminiWithRetry({
     label: "Safety prompt rewrite",
     task: () =>
       args.client.models.generateContent({
-        model: getGeminiTextModel(),
+        model: args.textModel,
         contents:
           "Rewrite image prompts to be policy-safe for general audiences while preserving topic/style intent. " +
           "No explicit violence, injury, blood, death moments, or self-harm depiction. " +
@@ -735,6 +729,8 @@ async function generateImageWithRetryOpenAi(args: {
   timeoutMs: number;
   retryCount: number;
   promptIndex: number;
+  imageModel: string;
+  textModel: string;
 }): Promise<OpenAI.Images.ImagesResponse> {
   let currentPrompt = args.prompt;
   let rewrittenForSafety = false;
@@ -743,7 +739,7 @@ async function generateImageWithRetryOpenAi(args: {
     try {
       return await withTimeout(
         args.client.images.generate({
-          model: getOpenAiImageModel(),
+          model: args.imageModel,
           prompt: currentPrompt,
           size: args.imageAspectRatio === "16:9" ? "1536x1024" : "1024x1536"
         }),
@@ -755,7 +751,8 @@ async function generateImageWithRetryOpenAi(args: {
         currentPrompt = await rewritePromptForSafetyOpenAi({
           client: args.client,
           prompt: currentPrompt,
-          imageAspectRatio: args.imageAspectRatio
+          imageAspectRatio: args.imageAspectRatio,
+          textModel: args.textModel
         });
         rewrittenForSafety = true;
         continue;
@@ -779,6 +776,8 @@ async function generateImageWithRetryGemini(args: {
   timeoutMs: number;
   retryCount: number;
   promptIndex: number;
+  imageModel: string;
+  textModel: string;
 }): Promise<GeminiInlineData> {
   let currentPrompt = args.prompt;
   let rewrittenForSafety = false;
@@ -788,7 +787,7 @@ async function generateImageWithRetryGemini(args: {
     try {
       const response = await withTimeout(
         args.client.models.generateContent({
-          model: getGeminiImageModel(),
+          model: args.imageModel,
           contents: currentPrompt,
           config: {
             responseModalities: [Modality.IMAGE, Modality.TEXT],
@@ -811,7 +810,8 @@ async function generateImageWithRetryGemini(args: {
         currentPrompt = await rewritePromptForSafetyGemini({
           client: args.client,
           prompt: currentPrompt,
-          imageAspectRatio: args.imageAspectRatio
+          imageAspectRatio: args.imageAspectRatio,
+          textModel: args.textModel
         });
         rewrittenForSafety = true;
         continue;
@@ -838,7 +838,9 @@ export async function generateImages(
     onProgress?: (completed: number, total: number) => Promise<void> | void;
   }
 ): Promise<string[]> {
-  const provider = await resolveProvider();
+  const provider = await resolveProviderForTask("image");
+  const imageModel = await resolveModelForTask(provider, "image");
+  const textModel = await resolveModelForTask(provider, "text");
   const outputDir = await ensureOutputDir(jobId);
   const urls: string[] = [];
   const timeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 90000);
@@ -856,7 +858,9 @@ export async function generateImages(
         imageAspectRatio,
         timeoutMs,
         retryCount,
-        promptIndex: index
+        promptIndex: index,
+        imageModel,
+        textModel
       });
 
       const imageBuffer = Buffer.from(inline.data, "base64");
@@ -882,7 +886,9 @@ export async function generateImages(
       imageAspectRatio,
       timeoutMs,
       retryCount,
-      promptIndex: index
+      promptIndex: index,
+      imageModel,
+      textModel
     });
 
     const imageData = result.data?.[0];
@@ -924,7 +930,8 @@ async function synthesizeSpeechAudio(args: {
   input: string;
   preferredMimeType?: string;
 }): Promise<SynthesizedAudio> {
-  const provider = await resolveProvider();
+  const provider = await resolveProviderForTask("tts");
+  const ttsModel = await resolveModelForTask(provider, "tts");
   const speed = Math.max(0.5, Math.min(2, Number(args.speed) || 1));
 
   if (provider === "gemini") {
@@ -940,7 +947,7 @@ async function synthesizeSpeechAudio(args: {
         label: "TTS generation",
         task: () =>
           client.models.generateContent({
-            model: getGeminiTtsModel(),
+            model: ttsModel,
             contents: [{ role: "user", parts: [{ text: prompt }] }],
             config: {
               responseModalities: [Modality.AUDIO],
@@ -1010,7 +1017,7 @@ async function synthesizeSpeechAudio(args: {
 
   const client = await getOpenAiClient();
   const speech = await client.audio.speech.create({
-    model: getOpenAiTtsModel(),
+    model: ttsModel,
     voice: toOpenAiVoiceName(args.voice),
     speed,
     input: args.input,

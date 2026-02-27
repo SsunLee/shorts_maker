@@ -51,6 +51,16 @@ export interface VideoRow {
 export interface AppSettings {
   openaiApiKey?: string;
   geminiApiKey?: string;
+  aiMode?: "auto" | "openai" | "gemini" | "mixed";
+  aiTextProvider?: "openai" | "gemini";
+  aiImageProvider?: "openai" | "gemini";
+  aiTtsProvider?: "openai" | "gemini";
+  openaiTextModel?: string;
+  openaiImageModel?: string;
+  openaiTtsModel?: string;
+  geminiTextModel?: string;
+  geminiImageModel?: string;
+  geminiTtsModel?: string;
   gsheetSpreadsheetId?: string;
   gsheetClientEmail?: string;
   gsheetPrivateKey?: string;
@@ -111,6 +121,8 @@ export interface TitleTemplateItem {
   shadowOpacity?: number;
   fontThickness?: number;
   fontName?: string;
+  fontBold?: boolean;
+  fontItalic?: boolean;
   fontFile?: string;
 }
 
@@ -121,6 +133,8 @@ export interface OverlayStyleOptions {
   titleFontSize: number;
   titleColor: string;
   titleFontName: string;
+  titleFontBold?: boolean;
+  titleFontItalic?: boolean;
   titleFontFile?: string;
   sceneMotionPreset?: "gentle_zoom" | "up_down" | "left_right" | "random" | "focus_smooth";
   motionSpeedPercent?: number;
@@ -236,7 +250,7 @@ export interface IdeaDraftRow {
   publish: string;
 }
 
-export type IdeaLanguage = "ko" | "en" | "ja" | "es";
+export type IdeaLanguage = "ko" | "en" | "ja" | "es" | "hi";
 
 export type AutomationScheduleCadence = "interval_hours" | "daily";
 export type AutomationTemplateMode = "applied_template" | "latest_workflow" | "none";

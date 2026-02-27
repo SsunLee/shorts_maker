@@ -44,6 +44,8 @@ interface AutomationTemplateItem {
         color?: string;
         fontName?: string;
         fontThickness?: number;
+        fontBold?: boolean;
+        fontItalic?: boolean;
       }>;
     };
   };
@@ -156,6 +158,7 @@ export function DashboardClient(): React.JSX.Element {
   const [automationUploadMode, setAutomationUploadMode] = useState<"youtube" | "pre_upload">(
     "youtube"
   );
+  const [automationMaxItems, setAutomationMaxItems] = useState<string>("all");
   const [automationTemplateMode, setAutomationTemplateMode] = useState<
     "applied_template" | "latest_workflow" | "none"
   >("applied_template");
@@ -457,7 +460,11 @@ export function DashboardClient(): React.JSX.Element {
           sheetName: automationSheetName.trim() || undefined,
           privacyStatus: automationPrivacyStatus,
           templateMode: automationTemplateMode,
-          uploadMode: automationUploadMode
+          uploadMode: automationUploadMode,
+          maxItems:
+            automationMaxItems === "all"
+              ? undefined
+              : Math.max(1, Number.parseInt(automationMaxItems, 10) || 1)
         })
       });
       const data = (await response.json()) as AutomationResponse;
@@ -605,6 +612,10 @@ export function DashboardClient(): React.JSX.Element {
                   color: normalizeHexColor(item.color, "#FFFFFF"),
                   fontSize: `${Math.max(7, clampNumber(Number(item.fontSize), 10, 120, 28) * 0.2)}px`,
                   fontFamily: item.fontName || "Noto Sans KR",
+                  fontWeight: item.fontBold ? 700 : 400,
+                  fontStyle: item.fontItalic ? "italic" : "normal",
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
                   textShadow: "0 1px 2px rgba(0,0,0,0.75)",
                   WebkitTextStrokeWidth: `${clampNumber(Number(item.fontThickness), 0, 8, 0) * 0.16}px`,
                   WebkitTextStrokeColor: "rgba(0,0,0,0.85)"
@@ -639,7 +650,7 @@ export function DashboardClient(): React.JSX.Element {
           준비 상태 row를 순서대로 처리합니다. 기본 모드는 YouTube 업로드 포함이며, 아래 선택한 템플릿 모드
           기준으로 렌더 옵션을 적용합니다.
         </p>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
           <Input
             value={automationSheetName}
             onChange={(event) => setAutomationSheetName(event.target.value)}
@@ -692,6 +703,19 @@ export function DashboardClient(): React.JSX.Element {
               <SelectItem value="public">공개(즉시 게시)</SelectItem>
               <SelectItem value="unlisted">일부 공개</SelectItem>
               <SelectItem value="private">비공개</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={automationMaxItems} onValueChange={setAutomationMaxItems}>
+            <SelectTrigger className="bg-card dark:bg-zinc-900">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">처리 개수: 전체</SelectItem>
+              {Array.from({ length: 20 }, (_, index) => String(index + 1)).map((value) => (
+                <SelectItem key={value} value={value}>
+                  처리 개수: {value}개
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Button

@@ -71,6 +71,8 @@ function normalizeRenderOptionsForEngine(
         shadowOpacity: asFiniteNumber(row.shadowOpacity, 1),
         fontThickness: Math.round(asFiniteNumber(row.fontThickness, 0)),
         fontName: asText(row.fontName),
+        fontBold: Boolean(row.fontBold),
+        fontItalic: Boolean(row.fontItalic),
         fontFile: asText(row.fontFile)
       };
     })
@@ -99,6 +101,8 @@ function normalizeRenderOptionsForEngine(
       titleFontSize: Math.round(asFiniteNumber(overlayRaw.titleFontSize, 48)),
       titleColor: asText(overlayRaw.titleColor, "#FFFFFF"),
       titleFontName: asText(overlayRaw.titleFontName, "Malgun Gothic"),
+      titleFontBold: Boolean(overlayRaw.titleFontBold),
+      titleFontItalic: Boolean(overlayRaw.titleFontItalic),
       titleFontFile: asText(overlayRaw.titleFontFile),
       sceneMotionPreset: asText(overlayRaw.sceneMotionPreset, "gentle_zoom") as RenderOptions["overlay"]["sceneMotionPreset"],
       motionSpeedPercent: asFiniteNumber(overlayRaw.motionSpeedPercent, 135),

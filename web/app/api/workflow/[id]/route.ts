@@ -56,6 +56,8 @@ const patchSchema = z.object({
           titleFontSize: z.number().int().min(16).max(120).optional(),
           titleColor: z.string().min(4).max(16).optional(),
           titleFontName: z.string().min(1).max(80).optional(),
+          titleFontBold: z.boolean().optional(),
+          titleFontItalic: z.boolean().optional(),
           titleFontFile: z.string().max(260).optional(),
           sceneMotionPreset: z
             .enum(["gentle_zoom", "up_down", "left_right", "random", "focus_smooth"])
@@ -88,6 +90,8 @@ const patchSchema = z.object({
                 shadowOpacity: z.number().min(0).max(1).optional(),
                 fontThickness: z.number().int().min(0).max(8).optional(),
                 fontName: z.string().max(80).optional(),
+                fontBold: z.boolean().optional(),
+                fontItalic: z.boolean().optional(),
                 fontFile: z.string().max(260).optional()
               })
             )

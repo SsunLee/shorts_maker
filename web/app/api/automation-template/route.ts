@@ -16,7 +16,9 @@ const schema = z.object({
   renderOptions: z.record(z.any()),
   sourceTitle: z.string().optional(),
   sourceTopic: z.string().optional(),
-  templateName: z.string().optional()
+  templateName: z.string().optional(),
+  voice: z.string().min(1).optional(),
+  voiceSpeed: z.number().min(0.5).max(2).optional()
 });
 const selectSchema = z.object({
   templateId: z.string().min(1)
@@ -26,7 +28,9 @@ const updateSchema = z.object({
   renderOptions: z.record(z.any()),
   sourceTitle: z.string().optional(),
   sourceTopic: z.string().optional(),
-  templateName: z.string().optional()
+  templateName: z.string().optional(),
+  voice: z.string().min(1).optional(),
+  voiceSpeed: z.number().min(0.5).max(2).optional()
 });
 
 /** Get latest automation template snapshot persisted by [템플릿 적용]. */
@@ -49,7 +53,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       renderOptions: payload.renderOptions as RenderOptions,
       sourceTitle: payload.sourceTitle,
       sourceTopic: payload.sourceTopic,
-      templateName: payload.templateName
+      templateName: payload.templateName,
+      voice: payload.voice,
+      voiceSpeed: payload.voiceSpeed
     });
     const catalog = await listAutomationTemplates();
     return NextResponse.json({
@@ -91,7 +97,9 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       renderOptions: payload.renderOptions as RenderOptions,
       sourceTitle: payload.sourceTitle,
       sourceTopic: payload.sourceTopic,
-      templateName: payload.templateName
+      templateName: payload.templateName,
+      voice: payload.voice,
+      voiceSpeed: payload.voiceSpeed
     });
     const catalog = await listAutomationTemplates();
     return NextResponse.json({

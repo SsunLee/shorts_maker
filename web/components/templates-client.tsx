@@ -8,13 +8,16 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { RenderOptions } from "@/lib/types";
+import { AppSettings, RenderOptions } from "@/lib/types";
+import { ALL_VOICE_OPTIONS, filterVoiceOptions, resolveTtsVoiceProvider } from "@/lib/voice-options";
 
 interface AutomationTemplateItem {
   id: string;
   templateName?: string;
   sourceTitle?: string;
   sourceTopic?: string;
+  voice?: string;
+  voiceSpeed?: number;
   updatedAt: string;
   renderOptions: RenderOptions;
 }
@@ -45,11 +48,15 @@ type TemplateEditorState = {
   templateName: string;
   sourceTitle: string;
   sourceTopic: string;
+  voice: string;
+  voiceSpeed: string;
   primaryText: string;
   secondaryText: string;
   secondaryEnabled: boolean;
   badgeText: string;
   fontName: string;
+  fontBold: boolean;
+  fontItalic: boolean;
   primaryX: string;
   primaryY: string;
   primaryWidth: string;
@@ -69,6 +76,7 @@ type TemplateEditorState = {
   secondaryColor: string;
   badgeColor: string;
   subtitlePosition: RenderOptions["subtitle"]["position"];
+  subtitleFontSize: string;
   subtitleYPercent: string;
   subtitleSampleText: string;
   videoLayout: VideoLayout;
@@ -84,6 +92,19 @@ const SAMPLE_TITLE = "클레오파트라의 숨겨진 비밀!";
 const SAMPLE_TOPIC = "로마 정치의 중심에 선 마지막 파라오 이야기";
 const SAMPLE_NARRATION = "고대 이집트 문명 속에서 잊힌 진실이 드러납니다.";
 const SAMPLE_KEYWORD = "클레오파트라";
+const VOICE_PREVIEW_DEFAULT_TEXT = "This is a voice preview for your short-form content.";
+const voiceSpeedOptions = ["0.75", "0.9", "1", "1.1", "1.25", "1.5"];
+const templateFontOptions = [
+  "Noto Sans KR",
+  "Malgun Gothic",
+  "Pretendard",
+  "Spoqa Han Sans Neo",
+  "Nanum Gothic",
+  "Arial",
+  "Arial Black",
+  "Segoe UI"
+];
+const customTemplateFontOption = "__custom__";
 
 const BASE_SUBTITLE: RenderOptions["subtitle"] = {
   fontName: "Arial",
@@ -108,6 +129,8 @@ const BASE_OVERLAY: RenderOptions["overlay"] = {
   titleFontSize: 48,
   titleColor: "#FFFFFF",
   titleFontName: "Noto Sans KR",
+  titleFontBold: false,
+  titleFontItalic: false,
   titleFontFile: "",
   sceneMotionPreset: "gentle_zoom",
   motionSpeedPercent: 135,
@@ -128,11 +151,15 @@ function createInitialEditor(): TemplateEditorState {
     templateName: "",
     sourceTitle: "{{title}}",
     sourceTopic: "{{topic}}",
+    voice: "alloy",
+    voiceSpeed: "1",
     primaryText: "{{title}}",
     secondaryText: "{{topic}}",
     secondaryEnabled: true,
     badgeText: "AI로 재구성된 콘텐츠입니다.",
     fontName: "Noto Sans KR",
+    fontBold: false,
+    fontItalic: false,
     primaryX: "50",
     primaryY: "20",
     primaryWidth: "80",
@@ -152,6 +179,7 @@ function createInitialEditor(): TemplateEditorState {
     secondaryColor: "#FFF200",
     badgeColor: "#FFFFFF",
     subtitlePosition: "bottom",
+    subtitleFontSize: "16",
     subtitleYPercent: "86",
     subtitleSampleText: "신비한 고대 이집트 문자의 비밀을 지금 공개합니다.",
     videoLayout: "fill_9_16",
@@ -183,10 +211,20 @@ function normalizeHex(value: string, fallback: string): string {
   return fallback;
 }
 
+function detectTemplateFontPreset(fontName: string | undefined): string {
+  const normalized = String(fontName || "").trim();
+  if (!normalized) {
+    return customTemplateFontOption;
+  }
+  return templateFontOptions.includes(normalized) ? normalized : customTemplateFontOption;
+}
+
 function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOptions {
   const fontName = editor.fontName.trim() || "Noto Sans KR";
-  const primaryText = normalizeText(editor.primaryText || "{{title}}");
-  const secondaryText = normalizeText(editor.secondaryText || "{{topic}}");
+  const fontBold = Boolean(editor.fontBold);
+  const fontItalic = Boolean(editor.fontItalic);
+  const primaryText = normalizeText(editor.primaryText);
+  const secondaryText = normalizeText(editor.secondaryText);
   const badgeText = normalizeText(editor.badgeText || "");
 
   const titleTemplates: NonNullable<RenderOptions["overlay"]["titleTemplates"]> = [
@@ -205,7 +243,9 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowColor: "#000000",
       shadowOpacity: 1,
       fontThickness: clampNumber(Number(editor.primaryFontThickness), 0, 8, 0),
-      fontName
+      fontName,
+      fontBold,
+      fontItalic
     },
     ...(editor.secondaryEnabled
       ? [
@@ -224,7 +264,9 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
             shadowColor: "#000000",
             shadowOpacity: 1,
             fontThickness: clampNumber(Number(editor.secondaryFontThickness), 0, 8, 0),
-            fontName
+            fontName,
+            fontBold,
+            fontItalic
           }
         ]
       : [])
@@ -246,7 +288,9 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowColor: "#000000",
       shadowOpacity: 0.8,
       fontThickness: clampNumber(Number(editor.badgeFontThickness), 0, 8, 0),
-      fontName
+      fontName,
+      fontBold,
+      fontItalic
     });
   }
 
@@ -267,12 +311,15 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowY: 2,
       shadowColor: "#000000",
       shadowOpacity: 1,
-      fontName
+      fontName,
+      fontBold,
+      fontItalic
     }));
 
   return {
     subtitle: {
       ...BASE_SUBTITLE,
+      fontSize: clampNumber(Number(editor.subtitleFontSize), 10, 120, 16),
       position:
         editor.subtitlePosition === "top" ||
         editor.subtitlePosition === "middle" ||
@@ -286,6 +333,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       showTitle: true,
       titleText: primaryText,
       titleFontName: fontName,
+      titleFontBold: fontBold,
+      titleFontItalic: fontItalic,
       titleFontSize: clampNumber(Number(editor.primaryFontSize), 12, 120, 52),
       titleColor: normalizeHex(editor.primaryColor, "#FFFFFF"),
       sceneMotionPreset: editor.motionPreset,
@@ -342,6 +391,19 @@ function extractLayerColor(
   return normalizeHex(String(found?.color || ""), fallback);
 }
 
+function extractLayerToggle(
+  renderOptions: RenderOptions,
+  id: string,
+  field: "fontBold" | "fontItalic",
+  fallback: boolean
+): boolean {
+  const found = (renderOptions.overlay.titleTemplates || []).find((item) => item.id === id);
+  if (typeof found?.[field] === "boolean") {
+    return Boolean(found[field]);
+  }
+  return fallback;
+}
+
 function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
   const overlay = item.renderOptions.overlay;
   const hasSecondaryLayer = Boolean(
@@ -369,14 +431,23 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
     templateName: item.templateName || "",
     sourceTitle: item.sourceTitle || "{{title}}",
     sourceTopic: item.sourceTopic || "{{topic}}",
-    primaryText: extractLayerText(item.renderOptions, "__primary_title__", overlay.titleText || "{{title}}"),
+    voice: (item.voice || "alloy").trim().toLowerCase() || "alloy",
+    voiceSpeed: String(clampNumber(Number(item.voiceSpeed), 0.5, 2, 1)),
+    primaryText: extractLayerText(item.renderOptions, "__primary_title__", overlay.titleText || ""),
     secondaryText: extractLayerText(item.renderOptions, "__secondary_title__", "{{topic}}"),
     secondaryEnabled: hasSecondaryLayer,
-    badgeText: extractLayerText(item.renderOptions, "__badge__", "AI로 재구성된 콘텐츠입니다."),
+    badgeText: extractLayerText(item.renderOptions, "__badge__", ""),
     fontName:
       (overlay.titleTemplates || []).find((layer) => layer.id === "__primary_title__")?.fontName ||
       overlay.titleFontName ||
       "Noto Sans KR",
+    fontBold: extractLayerToggle(item.renderOptions, "__primary_title__", "fontBold", Boolean(overlay.titleFontBold)),
+    fontItalic: extractLayerToggle(
+      item.renderOptions,
+      "__primary_title__",
+      "fontItalic",
+      Boolean(overlay.titleFontItalic)
+    ),
     primaryX: extractLayerMetric(item.renderOptions, "__primary_title__", "x", 0, 100, 50),
     primaryY: extractLayerMetric(item.renderOptions, "__primary_title__", "y", 0, 100, 20),
     primaryWidth: extractLayerMetric(item.renderOptions, "__primary_title__", "width", 20, 100, 80),
@@ -406,6 +477,7 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
       item.renderOptions.subtitle.position === "bottom"
         ? item.renderOptions.subtitle.position
         : "bottom",
+    subtitleFontSize: String(clampNumber(Number(item.renderOptions.subtitle.fontSize), 10, 120, 16)),
     subtitleYPercent: String(clampNumber(Number(item.renderOptions.subtitle.subtitleYPercent), 0, 100, 86)),
     subtitleSampleText: SAMPLE_NARRATION,
     videoLayout: overlay.videoLayout === "panel_16_9" ? "panel_16_9" : "fill_9_16",
@@ -498,12 +570,17 @@ function buildTemplatePayload(editor: TemplateEditorState, renderOptions: Render
   templateName: string;
   sourceTitle: string;
   sourceTopic: string;
+  voice: string;
+  voiceSpeed: number;
   renderOptions: RenderOptions;
 } {
+  const voiceSpeed = clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1);
   return {
     templateName: editor.templateName.trim(),
     sourceTitle: editor.sourceTitle.trim(),
     sourceTopic: editor.sourceTopic.trim(),
+    voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
+    voiceSpeed,
     renderOptions
   };
 }
@@ -512,6 +589,8 @@ function buildPayloadSignature(payload: {
   templateName: string;
   sourceTitle: string;
   sourceTopic: string;
+  voice: string;
+  voiceSpeed: number;
   renderOptions: RenderOptions;
 }): string {
   return JSON.stringify(payload);
@@ -522,11 +601,16 @@ function buildTemplateSignature(item: AutomationTemplateItem): string {
     templateName: String(item.templateName || "").trim(),
     sourceTitle: String(item.sourceTitle || "").trim(),
     sourceTopic: String(item.sourceTopic || "").trim(),
+    voice: String(item.voice || "alloy").trim().toLowerCase() || "alloy",
+    voiceSpeed: clampNumber(Number(item.voiceSpeed), 0.5, 2, 1),
     renderOptions: item.renderOptions
   });
 }
 
 export function TemplatesClient(): React.JSX.Element {
+  const [ttsProviderSettings, setTtsProviderSettings] = useState<
+    Pick<AppSettings, "aiMode" | "aiTtsProvider" | "openaiApiKey" | "geminiApiKey">
+  >({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -537,12 +621,18 @@ export function TemplatesClient(): React.JSX.Element {
   const [activeTemplateId, setActiveTemplateId] = useState<string>();
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("__new__");
   const [editor, setEditor] = useState<TemplateEditorState>(createInitialEditor());
+  const [previewText, setPreviewText] = useState(VOICE_PREVIEW_DEFAULT_TEXT);
+  const [previewAudioUrl, setPreviewAudioUrl] = useState<string>();
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string>();
   const [selectedPreviewLayerId, setSelectedPreviewLayerId] = useState<string | null>(null);
   const previewCanvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSaveRequestSeqRef = useRef(0);
   const lastSavedSignatureRef = useRef("");
+  const previewAudioRef = useRef<HTMLAudioElement>(null);
+  const pendingPreviewPlayRef = useRef(false);
 
   async function refreshTemplates(): Promise<void> {
     const response = await fetch("/api/automation-template", { cache: "no-store" });
@@ -587,7 +677,39 @@ export function TemplatesClient(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    void (async () => {
+      try {
+        const response = await fetch("/api/settings", { cache: "no-store" });
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as Partial<AppSettings>;
+        if (!mounted) {
+          return;
+        }
+        setTtsProviderSettings({
+          aiMode: data.aiMode,
+          aiTtsProvider: data.aiTtsProvider,
+          openaiApiKey: data.openaiApiKey,
+          geminiApiKey: data.geminiApiKey
+        });
+      } catch {
+        // Keep all voices visible when settings cannot be loaded.
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const builtRenderOptions = useMemo(() => buildRenderOptionsFromEditor(editor), [editor]);
+  const availableVoiceOptions = useMemo(() => {
+    const provider = resolveTtsVoiceProvider(ttsProviderSettings);
+    const filtered = filterVoiceOptions(provider);
+    return filtered.length > 0 ? filtered : ALL_VOICE_OPTIONS;
+  }, [ttsProviderSettings]);
   const previewTemplates = builtRenderOptions.overlay.titleTemplates || [];
   const previewPanelTop = clampNumber(Number(editor.panelTopPercent), 0, 85, 34);
   const previewPanelWidth = clampNumber(Number(editor.panelWidthPercent), 60, 100, 100);
@@ -599,6 +721,21 @@ export function TemplatesClient(): React.JSX.Element {
     () => buildPayloadSignature(currentPayload),
     [currentPayload]
   );
+
+  useEffect(() => {
+    if (!availableVoiceOptions.length) {
+      return;
+    }
+    setEditor((prev) => {
+      if (availableVoiceOptions.some((item) => item.id === prev.voice)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        voice: availableVoiceOptions[0].id
+      };
+    });
+  }, [availableVoiceOptions]);
 
   function updateLayerPosition(target: DragTarget, nextX?: number, nextY?: number): void {
     setEditor((prev) => {
@@ -806,6 +943,28 @@ export function TemplatesClient(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (previewAudioUrl) {
+        URL.revokeObjectURL(previewAudioUrl);
+      }
+    };
+  }, [previewAudioUrl]);
+
+  useEffect(() => {
+    if (!previewAudioUrl || !pendingPreviewPlayRef.current) {
+      return;
+    }
+    const audioEl = previewAudioRef.current;
+    if (!audioEl) {
+      return;
+    }
+    pendingPreviewPlayRef.current = false;
+    void audioEl.play().catch(() => {
+      // Some browsers block autoplay without user interaction.
+    });
+  }, [previewAudioUrl]);
+
+  useEffect(() => {
     if (selectedTemplateId === "__new__") {
       setAutoSaveStatus("idle");
       setAutoSaveMessage("자동 저장은 저장된 템플릿에서 동작합니다.");
@@ -836,22 +995,32 @@ export function TemplatesClient(): React.JSX.Element {
           const response = await fetch("/api/automation-template", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              templateId: selectedTemplateId,
-              templateName: currentPayload.templateName || undefined,
-              sourceTitle: currentPayload.sourceTitle || undefined,
-              sourceTopic: currentPayload.sourceTopic || undefined,
-              renderOptions: currentPayload.renderOptions
-            })
-          });
+              body: JSON.stringify({
+                templateId: selectedTemplateId,
+                templateName: currentPayload.templateName || undefined,
+                sourceTitle: currentPayload.sourceTitle || undefined,
+                sourceTopic: currentPayload.sourceTopic || undefined,
+                voice: currentPayload.voice || undefined,
+                voiceSpeed: currentPayload.voiceSpeed,
+                renderOptions: currentPayload.renderOptions
+              })
+            });
           const data = await readJsonResponse<AutomationTemplateResponse>(response);
           if (!response.ok) {
             throw new Error(data.error || "자동 저장에 실패했습니다.");
           }
+          const list = data.templates || [];
+          setTemplates(list);
+          if (data.activeTemplateId) {
+            setActiveTemplateId(data.activeTemplateId);
+          }
           if (requestSeq !== autoSaveRequestSeqRef.current) {
             return;
           }
-          lastSavedSignatureRef.current = currentPayloadSignature;
+          const updated = list.find((item) => item.id === selectedTemplateId);
+          lastSavedSignatureRef.current = updated
+            ? buildTemplateSignature(updated)
+            : currentPayloadSignature;
           setAutoSaveStatus("saved");
           setAutoSaveMessage(`자동 저장됨 · ${new Date().toLocaleTimeString()}`);
         } catch (autoSaveError) {
@@ -874,6 +1043,43 @@ export function TemplatesClient(): React.JSX.Element {
     };
   }, [selectedTemplateId, loading, busy, currentPayload, currentPayloadSignature]);
 
+  async function previewVoice(): Promise<void> {
+    setPreviewLoading(true);
+    setPreviewError(undefined);
+    try {
+      const response = await fetch("/api/voice-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          voice: editor.voice,
+          speed: clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1),
+          text: previewText
+        })
+      });
+      if (!response.ok) {
+        const data = await readJsonResponse<{ error?: string }>(response);
+        throw new Error(data.error || "보이스 미리듣기에 실패했습니다.");
+      }
+      const blob = await response.blob();
+      const playableBlob =
+        blob.type && blob.type.startsWith("audio/")
+          ? blob
+          : new Blob([blob], { type: "audio/wav" });
+      const url = URL.createObjectURL(playableBlob);
+      pendingPreviewPlayRef.current = true;
+      setPreviewAudioUrl((oldUrl) => {
+        if (oldUrl) {
+          URL.revokeObjectURL(oldUrl);
+        }
+        return url;
+      });
+    } catch (previewErr) {
+      setPreviewError(previewErr instanceof Error ? previewErr.message : "Unknown error");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
   async function saveAsNew(): Promise<void> {
     setBusy(true);
     setError(undefined);
@@ -886,6 +1092,8 @@ export function TemplatesClient(): React.JSX.Element {
           templateName: editor.templateName.trim() || `Template ${new Date().toLocaleString()}`,
           sourceTitle: editor.sourceTitle.trim() || undefined,
           sourceTopic: editor.sourceTopic.trim() || undefined,
+          voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
+          voiceSpeed: clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1),
           renderOptions: builtRenderOptions
         })
       });
@@ -931,6 +1139,8 @@ export function TemplatesClient(): React.JSX.Element {
           templateName: editor.templateName.trim() || undefined,
           sourceTitle: editor.sourceTitle.trim() || undefined,
           sourceTopic: editor.sourceTopic.trim() || undefined,
+          voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
+          voiceSpeed: clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1),
           renderOptions: builtRenderOptions
         })
       });
@@ -1114,7 +1324,7 @@ export function TemplatesClient(): React.JSX.Element {
             <p className="text-xs text-muted-foreground">{autoSaveMessage || "새 템플릿은 수동 저장이 필요합니다."}</p>
           )}
 
-          <div className="grid gap-2 md:grid-cols-4">
+          <div className="grid gap-2 md:grid-cols-5">
             <div className="space-y-1 md:col-span-2">
               <Label>템플릿 이름</Label>
               <Input
@@ -1125,13 +1335,60 @@ export function TemplatesClient(): React.JSX.Element {
             </div>
             <div className="space-y-1">
               <Label>폰트명</Label>
+              <Select
+                value={detectTemplateFontPreset(editor.fontName)}
+                onValueChange={(value) =>
+                  setEditor((prev) => ({
+                    ...prev,
+                    fontName: value === customTemplateFontOption ? prev.fontName : value
+                  }))
+                }
+              >
+                <SelectTrigger className="bg-card dark:bg-zinc-900">
+                  <SelectValue placeholder="폰트 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  {templateFontOptions.map((name) => (
+                    <SelectItem key={name} value={name}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value={customTemplateFontOption}>직접 입력</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>폰트 스타일</Label>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={editor.fontBold ? "default" : "outline"}
+                  onClick={() => setEditor((prev) => ({ ...prev, fontBold: !prev.fontBold }))}
+                >
+                  Bold
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={editor.fontItalic ? "default" : "outline"}
+                  onClick={() => setEditor((prev) => ({ ...prev, fontItalic: !prev.fontItalic }))}
+                >
+                  Italic
+                </Button>
+              </div>
+            </div>
+          </div>
+          {detectTemplateFontPreset(editor.fontName) === customTemplateFontOption ? (
+            <div className="space-y-1">
+              <Label>사용자 지정 폰트명</Label>
               <Input
                 value={editor.fontName}
                 onChange={(event) => setEditor((prev) => ({ ...prev, fontName: event.target.value }))}
-                placeholder="Noto Sans KR"
+                placeholder="예: Noto Sans KR"
               />
             </div>
-          </div>
+          ) : null}
 
           <div className="grid gap-2 md:grid-cols-2">
             <div className="space-y-1">
@@ -1149,6 +1406,86 @@ export function TemplatesClient(): React.JSX.Element {
                 onChange={(event) => setEditor((prev) => ({ ...prev, sourceTopic: event.target.value }))}
                 placeholder="{{topic}}"
               />
+            </div>
+          </div>
+
+          <div className="rounded-md border p-3">
+            <div className="grid gap-2 md:grid-cols-[1fr,140px,auto]">
+              <div className="space-y-1">
+                <Label>오디오 보이스</Label>
+                <Select
+                  value={editor.voice}
+                  onValueChange={(value) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      voice: value
+                    }))
+                  }
+                >
+                  <SelectTrigger className="bg-card dark:bg-zinc-900">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableVoiceOptions.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>보이스 배속</Label>
+                <Select
+                  value={editor.voiceSpeed}
+                  onValueChange={(value) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      voiceSpeed: value
+                    }))
+                  }
+                >
+                  <SelectTrigger className="bg-card dark:bg-zinc-900">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {voiceSpeedOptions.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}x
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void previewVoice()}
+                  disabled={previewLoading}
+                >
+                  {previewLoading ? "미리듣기 생성 중..." : "보이스 미리 듣기"}
+                </Button>
+              </div>
+            </div>
+            <div className="mt-2 space-y-2">
+              <Label>미리듣기 텍스트</Label>
+              <Textarea
+                rows={2}
+                value={previewText}
+                onChange={(event) => setPreviewText(event.target.value)}
+                placeholder={VOICE_PREVIEW_DEFAULT_TEXT}
+              />
+              {previewAudioUrl ? (
+                <audio ref={previewAudioRef} src={previewAudioUrl} controls className="w-full" />
+              ) : null}
+              {previewError ? (
+                <p className="text-xs text-destructive">{previewError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  템플릿에 저장된 보이스/배속이 자동화 생성 시 그대로 사용됩니다.
+                </p>
+              )}
             </div>
           </div>
 
@@ -1630,7 +1967,7 @@ export function TemplatesClient(): React.JSX.Element {
                 </div>
               ))}
             </div>
-            <div className="grid gap-2 md:grid-cols-[1fr,120px,1fr]">
+            <div className="grid gap-2 md:grid-cols-[1fr,120px,120px,1fr]">
               <div className="space-y-1">
                 <Label>자막 예시 텍스트</Label>
                 <Input
@@ -1661,6 +1998,21 @@ export function TemplatesClient(): React.JSX.Element {
                     <SelectItem value="bottom">하단</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>자막 크기</Label>
+                <Input
+                  type="number"
+                  min={10}
+                  max={120}
+                  value={editor.subtitleFontSize}
+                  onChange={(event) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      subtitleFontSize: event.target.value
+                    }))
+                  }
+                />
               </div>
               <div className="space-y-1">
                 <Label>자막 Y(%)</Label>
@@ -1795,6 +2147,10 @@ export function TemplatesClient(): React.JSX.Element {
                       color: normalizeHex(item.color || "#FFFFFF", "#FFFFFF"),
                       fontSize: `${clampNumber(Number(item.fontSize), 10, 90, 24) * 0.42}px`,
                       fontFamily: item.fontName || editor.fontName || "Noto Sans KR",
+                      fontWeight: item.fontBold ? 700 : 400,
+                      fontStyle: item.fontItalic ? "italic" : "normal",
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-word",
                       textShadow: "0 1px 2px rgba(0,0,0,0.8)",
                       WebkitTextStrokeWidth: `${clampNumber(Number(item.fontThickness), 0, 8, 0) * 0.2}px`,
                       WebkitTextStrokeColor: "rgba(0,0,0,0.85)",
@@ -1836,7 +2192,12 @@ export function TemplatesClient(): React.JSX.Element {
                   )
                 }
               >
-                <p className="whitespace-pre-wrap text-xs">
+                <p
+                  className="whitespace-pre-wrap"
+                  style={{
+                    fontSize: `${clampNumber(Number(editor.subtitleFontSize), 10, 120, 16) * 0.42}px`
+                  }}
+                >
                   {materializePreviewText({
                     text: editor.subtitleSampleText || SAMPLE_NARRATION,
                     sourceTitle: editor.sourceTitle,
