@@ -18,7 +18,9 @@ const DEFAULT_CONFIG: AutomationScheduleConfig = {
   dailyTime: "09:00",
   itemsPerRun: 1,
   uploadMode: "youtube",
-  privacyStatus: "private"
+  privacyStatus: "private",
+  templateMode: "applied_template",
+  templateId: undefined
 };
 
 declare global {
@@ -51,6 +53,10 @@ function normalizeDailyTime(raw: string | undefined): string {
 }
 
 function normalizeConfig(input?: Partial<AutomationScheduleConfig>): AutomationScheduleConfig {
+  const templateMode =
+    input?.templateMode === "none" || input?.templateMode === "latest_workflow"
+      ? input.templateMode
+      : "applied_template";
   return {
     enabled: Boolean(input?.enabled),
     cadence: input?.cadence === "interval_hours" ? "interval_hours" : "daily",
@@ -67,7 +73,9 @@ function normalizeConfig(input?: Partial<AutomationScheduleConfig>): AutomationS
     privacyStatus:
       input?.privacyStatus === "public" || input?.privacyStatus === "unlisted"
         ? input.privacyStatus
-        : "private"
+        : "private",
+    templateMode,
+    templateId: templateMode === "applied_template" ? input?.templateId?.trim() || undefined : undefined
   };
 }
 
@@ -184,6 +192,8 @@ async function runScheduledTick(): Promise<void> {
         sheetName: state.config.sheetName,
         privacyStatus: state.config.privacyStatus,
         uploadMode: state.config.uploadMode,
+        templateMode: state.config.templateMode,
+        templateId: state.config.templateId,
         maxItems: state.config.itemsPerRun
       });
       lastResult = "started";

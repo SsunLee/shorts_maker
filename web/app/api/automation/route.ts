@@ -13,6 +13,8 @@ const startSchema = z.object({
   sheetName: z.string().optional(),
   privacyStatus: z.enum(["private", "public", "unlisted"]).optional(),
   uploadMode: z.enum(["youtube", "pre_upload"]).optional(),
+  templateMode: z.enum(["applied_template", "latest_workflow", "none"]).optional(),
+  templateId: z.string().optional(),
   maxItems: z.number().int().min(1).max(1000).optional()
 });
 

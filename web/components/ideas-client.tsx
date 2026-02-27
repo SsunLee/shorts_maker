@@ -72,9 +72,9 @@ export function IdeasClient(): React.JSX.Element {
   const [sheetRows, setSheetRows] = useState<Record<string, string>[]>([]);
   const [generatedRows, setGeneratedRows] = useState<IdeaDraftRow[]>([]);
   const [spreadsheetId, setSpreadsheetId] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("준비");
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
-  const [wrapSheetCells, setWrapSheetCells] = useState(true);
+  const [wrapSheetCells, setWrapSheetCells] = useState(false);
   const [wrapPreviewCells, setWrapPreviewCells] = useState(true);
   const [selectedPreviewRowKeys, setSelectedPreviewRowKeys] = useState<string[]>([]);
 

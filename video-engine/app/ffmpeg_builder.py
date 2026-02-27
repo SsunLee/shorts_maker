@@ -13,6 +13,12 @@ FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 
 
+def _safe_strip(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def run_cmd(command: list[str]) -> None:
     completed = subprocess.run(
         command,
@@ -23,7 +29,7 @@ def run_cmd(command: list[str]) -> None:
     )
     if completed.returncode != 0:
         raise RuntimeError(
-            f"Command failed: {' '.join(command)}\n{completed.stderr.strip()}"
+            f"Command failed: {' '.join(command)}\n{_safe_strip(completed.stderr)}"
         )
 
 
@@ -86,7 +92,7 @@ def probe_audio_duration(audio_path: Path) -> float:
     if completed.returncode != 0:
         return 30.0
     try:
-        return max(1.0, float(completed.stdout.strip()))
+        return max(1.0, float(_safe_strip(completed.stdout)))
     except ValueError:
         return 30.0
 
@@ -113,7 +119,7 @@ def probe_video_dimensions(video_path: Path) -> tuple[int, int] | None:
     )
     if completed.returncode != 0:
         return None
-    raw = completed.stdout.strip()
+    raw = _safe_strip(completed.stdout)
     if "x" not in raw:
         return None
     try:

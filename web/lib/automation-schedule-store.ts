@@ -2,9 +2,27 @@ import { promises as fs } from "fs";
 import path from "path";
 import { AutomationScheduleState } from "@/lib/types";
 
-const scheduleFile = path.join(process.cwd(), "data", "automation-schedule.json");
+function sanitizeNamespace(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  return normalized.replace(/^-+|-+$/g, "") || "default";
+}
+
+function resolveScheduleFile(): string {
+  const explicit = (process.env.AUTOMATION_SCHEDULE_FILE || "").trim();
+  if (explicit) {
+    return path.isAbsolute(explicit) ? explicit : path.join(process.cwd(), explicit);
+  }
+
+  const namespace = (process.env.AUTOMATION_NAMESPACE || process.env.SETTINGS_NAMESPACE || "").trim();
+  if (namespace) {
+    return path.join(process.cwd(), "data", `automation-schedule.${sanitizeNamespace(namespace)}.json`);
+  }
+
+  return path.join(process.cwd(), "data", "automation-schedule.json");
+}
 
 async function ensureScheduleFile(): Promise<void> {
+  const scheduleFile = resolveScheduleFile();
   await fs.mkdir(path.dirname(scheduleFile), { recursive: true });
   try {
     await fs.access(scheduleFile);
@@ -14,6 +32,7 @@ async function ensureScheduleFile(): Promise<void> {
 }
 
 export async function readAutomationScheduleState(): Promise<Partial<AutomationScheduleState> | undefined> {
+  const scheduleFile = resolveScheduleFile();
   await ensureScheduleFile();
   const raw = await fs.readFile(scheduleFile, "utf8");
   try {
@@ -28,6 +47,7 @@ export async function readAutomationScheduleState(): Promise<Partial<AutomationS
 }
 
 export async function writeAutomationScheduleState(state: AutomationScheduleState): Promise<AutomationScheduleState> {
+  const scheduleFile = resolveScheduleFile();
   await ensureScheduleFile();
   await fs.writeFile(scheduleFile, JSON.stringify(state, null, 2), "utf8");
   return state;

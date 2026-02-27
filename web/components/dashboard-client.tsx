@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -20,6 +21,69 @@ interface AutomationResponse {
 interface AutomationScheduleResponse {
   schedule: AutomationScheduleState;
   error?: string;
+}
+
+interface AutomationTemplateItem {
+  id: string;
+  templateName?: string;
+  sourceTitle?: string;
+  sourceTopic?: string;
+  updatedAt: string;
+  renderOptions?: {
+    overlay?: {
+      videoLayout?: "fill_9_16" | "panel_16_9";
+      panelTopPercent?: number;
+      panelWidthPercent?: number;
+      titleTemplates?: Array<{
+        id: string;
+        text?: string;
+        x?: number;
+        y?: number;
+        width?: number;
+        fontSize?: number;
+        color?: string;
+        fontName?: string;
+        fontThickness?: number;
+      }>;
+    };
+  };
+}
+
+interface AutomationTemplateResponse {
+  snapshot?: AutomationTemplateItem;
+  templates?: AutomationTemplateItem[];
+  activeTemplateId?: string;
+  error?: string;
+}
+
+interface WorkflowListResponse {
+  workflows?: Array<{
+    id: string;
+    updatedAt: string;
+    input?: {
+      title?: string;
+    };
+    renderOptions?: {
+      overlay?: {
+        titleTemplates?: Array<{
+          id?: string;
+          text?: string;
+        }>;
+      };
+    };
+  }>;
+  error?: string;
+}
+
+const ACTIVE_TEMPLATE_VALUE = "__active__";
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const raw = await response.text();
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error(`서버 응답이 JSON 형식이 아닙니다 (HTTP ${response.status}).`);
+  }
 }
 
 function phaseLabel(phase: AutomationRunState["phase"] | undefined): string {
@@ -51,6 +115,36 @@ function scheduleResultLabel(result: AutomationScheduleState["lastResult"] | und
   return "-";
 }
 
+function clampNumber(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeHexColor(value: string | undefined, fallback: string): string {
+  const raw = String(value || "").trim();
+  if (/^#([0-9a-fA-F]{6})$/.test(raw)) {
+    return raw.toUpperCase();
+  }
+  return fallback;
+}
+
+function templateModeLabel(mode: "applied_template" | "latest_workflow" | "none"): string {
+  if (mode === "applied_template") {
+    return "활성 템플릿 사용";
+  }
+  if (mode === "latest_workflow") {
+    return "최신 워크플로우 템플릿 사용";
+  }
+  return "템플릿 미사용";
+}
+
+function formatTemplateDisplayName(item: AutomationTemplateItem): string {
+  const name = item.templateName || "(이름 없음)";
+  return `${name} · ${new Date(item.updatedAt).toLocaleString()}`;
+}
+
 export function DashboardClient(): React.JSX.Element {
   const [rows, setRows] = useState<VideoRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,10 +156,24 @@ export function DashboardClient(): React.JSX.Element {
   const [automationUploadMode, setAutomationUploadMode] = useState<"youtube" | "pre_upload">(
     "youtube"
   );
+  const [automationTemplateMode, setAutomationTemplateMode] = useState<
+    "applied_template" | "latest_workflow" | "none"
+  >("applied_template");
   const [automationPrivacyStatus, setAutomationPrivacyStatus] = useState<
     "private" | "public" | "unlisted"
   >("private");
   const [automationError, setAutomationError] = useState<string>();
+  const [automationTemplateError, setAutomationTemplateError] = useState<string>();
+  const [automationTemplates, setAutomationTemplates] = useState<AutomationTemplateItem[]>([]);
+  const [activeAutomationTemplateId, setActiveAutomationTemplateId] = useState<string>();
+  const [automationTemplateBusy, setAutomationTemplateBusy] = useState(false);
+  const [showAutomationTemplateSnapshot, setShowAutomationTemplateSnapshot] = useState(true);
+  const [latestWorkflowTemplateInfo, setLatestWorkflowTemplateInfo] = useState<{
+    workflowId: string;
+    title: string;
+    updatedAt: string;
+    layerCount: number;
+  }>();
   const [schedule, setSchedule] = useState<AutomationScheduleState>();
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleError, setScheduleError] = useState<string>();
@@ -78,9 +186,24 @@ export function DashboardClient(): React.JSX.Element {
   const [scheduleItemsPerRun, setScheduleItemsPerRun] = useState("1");
   const [scheduleSheetName, setScheduleSheetName] = useState("");
   const [scheduleUploadMode, setScheduleUploadMode] = useState<"youtube" | "pre_upload">("youtube");
+  const [scheduleTemplateMode, setScheduleTemplateMode] = useState<
+    "applied_template" | "latest_workflow" | "none"
+  >("applied_template");
+  const [scheduleTemplateId, setScheduleTemplateId] = useState<string>(ACTIVE_TEMPLATE_VALUE);
   const [schedulePrivacyStatus, setSchedulePrivacyStatus] = useState<
     "private" | "public" | "unlisted"
   >("private");
+
+  const activeTemplate = useMemo(
+    () => automationTemplates.find((item) => item.id === activeAutomationTemplateId),
+    [automationTemplates, activeAutomationTemplateId]
+  );
+  const scheduleSelectedTemplate = useMemo(() => {
+    if (scheduleTemplateId === ACTIVE_TEMPLATE_VALUE) {
+      return activeTemplate;
+    }
+    return automationTemplates.find((item) => item.id === scheduleTemplateId);
+  }, [automationTemplates, scheduleTemplateId, activeTemplate]);
 
   function hydrateScheduleForm(next: AutomationScheduleState): void {
     setScheduleEnabled(next.config.enabled);
@@ -90,6 +213,8 @@ export function DashboardClient(): React.JSX.Element {
     setScheduleItemsPerRun(String(next.config.itemsPerRun));
     setScheduleSheetName(next.config.sheetName || "");
     setScheduleUploadMode(next.config.uploadMode);
+    setScheduleTemplateMode(next.config.templateMode);
+    setScheduleTemplateId(next.config.templateId || ACTIVE_TEMPLATE_VALUE);
     setSchedulePrivacyStatus(next.config.privacyStatus);
     setScheduleDraftDirty(false);
   }
@@ -107,6 +232,26 @@ export function DashboardClient(): React.JSX.Element {
     setAutomation(data.state);
   }
 
+  const refreshAutomationTemplates = useCallback(async (): Promise<void> => {
+    const response = await fetch("/api/automation-template", { cache: "no-store" });
+    const data = await readJsonResponse<AutomationTemplateResponse>(response);
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to load automation templates.");
+    }
+    const list = data.templates || [];
+    setAutomationTemplates(list);
+    setActiveAutomationTemplateId(data.activeTemplateId);
+    setScheduleTemplateId((prev) => {
+      if (prev === ACTIVE_TEMPLATE_VALUE) {
+        return prev;
+      }
+      if (!prev) {
+        return data.activeTemplateId || ACTIVE_TEMPLATE_VALUE;
+      }
+      return list.some((item) => item.id === prev) ? prev : data.activeTemplateId || ACTIVE_TEMPLATE_VALUE;
+    });
+  }, []);
+
   const refreshSchedule = useCallback(async (): Promise<void> => {
     const response = await fetch("/api/automation/schedule", { cache: "no-store" });
     const data = (await response.json()) as AutomationScheduleResponse;
@@ -117,6 +262,28 @@ export function DashboardClient(): React.JSX.Element {
     if (!scheduleDraftDirtyRef.current) {
       hydrateScheduleForm(data.schedule);
     }
+  }, []);
+
+  const refreshLatestWorkflowTemplateInfo = useCallback(async (): Promise<void> => {
+    const response = await fetch("/api/workflows", { cache: "no-store" });
+    const data = (await response.json()) as WorkflowListResponse;
+    if (!response.ok) {
+      throw new Error(data.error || "Failed to load workflows.");
+    }
+    const workflows = data.workflows || [];
+    const latest = workflows.find(
+      (item) => (item.renderOptions?.overlay?.titleTemplates || []).length > 0
+    );
+    if (!latest) {
+      setLatestWorkflowTemplateInfo(undefined);
+      return;
+    }
+    setLatestWorkflowTemplateInfo({
+      workflowId: latest.id,
+      title: latest.input?.title || latest.id,
+      updatedAt: latest.updatedAt,
+      layerCount: latest.renderOptions?.overlay?.titleTemplates?.length || 0
+    });
   }, []);
 
   async function refresh(): Promise<void> {
@@ -132,7 +299,13 @@ export function DashboardClient(): React.JSX.Element {
     let mounted = true;
     const load = async () => {
       try {
-        await Promise.all([refresh(), refreshAutomation(), refreshSchedule()]);
+        await Promise.all([
+          refresh(),
+          refreshAutomation(),
+          refreshSchedule(),
+          refreshAutomationTemplates(),
+          refreshLatestWorkflowTemplateInfo()
+        ]);
       } catch (loadError) {
         if (mounted) {
           setError(loadError instanceof Error ? loadError.message : "Unknown error");
@@ -153,13 +326,68 @@ export function DashboardClient(): React.JSX.Element {
       void refreshSchedule().catch(() => {
         // Keep dashboard polling resilient even if schedule endpoint is temporarily unavailable.
       });
+      void refreshLatestWorkflowTemplateInfo().catch(() => {
+        // Keep dashboard polling resilient even if workflow endpoint is temporarily unavailable.
+      });
     }, 4000);
 
     return () => {
       mounted = false;
       clearInterval(interval);
     };
-  }, [refreshSchedule]);
+  }, [refreshAutomationTemplates, refreshLatestWorkflowTemplateInfo, refreshSchedule]);
+
+  async function setActiveTemplate(templateId: string): Promise<void> {
+    setAutomationTemplateBusy(true);
+    setAutomationTemplateError(undefined);
+    try {
+      const response = await fetch("/api/automation-template", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templateId })
+      });
+      const data = await readJsonResponse<AutomationTemplateResponse>(response);
+      if (!response.ok) {
+        throw new Error(data.error || "템플릿 선택에 실패했습니다.");
+      }
+      setAutomationTemplates(data.templates || []);
+      setActiveAutomationTemplateId(data.activeTemplateId);
+    } catch (templateError) {
+      setAutomationTemplateError(
+        templateError instanceof Error ? templateError.message : "Unknown error"
+      );
+    } finally {
+      setAutomationTemplateBusy(false);
+    }
+  }
+
+  async function deleteTemplate(templateId: string): Promise<void> {
+    const confirmed = window.confirm("선택한 자동화 템플릿을 삭제할까요?");
+    if (!confirmed) {
+      return;
+    }
+    setAutomationTemplateBusy(true);
+    setAutomationTemplateError(undefined);
+    try {
+      const response = await fetch("/api/automation-template", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ templateId })
+      });
+      const data = await readJsonResponse<AutomationTemplateResponse>(response);
+      if (!response.ok) {
+        throw new Error(data.error || "템플릿 삭제에 실패했습니다.");
+      }
+      setAutomationTemplates(data.templates || []);
+      setActiveAutomationTemplateId(data.activeTemplateId);
+    } catch (templateError) {
+      setAutomationTemplateError(
+        templateError instanceof Error ? templateError.message : "Unknown error"
+      );
+    } finally {
+      setAutomationTemplateBusy(false);
+    }
+  }
 
   async function saveSchedule(): Promise<void> {
     setScheduleBusy(true);
@@ -176,6 +404,12 @@ export function DashboardClient(): React.JSX.Element {
           itemsPerRun: Number.parseInt(scheduleItemsPerRun, 10) || 1,
           sheetName: scheduleSheetName.trim() || undefined,
           uploadMode: scheduleUploadMode,
+          templateMode: scheduleTemplateMode,
+          templateId:
+            scheduleTemplateMode === "applied_template" &&
+            scheduleTemplateId !== ACTIVE_TEMPLATE_VALUE
+              ? scheduleTemplateId
+              : undefined,
           privacyStatus: schedulePrivacyStatus
         })
       });
@@ -222,6 +456,7 @@ export function DashboardClient(): React.JSX.Element {
         body: JSON.stringify({
           sheetName: automationSheetName.trim() || undefined,
           privacyStatus: automationPrivacyStatus,
+          templateMode: automationTemplateMode,
           uploadMode: automationUploadMode
         })
       });
@@ -329,6 +564,62 @@ export function DashboardClient(): React.JSX.Element {
     }
   }
 
+  function renderTemplateSnapshot(template: AutomationTemplateItem): React.JSX.Element {
+    const overlay = template.renderOptions?.overlay;
+    const templates = overlay?.titleTemplates || [];
+    const layout = overlay?.videoLayout === "panel_16_9" ? "panel_16_9" : "fill_9_16";
+    const panelTop = clampNumber(Number(overlay?.panelTopPercent), 0, 85, 34);
+    const panelWidth = clampNumber(Number(overlay?.panelWidthPercent), 60, 100, 100);
+
+    return (
+      <div className="rounded-md border bg-muted/30 p-2">
+        <div className="mx-auto aspect-[9/16] w-full max-w-[220px] overflow-hidden rounded-md border bg-black">
+          <div className="relative h-full w-full">
+            {layout === "panel_16_9" ? (
+              <div className="absolute inset-0">
+                <div
+                  className="absolute left-1/2 -translate-x-1/2 overflow-hidden rounded-sm border border-white/30 bg-zinc-900"
+                  style={{
+                    top: `${panelTop}%`,
+                    width: `${panelWidth}%`,
+                    aspectRatio: "16 / 9"
+                  }}
+                >
+                  <div className="absolute inset-0 bg-[linear-gradient(145deg,#2d3e50_0%,#55708b_45%,#c88f5e_100%)]" />
+                  <p className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-amber-200">
+                    16:9
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="absolute inset-0 bg-[linear-gradient(175deg,#253446_0%,#3b5a77_38%,#bd8455_100%)]" />
+            )}
+            {templates.slice(0, 6).map((item) => (
+              <div
+                key={`snapshot-${item.id}`}
+                className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded border border-cyan-400/30 bg-black/20 px-1 py-0.5 text-center leading-tight whitespace-pre-wrap"
+                style={{
+                  left: `${clampNumber(Number(item.x), 0, 100, 50)}%`,
+                  top: `${clampNumber(Number(item.y), 0, 100, 50)}%`,
+                  width: `${clampNumber(Number(item.width), 20, 100, 70)}%`,
+                  color: normalizeHexColor(item.color, "#FFFFFF"),
+                  fontSize: `${Math.max(7, clampNumber(Number(item.fontSize), 10, 120, 28) * 0.2)}px`,
+                  fontFamily: item.fontName || "Noto Sans KR",
+                  textShadow: "0 1px 2px rgba(0,0,0,0.75)",
+                  WebkitTextStrokeWidth: `${clampNumber(Number(item.fontThickness), 0, 8, 0) * 0.16}px`,
+                  WebkitTextStrokeColor: "rgba(0,0,0,0.85)"
+                }}
+                title={item.text || ""}
+              >
+                {String(item.text || "").slice(0, 70)}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between rounded-xl border bg-card p-4">
@@ -345,10 +636,10 @@ export function DashboardClient(): React.JSX.Element {
           </span>
         </div>
         <p className="text-xs text-muted-foreground">
-          준비 상태 row를 순서대로 처리합니다. 마지막으로 사용한 옵션/최근 템플릿(renderOptions)을 기준으로
-          반복하며, 기본 모드는 YouTube 업로드 포함입니다.
+          준비 상태 row를 순서대로 처리합니다. 기본 모드는 YouTube 업로드 포함이며, 아래 선택한 템플릿 모드
+          기준으로 렌더 옵션을 적용합니다.
         </p>
-        <div className="grid gap-2 sm:grid-cols-[1fr,190px,190px,auto,auto]">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
           <Input
             value={automationSheetName}
             onChange={(event) => setAutomationSheetName(event.target.value)}
@@ -366,6 +657,23 @@ export function DashboardClient(): React.JSX.Element {
             <SelectContent>
               <SelectItem value="youtube">유튜브 업로드(기본)</SelectItem>
               <SelectItem value="pre_upload">업로드 전 단계까지</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={automationTemplateMode}
+            onValueChange={(value) =>
+              setAutomationTemplateMode(
+                value === "latest_workflow" || value === "none" ? value : "applied_template"
+              )
+            }
+          >
+            <SelectTrigger className="bg-card dark:bg-zinc-900">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="applied_template">활성 템플릿 사용(권장)</SelectItem>
+              <SelectItem value="latest_workflow">최근 완료 워크플로우 템플릿 사용</SelectItem>
+              <SelectItem value="none">템플릿 미사용</SelectItem>
             </SelectContent>
           </Select>
           <Select
@@ -404,12 +712,43 @@ export function DashboardClient(): React.JSX.Element {
             중지 요청
           </Button>
         </div>
+        <div className="rounded-md border bg-muted/30 p-2 text-xs">
+          <p className="font-medium">현재 템플릿 모드: {templateModeLabel(automationTemplateMode)}</p>
+          {automationTemplateMode === "applied_template" ? (
+            <p className="text-muted-foreground">
+              적용 대상:{" "}
+              {activeTemplate
+                ? formatTemplateDisplayName(activeTemplate)
+                : "활성 템플릿 없음 (템플릿 탭에서 [자동화에 적용] 필요)"}
+            </p>
+          ) : null}
+          {automationTemplateMode === "latest_workflow" ? (
+            <p className="text-muted-foreground">
+              적용 대상:{" "}
+              {latestWorkflowTemplateInfo
+                ? `${latestWorkflowTemplateInfo.title} · ${new Date(latestWorkflowTemplateInfo.updatedAt).toLocaleString()} · 레이어 ${latestWorkflowTemplateInfo.layerCount}개`
+                : "템플릿이 포함된 워크플로우를 찾지 못했습니다."}
+            </p>
+          ) : null}
+          {automationTemplateMode === "none" ? (
+            <p className="text-muted-foreground">템플릿을 적용하지 않고 기본 렌더 옵션으로 실행합니다.</p>
+          ) : null}
+        </div>
         {automation?.defaultsSummary ? (
           <p className="text-xs text-muted-foreground">
             기본값: {automation.defaultsSummary.imageStyle} / {automation.defaultsSummary.imageAspectRatio} /{" "}
             {automation.defaultsSummary.voice} ({automation.defaultsSummary.voiceSpeed}x) /{" "}
             {automation.defaultsSummary.videoLengthSec}s / {automation.defaultsSummary.sceneCount} scenes / 템플릿{" "}
-            {automation.defaultsSummary.hasRecentTemplate ? "적용" : "없음"} / 모드{" "}
+            {automation.defaultsSummary.templateApplied
+              ? `적용 (${automation.defaultsSummary.templateName || "custom"})`
+              : "미적용"}{" "}
+            / 템플릿 모드{" "}
+            {automation.defaultsSummary.templateMode === "applied_template"
+              ? "활성 템플릿"
+              : automation.defaultsSummary.templateMode === "latest_workflow"
+                ? "최근 워크플로우"
+                : "미사용"}{" "}
+            / 모드{" "}
             {automation.uploadMode === "pre_upload" ? "업로드 전 단계" : "유튜브 업로드"}
           </p>
         ) : null}
@@ -425,6 +764,119 @@ export function DashboardClient(): React.JSX.Element {
           </div>
         ) : null}
         {automationError ? <p className="text-sm text-destructive">{automationError}</p> : null}
+        <div className="space-y-2 rounded-md border p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium">자동화 템플릿 선택/미리보기</p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAutomationTemplateSnapshot((prev) => !prev)}
+                disabled={!activeTemplate}
+              >
+                {showAutomationTemplateSnapshot ? (
+                  <ChevronUp className="mr-1 h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="mr-1 h-3.5 w-3.5" />
+                )}
+                스냅샷 {showAutomationTemplateSnapshot ? "접기" : "펼치기"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void refreshAutomationTemplates()}
+                disabled={automationTemplateBusy}
+              >
+                새로고침
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[1fr,auto,auto]">
+            <Select
+              value={activeAutomationTemplateId}
+              onValueChange={(value) => void setActiveTemplate(value)}
+              disabled={automationTemplateBusy || automationTemplates.length === 0}
+            >
+              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectValue placeholder="자동화 템플릿 선택" />
+              </SelectTrigger>
+              <SelectContent>
+                {automationTemplates.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {formatTemplateDisplayName(item)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                activeAutomationTemplateId ? void setActiveTemplate(activeAutomationTemplateId) : undefined
+              }
+              disabled={automationTemplateBusy || !activeAutomationTemplateId}
+            >
+              템플릿 적용
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                activeAutomationTemplateId ? void deleteTemplate(activeAutomationTemplateId) : undefined
+              }
+              disabled={automationTemplateBusy || !activeAutomationTemplateId}
+            >
+              삭제
+            </Button>
+          </div>
+          {(() => {
+            const active = automationTemplates.find((item) => item.id === activeAutomationTemplateId);
+            if (!active) {
+              return (
+                <p className="text-xs text-muted-foreground">
+                  저장된 자동화 템플릿이 없습니다. Create 화면에서 [템플릿 적용]을 실행하면 목록에 추가됩니다.
+                </p>
+              );
+            }
+            const titleTemplates = active.renderOptions?.overlay?.titleTemplates || [];
+            const previewLines = titleTemplates
+              .map((item) => String(item.text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n"))
+              .filter((text) => text.trim().length > 0)
+              .slice(0, 2);
+            return (
+              <div className="space-y-1 rounded-md bg-muted/40 p-2 text-xs">
+                <p>
+                  선택됨: <span className="font-medium">{formatTemplateDisplayName(active)}</span>
+                </p>
+                <p className="text-muted-foreground">템플릿 ID: {active.id}</p>
+                <p className="text-muted-foreground">
+                  기준 제목: {active.sourceTitle || "-"} / 기준 주제: {active.sourceTopic || "-"}
+                </p>
+                <p className="text-muted-foreground">
+                  타이틀 레이어 {titleTemplates.length}개
+                  {previewLines.length > 0 ? " · 아래 텍스트가 생성 주제에 맞게 바뀝니다." : ""}
+                </p>
+                {showAutomationTemplateSnapshot ? (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <Eye className="h-3.5 w-3.5" />
+                      <span>스크린샷형 레이아웃 스냅샷</span>
+                    </div>
+                    {renderTemplateSnapshot(active)}
+                  </div>
+                ) : null}
+                {previewLines.length > 0 ? (
+                  <div className="rounded border bg-background/60 p-2 whitespace-pre-wrap">
+                    {previewLines.join("\n---\n")}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()}
+          {automationTemplateError ? (
+            <p className="text-xs text-destructive">{automationTemplateError}</p>
+          ) : null}
+        </div>
         {automation?.lastError ? (
           <p className="text-xs text-destructive">최근 오류: {automation.lastError}</p>
         ) : null}
@@ -539,7 +991,7 @@ export function DashboardClient(): React.JSX.Element {
             </Select>
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">스케줄 업로드 모드</p>
             <Select
@@ -555,6 +1007,52 @@ export function DashboardClient(): React.JSX.Element {
               <SelectContent>
                 <SelectItem value="youtube">유튜브 업로드</SelectItem>
                 <SelectItem value="pre_upload">업로드 전 단계</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">템플릿 선택 모드</p>
+            <Select
+              value={scheduleTemplateMode}
+              onValueChange={(value) => {
+                setScheduleTemplateMode(
+                  value === "latest_workflow" || value === "none" ? value : "applied_template"
+                );
+                setScheduleDraftDirty(true);
+              }}
+            >
+              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="applied_template">활성/선택 템플릿 사용(권장)</SelectItem>
+                <SelectItem value="latest_workflow">최근 완료 워크플로우 템플릿 사용</SelectItem>
+                <SelectItem value="none">템플릿 미사용</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">스케줄 템플릿(명시 선택)</p>
+            <Select
+              value={scheduleTemplateId}
+              onValueChange={(value) => {
+                setScheduleTemplateId(value);
+                setScheduleDraftDirty(true);
+              }}
+              disabled={scheduleTemplateMode !== "applied_template"}
+            >
+              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ACTIVE_TEMPLATE_VALUE}>
+                  활성 템플릿 자동 사용 ({activeTemplate ? activeTemplate.templateName || "(이름 없음)" : "없음"})
+                </SelectItem>
+                {automationTemplates.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {formatTemplateDisplayName(item)}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -591,6 +1089,28 @@ export function DashboardClient(): React.JSX.Element {
               placeholder="비우면 Settings 기본 탭 사용"
             />
           </div>
+        </div>
+        <div className="rounded-md border bg-muted/30 p-2 text-xs">
+          <p className="font-medium">스케줄 템플릿 적용 기준: {templateModeLabel(scheduleTemplateMode)}</p>
+          {scheduleTemplateMode === "applied_template" ? (
+            <p className="text-muted-foreground">
+              적용 대상:{" "}
+              {scheduleSelectedTemplate
+                ? `${formatTemplateDisplayName(scheduleSelectedTemplate)} (ID: ${scheduleSelectedTemplate.id})`
+                : "선택 가능한 템플릿이 없습니다."}
+            </p>
+          ) : null}
+          {scheduleTemplateMode === "latest_workflow" ? (
+            <p className="text-muted-foreground">
+              적용 대상:{" "}
+              {latestWorkflowTemplateInfo
+                ? `${latestWorkflowTemplateInfo.title} · ${new Date(latestWorkflowTemplateInfo.updatedAt).toLocaleString()} · 레이어 ${latestWorkflowTemplateInfo.layerCount}개`
+                : "템플릿이 포함된 워크플로우를 찾지 못했습니다."}
+            </p>
+          ) : null}
+          {scheduleTemplateMode === "none" ? (
+            <p className="text-muted-foreground">스케줄 실행 시 템플릿을 적용하지 않습니다.</p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="button" onClick={() => void saveSchedule()} disabled={scheduleBusy}>

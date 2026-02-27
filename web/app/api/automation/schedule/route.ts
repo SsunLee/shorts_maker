@@ -17,7 +17,9 @@ const schema = z.object({
   itemsPerRun: z.number().int().min(1).max(20).optional(),
   sheetName: z.string().optional(),
   uploadMode: z.enum(["youtube", "pre_upload"]).optional(),
-  privacyStatus: z.enum(["private", "public", "unlisted"]).optional()
+  privacyStatus: z.enum(["private", "public", "unlisted"]).optional(),
+  templateMode: z.enum(["applied_template", "latest_workflow", "none"]).optional(),
+  templateId: z.string().optional()
 });
 
 /** Get automation schedule config/state. */

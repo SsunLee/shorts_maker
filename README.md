@@ -112,6 +112,10 @@ If you run two windows at the same time, each instance can use its own settings 
 - `SETTINGS_NAMESPACE` -> `web/data/settings.{namespace}.json`
 - `SETTINGS_FILE` -> exact custom file path (higher priority than namespace)
 
+Automation files can also be isolated per instance:
+- `AUTOMATION_NAMESPACE` -> `web/data/automation-template.{namespace}.json`, `web/data/automation-schedule.{namespace}.json`
+- `AUTOMATION_TEMPLATE_FILE`, `AUTOMATION_SCHEDULE_FILE` -> exact custom paths
+
 PowerShell example:
 
 ```powershell
@@ -119,6 +123,7 @@ PowerShell example:
 cd web
 $env:PORT="3000"
 $env:SETTINGS_NAMESPACE="dev-3000"
+$env:AUTOMATION_NAMESPACE="dev-3000"
 npm run dev
 ```
 
@@ -127,16 +132,30 @@ npm run dev
 cd web
 $env:PORT="3001"
 $env:SETTINGS_NAMESPACE="dev-3001"
+$env:AUTOMATION_NAMESPACE="dev-3001"
 npm run dev -- -p 3001
 ```
 
 Result:
 - 3000 -> `web/data/settings.dev-3000.json`
 - 3001 -> `web/data/settings.dev-3001.json`
+- 3000 -> `web/data/automation-template.dev-3000.json`, `web/data/automation-schedule.dev-3000.json`
+- 3001 -> `web/data/automation-template.dev-3001.json`, `web/data/automation-schedule.dev-3001.json`
 
 Note:
 - Changing `SETTINGS_NAMESPACE` / `SETTINGS_FILE` requires process restart.
 - Editing the target settings JSON file itself is reflected on next API request.
+- Next dev build cache (`.next-*`) is now isolated per namespace/port to avoid chunk collision when running multiple windows.
+
+If you already see widespread `404/500` (for example `Cannot find module './xxx.js'` in `.next/server`), reset caches once:
+
+```powershell
+cd web
+Get-Process node | Stop-Process -Force
+Remove-Item -Recurse -Force .next*
+```
+
+Then start each window again with different `PORT` and namespace values.
 
 ## 3) Video Engine Setup (FastAPI + FFmpeg)
 
@@ -237,6 +256,7 @@ Content-row fetch (`/api/sheet-rows`) required columns:
 - `GET/POST/DELETE /api/automation`
   - `POST`: 준비 row 자동 배치 시작 (최근 워크플로우 옵션/템플릿 기준 렌더 + 기본 YouTube 업로드 반복)
     - `uploadMode`: `youtube`(기본) | `pre_upload`(업로드 전 단계까지)
+    - `templateMode`: `applied_template`(기본, [템플릿 적용] 저장본) | `latest_workflow` | `none`
   - `GET`: 자동화 실행 상태/로그 조회
   - `DELETE`: 실행 중 자동화 중지 요청
 - `GET/POST/DELETE /api/automation/schedule`
@@ -244,9 +264,13 @@ Content-row fetch (`/api/sheet-rows`) required columns:
   - `cadence`: `interval_hours` | `daily`
   - `itemsPerRun`: 회차당 직렬 처리 개수 (예: 하루 2개)
   - `uploadMode`: `youtube` | `pre_upload`
+  - `templateMode`: `applied_template` | `latest_workflow` | `none`
+  - `templateId`: `templateMode=applied_template`일 때 특정 템플릿 직접 지정(없으면 활성 템플릿 사용)
 - `GET/POST /api/automation-template`
-  - `POST`: Create 화면 `[템플릿 적용]` 시 자동화 기본 템플릿 스냅샷 저장
-  - `GET`: 현재 자동화 기본 템플릿 스냅샷 조회
+  - `POST`: Create 화면 `[템플릿 적용]` 시 자동화 템플릿 저장 + 활성화
+  - `GET`: 현재 활성 템플릿 + 템플릿 목록 조회
+  - `PATCH`: 템플릿 ID 기준 활성 템플릿 변경
+  - `DELETE`: 템플릿 ID 기준 삭제
 - `GET /api/ideas/sheet`
   - 시트 헤더/행 구조를 그대로 반환(아이디어 테이블 뷰)
 - `POST /api/ideas/generate`

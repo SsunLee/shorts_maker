@@ -7,10 +7,14 @@ import {
 } from "@/lib/staged-workflow";
 import { listWorkflows } from "@/lib/workflow-store";
 import { uploadVideoToYoutube } from "@/lib/youtube-service";
-import { getAutomationTemplateSnapshot } from "@/lib/automation-template-store";
+import {
+  getAutomationTemplateEntryById,
+  getAutomationTemplateSnapshot
+} from "@/lib/automation-template-store";
 import {
   AutomationLogEntry,
   AutomationRunState,
+  AutomationTemplateMode,
   CreateVideoRequest,
   ImageAspectRatio,
   RenderOptions
@@ -25,6 +29,9 @@ interface AutomationDefaults {
   videoLengthSec: number;
   sceneCount: number;
   tags: string[];
+  templateMode: AutomationTemplateMode;
+  templateApplied: boolean;
+  templateName?: string;
   renderOptions?: RenderOptions;
   templateSourceTitle?: string;
   templateSourceTopic?: string;
@@ -34,6 +41,8 @@ export interface StartAutomationArgs {
   sheetName?: string;
   privacyStatus?: "private" | "public" | "unlisted";
   uploadMode?: "youtube" | "pre_upload";
+  templateMode?: AutomationTemplateMode;
+  templateId?: string;
   maxItems?: number;
 }
 
@@ -48,7 +57,9 @@ const DEFAULTS: AutomationDefaults = {
   useSfx: true,
   videoLengthSec: 30,
   sceneCount: 5,
-  tags: []
+  tags: [],
+  templateMode: "applied_template",
+  templateApplied: false
 };
 
 declare global {
@@ -239,33 +250,79 @@ function buildUploadDescription(topic: string | undefined, narration: string | u
   return body || hashTags;
 }
 
-async function resolveDefaultsFromLatestWorkflow(): Promise<AutomationDefaults> {
-  const persistedTemplate = await getAutomationTemplateSnapshot();
+async function resolveDefaultsFromLatestWorkflow(
+  templateMode: AutomationTemplateMode,
+  templateId?: string
+): Promise<AutomationDefaults> {
+  const selectedTemplate =
+    templateMode === "applied_template" && templateId
+      ? await getAutomationTemplateEntryById(templateId)
+      : undefined;
+  if (templateMode === "applied_template" && templateId && !selectedTemplate) {
+    throw new Error("선택한 자동화 템플릿을 찾지 못했습니다. 템플릿을 다시 선택해 주세요.");
+  }
+
+  const persistedTemplate = selectedTemplate
+    ? {
+        renderOptions: selectedTemplate.renderOptions,
+        sourceTitle: selectedTemplate.sourceTitle,
+        sourceTopic: selectedTemplate.sourceTopic,
+        templateName: selectedTemplate.templateName,
+        updatedAt: selectedTemplate.updatedAt
+      }
+    : await getAutomationTemplateSnapshot();
   const workflows = await listWorkflows();
   const latestAny = workflows[0];
+
+  if (templateMode === "applied_template" && !persistedTemplate) {
+    throw new Error(
+      "자동화 템플릿이 없습니다. Create 화면에서 [템플릿 적용]을 먼저 실행해 주세요."
+    );
+  }
+
   if (!latestAny) {
-    if (persistedTemplate) {
+    if (templateMode === "applied_template" && persistedTemplate) {
       return {
         ...DEFAULTS,
+        templateMode,
+        templateApplied: true,
+        templateName: persistedTemplate.templateName,
         renderOptions: persistedTemplate.renderOptions,
         templateSourceTitle: persistedTemplate.sourceTitle,
         templateSourceTopic: persistedTemplate.sourceTopic
       };
     }
-    return { ...DEFAULTS };
+    return {
+      ...DEFAULTS,
+      templateMode,
+      templateApplied: false
+    };
   }
+
   const latestWithTemplate =
     workflows.find(
       (item) => (item.renderOptions?.overlay?.titleTemplates || []).length > 0
     ) || latestAny;
-  const renderOptions =
-    persistedTemplate?.renderOptions ||
-    latestWithTemplate.renderOptions ||
-    latestAny.renderOptions;
-  const templateSourceTitle =
-    persistedTemplate?.sourceTitle || latestWithTemplate.input.title;
-  const templateSourceTopic =
-    persistedTemplate?.sourceTopic || latestWithTemplate.input.topic;
+
+  let renderOptions: RenderOptions | undefined;
+  let templateSourceTitle: string | undefined;
+  let templateSourceTopic: string | undefined;
+  let templateApplied = false;
+  let templateName: string | undefined;
+
+  if (templateMode === "applied_template") {
+    renderOptions = persistedTemplate?.renderOptions;
+    templateSourceTitle = persistedTemplate?.sourceTitle;
+    templateSourceTopic = persistedTemplate?.sourceTopic;
+    templateApplied = Boolean(renderOptions);
+    templateName = persistedTemplate?.templateName;
+  } else if (templateMode === "latest_workflow") {
+    renderOptions = latestWithTemplate.renderOptions || latestAny.renderOptions;
+    templateSourceTitle = latestWithTemplate.input.title;
+    templateSourceTopic = latestWithTemplate.input.topic;
+    templateApplied = Boolean(renderOptions);
+    templateName = templateApplied ? "latest_workflow" : undefined;
+  }
 
   return {
     imageStyle: latestAny.input.imageStyle || DEFAULTS.imageStyle,
@@ -281,6 +338,9 @@ async function resolveDefaultsFromLatestWorkflow(): Promise<AutomationDefaults> 
     sceneCount:
       typeof latestAny.input.sceneCount === "number" ? latestAny.input.sceneCount : DEFAULTS.sceneCount,
     tags: latestAny.input.tags || [],
+    templateMode,
+    templateApplied,
+    templateName,
     renderOptions,
     templateSourceTitle,
     templateSourceTopic
@@ -433,11 +493,16 @@ async function runAutomationLoop(args: {
   sheetName?: string;
   privacyStatus: "private" | "public" | "unlisted";
   uploadMode: "youtube" | "pre_upload";
+  templateMode: AutomationTemplateMode;
+  templateId?: string;
   maxItems?: number;
 }): Promise<void> {
   const state = getStateRef();
   try {
-    const defaults = await resolveDefaultsFromLatestWorkflow();
+    const defaults = await resolveDefaultsFromLatestWorkflow(
+      args.templateMode,
+      args.templateId
+    );
     state.defaultsSummary = {
       imageStyle: defaults.imageStyle,
       imageAspectRatio: defaults.imageAspectRatio,
@@ -446,12 +511,20 @@ async function runAutomationLoop(args: {
       useSfx: defaults.useSfx,
       videoLengthSec: defaults.videoLengthSec,
       sceneCount: defaults.sceneCount,
-      hasRecentTemplate: Boolean(defaults.renderOptions)
+      templateMode: defaults.templateMode,
+      templateApplied: defaults.templateApplied,
+      templateName: defaults.templateName
     };
 
+    const templateModeLabel =
+      args.templateMode === "applied_template"
+        ? "적용된 템플릿"
+        : args.templateMode === "latest_workflow"
+          ? "최신 워크플로우 템플릿"
+          : "템플릿 미사용";
     pushLog(
       "info",
-      `자동화 시작 (모드: ${args.uploadMode === "youtube" ? "유튜브 업로드" : "업로드 전 단계"}, 최근 옵션: ${defaults.imageStyle}, ${defaults.voice}, ${defaults.imageAspectRatio}, 템플릿 ${state.defaultsSummary.hasRecentTemplate ? "있음" : "없음"})`
+      `자동화 시작 (모드: ${args.uploadMode === "youtube" ? "유튜브 업로드" : "업로드 전 단계"}, 템플릿 모드: ${templateModeLabel}, 옵션: ${defaults.imageStyle}, ${defaults.voice}, ${defaults.imageAspectRatio}, 템플릿 ${defaults.templateApplied ? "적용" : "미적용"})`
     );
     if (defaults.templateSourceTitle) {
       pushLog("info", `템플릿 기준 워크플로우 제목: ${defaults.templateSourceTitle}`);
@@ -527,6 +600,10 @@ export function startAutomationRun(args: StartAutomationArgs): AutomationRunStat
     phase: "running",
     runId: new Date().toISOString(),
     uploadMode: args.uploadMode === "pre_upload" ? "pre_upload" : "youtube",
+    templateMode:
+      args.templateMode === "none" || args.templateMode === "latest_workflow"
+        ? args.templateMode
+        : "applied_template",
     startedAt: new Date().toISOString(),
     finishedAt: undefined,
     stopRequested: false,
@@ -548,6 +625,11 @@ export function startAutomationRun(args: StartAutomationArgs): AutomationRunStat
     sheetName: args.sheetName?.trim() || undefined,
     privacyStatus: args.privacyStatus || "private",
     uploadMode: args.uploadMode === "pre_upload" ? "pre_upload" : "youtube",
+    templateMode:
+      args.templateMode === "none" || args.templateMode === "latest_workflow"
+        ? args.templateMode
+        : "applied_template",
+    templateId: args.templateId?.trim() || undefined,
     maxItems: args.maxItems
   }).finally(() => {
     globalThis.__shortsAutomationPromise__ = undefined;

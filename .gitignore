@@ -1,6 +1,7 @@
 # Node / Next.js
 node_modules/
 .next/
+web/.next-dev-*/
 out/
 *.log
 *.tsbuildinfo
@@ -16,6 +17,8 @@ web/data/rows.json
 web/data/settings.json
 web/data/settings.*.json
 web/data/workflows.json
+web/data/automation-template.*.json
+web/data/automation-schedule.*.json
 web/public/generated/*
 !web/public/generated/.gitkeep
 video-engine/outputs/*

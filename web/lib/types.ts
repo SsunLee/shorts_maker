@@ -199,6 +199,7 @@ export interface AutomationRunState {
   phase: AutomationPhase;
   runId?: string;
   uploadMode?: "youtube" | "pre_upload";
+  templateMode?: AutomationTemplateMode;
   startedAt?: string;
   finishedAt?: string;
   stopRequested: boolean;
@@ -219,7 +220,9 @@ export interface AutomationRunState {
     useSfx: boolean;
     videoLengthSec: number;
     sceneCount: number;
-    hasRecentTemplate: boolean;
+    templateMode: AutomationTemplateMode;
+    templateApplied: boolean;
+    templateName?: string;
   };
 }
 
@@ -236,6 +239,7 @@ export interface IdeaDraftRow {
 export type IdeaLanguage = "ko" | "en" | "ja" | "es";
 
 export type AutomationScheduleCadence = "interval_hours" | "daily";
+export type AutomationTemplateMode = "applied_template" | "latest_workflow" | "none";
 
 export interface AutomationScheduleConfig {
   enabled: boolean;
@@ -246,6 +250,8 @@ export interface AutomationScheduleConfig {
   sheetName?: string;
   uploadMode: "youtube" | "pre_upload";
   privacyStatus: "private" | "public" | "unlisted";
+  templateMode: AutomationTemplateMode;
+  templateId?: string;
 }
 
 export interface AutomationScheduleState {
