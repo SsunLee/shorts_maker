@@ -28,6 +28,7 @@ function resolveAutomationTemplateFile(): string {
 
 export interface AutomationTemplateSnapshot {
   renderOptions: RenderOptions;
+  imageStyle?: string;
   sourceTitle?: string;
   sourceTopic?: string;
   templateName?: string;
@@ -70,6 +71,7 @@ function normalizeSnapshot(parsed: Partial<AutomationTemplateSnapshot>): Automat
   const rawVoiceSpeed = Number(parsed.voiceSpeed);
   return {
     renderOptions: parsed.renderOptions as RenderOptions,
+    imageStyle: typeof parsed.imageStyle === "string" ? parsed.imageStyle : undefined,
     sourceTitle: typeof parsed.sourceTitle === "string" ? parsed.sourceTitle : undefined,
     sourceTopic: typeof parsed.sourceTopic === "string" ? parsed.sourceTopic : undefined,
     templateName: typeof parsed.templateName === "string" ? parsed.templateName : undefined,
@@ -210,6 +212,7 @@ export async function setActiveAutomationTemplate(
   }
   return {
     renderOptions: selected.renderOptions,
+    imageStyle: selected.imageStyle,
     sourceTitle: selected.sourceTitle,
     sourceTopic: selected.sourceTopic,
     templateName: selected.templateName,
@@ -235,6 +238,7 @@ export async function deleteAutomationTemplate(templateId: string): Promise<{
 export async function updateAutomationTemplate(args: {
   templateId: string;
   renderOptions: RenderOptions;
+  imageStyle?: string;
   sourceTitle?: string;
   sourceTopic?: string;
   templateName?: string;
@@ -251,6 +255,7 @@ export async function updateAutomationTemplate(args: {
   const updated: AutomationTemplateEntry = {
     id: prev.id,
     renderOptions: args.renderOptions,
+    imageStyle: args.imageStyle?.trim() || prev.imageStyle,
     sourceTitle: args.sourceTitle,
     sourceTopic: args.sourceTopic,
     templateName: args.templateName || prev.templateName,
@@ -271,6 +276,7 @@ export async function updateAutomationTemplate(args: {
 
   return {
     renderOptions: updated.renderOptions,
+    imageStyle: updated.imageStyle,
     sourceTitle: updated.sourceTitle,
     sourceTopic: updated.sourceTopic,
     templateName: updated.templateName,
@@ -293,6 +299,7 @@ export async function getAutomationTemplateSnapshot(): Promise<AutomationTemplat
   }
   return {
     renderOptions: active.renderOptions,
+    imageStyle: active.imageStyle,
     sourceTitle: active.sourceTitle,
     sourceTopic: active.sourceTopic,
     templateName: active.templateName,
@@ -309,6 +316,7 @@ export async function saveAutomationTemplateSnapshot(
   const entry: AutomationTemplateEntry = {
     id: randomUUID(),
     renderOptions: value.renderOptions,
+    imageStyle: value.imageStyle?.trim() || undefined,
     sourceTitle: value.sourceTitle,
     sourceTopic: value.sourceTopic,
     templateName: value.templateName,
@@ -327,6 +335,7 @@ export async function saveAutomationTemplateSnapshot(
 
   const snapshot: AutomationTemplateSnapshot = {
     renderOptions: entry.renderOptions,
+    imageStyle: entry.imageStyle,
     sourceTitle: entry.sourceTitle,
     sourceTopic: entry.sourceTopic,
     templateName: entry.templateName,

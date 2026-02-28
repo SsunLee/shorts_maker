@@ -14,6 +14,7 @@ export const runtime = "nodejs";
 
 const schema = z.object({
   renderOptions: z.record(z.any()),
+  imageStyle: z.string().optional(),
   sourceTitle: z.string().optional(),
   sourceTopic: z.string().optional(),
   templateName: z.string().optional(),
@@ -26,6 +27,7 @@ const selectSchema = z.object({
 const updateSchema = z.object({
   templateId: z.string().min(1),
   renderOptions: z.record(z.any()),
+  imageStyle: z.string().optional(),
   sourceTitle: z.string().optional(),
   sourceTopic: z.string().optional(),
   templateName: z.string().optional(),
@@ -51,6 +53,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const payload = schema.parse(body);
     const saved = await saveAutomationTemplateSnapshot({
       renderOptions: payload.renderOptions as RenderOptions,
+      imageStyle: payload.imageStyle,
       sourceTitle: payload.sourceTitle,
       sourceTopic: payload.sourceTopic,
       templateName: payload.templateName,
@@ -95,6 +98,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     const snapshot = await updateAutomationTemplate({
       templateId: payload.templateId,
       renderOptions: payload.renderOptions as RenderOptions,
+      imageStyle: payload.imageStyle,
       sourceTitle: payload.sourceTitle,
       sourceTopic: payload.sourceTopic,
       templateName: payload.templateName,

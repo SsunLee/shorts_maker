@@ -30,6 +30,18 @@ interface AutomationTemplateItem {
   sourceTopic?: string;
   updatedAt: string;
   renderOptions?: {
+    subtitle?: {
+      fontName?: string;
+      fontSize?: number;
+      primaryColor?: string;
+      outlineColor?: string;
+      outline?: number;
+      shadow?: number;
+      shadowOpacity?: number;
+      fontThickness?: number;
+      position?: "top" | "middle" | "bottom";
+      subtitleYPercent?: number;
+    };
     overlay?: {
       videoLayout?: "fill_9_16" | "panel_16_9";
       panelTopPercent?: number;
@@ -130,6 +142,25 @@ function normalizeHexColor(value: string | undefined, fallback: string): string 
     return raw.toUpperCase();
   }
   return fallback;
+}
+
+function subtitleAssScaleForCanvas(canvasScale: number): number {
+  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.2);
+  const assToOutputScale = 1920 / 288;
+  return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
+}
+
+function materializeSnapshotText(args: {
+  text: string;
+  sourceTitle?: string;
+  sourceTopic?: string;
+}): string {
+  const sourceTitle = String(args.sourceTitle || "").trim() || "제목 샘플";
+  const sourceTopic = String(args.sourceTopic || "").trim() || "주제 샘플";
+  return String(args.text || "")
+    .replace(/\{\{\s*title\s*\}\}/gi, sourceTitle)
+    .replace(/\{\{\s*topic\s*\}\}/gi, sourceTopic)
+    .trim();
 }
 
 function templateModeLabel(mode: "applied_template" | "latest_workflow" | "none"): string {
@@ -573,10 +604,26 @@ export function DashboardClient(): React.JSX.Element {
 
   function renderTemplateSnapshot(template: AutomationTemplateItem): React.JSX.Element {
     const overlay = template.renderOptions?.overlay;
+    const subtitle = template.renderOptions?.subtitle;
     const templates = overlay?.titleTemplates || [];
     const layout = overlay?.videoLayout === "panel_16_9" ? "panel_16_9" : "fill_9_16";
     const panelTop = clampNumber(Number(overlay?.panelTopPercent), 0, 85, 34);
     const panelWidth = clampNumber(Number(overlay?.panelWidthPercent), 60, 100, 100);
+    const previewWidth = 220;
+    const previewScale = clampNumber(previewWidth / 1080, 0.12, 1, 0.2);
+    const subtitleScale = subtitleAssScaleForCanvas(previewScale);
+    const subtitleY = clampNumber(Number(subtitle?.subtitleYPercent), 0, 100, 86);
+    const subtitleFontSize = clampNumber(
+      Number(subtitle?.fontSize) * subtitleScale,
+      10,
+      120,
+      20
+    );
+    const subtitleText = "자막 샘플 텍스트";
+    const subtitleOutline = clampNumber(Number(subtitle?.outline), 0, 8, 2);
+    const subtitleShadow = clampNumber(Number(subtitle?.shadow), 0, 8, 1);
+    const subtitleShadowOpacity = clampNumber(Number(subtitle?.shadowOpacity), 0, 1, 1);
+    const subtitleThickness = clampNumber(Number(subtitle?.fontThickness), 0, 8, 0);
 
     return (
       <div className="rounded-md border bg-muted/30 p-2">
@@ -601,7 +648,13 @@ export function DashboardClient(): React.JSX.Element {
             ) : (
               <div className="absolute inset-0 bg-[linear-gradient(175deg,#253446_0%,#3b5a77_38%,#bd8455_100%)]" />
             )}
-            {templates.slice(0, 6).map((item) => (
+            {templates.slice(0, 6).map((item) => {
+              const text = materializeSnapshotText({
+                text: item.text || "",
+                sourceTitle: template.sourceTitle,
+                sourceTopic: template.sourceTopic
+              });
+              return (
               <div
                 key={`snapshot-${item.id}`}
                 className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded border border-cyan-400/30 bg-black/20 px-1 py-0.5 text-center leading-tight whitespace-pre-wrap"
@@ -620,11 +673,44 @@ export function DashboardClient(): React.JSX.Element {
                   WebkitTextStrokeWidth: `${clampNumber(Number(item.fontThickness), 0, 8, 0) * 0.16}px`,
                   WebkitTextStrokeColor: "rgba(0,0,0,0.85)"
                 }}
-                title={item.text || ""}
+                title={text}
               >
-                {String(item.text || "").slice(0, 70)}
+                {text.slice(0, 70)}
               </div>
-            ))}
+            )})}
+            <div
+              className="pointer-events-none absolute left-1/2 z-10 w-[86%] -translate-x-1/2 -translate-y-1/2 rounded border border-emerald-400/70 bg-black/35 px-1 py-0.5 text-center leading-tight whitespace-pre-wrap"
+              style={{
+                top: `${subtitleY}%`,
+                color: normalizeHexColor(subtitle?.primaryColor, "#FFFFFF"),
+                fontFamily: subtitle?.fontName || "Arial",
+                fontSize: `${subtitleFontSize}px`,
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+                textShadow: [
+                  ...(
+                    subtitleThickness > 0
+                      ? [
+                          `${subtitleThickness * 0.24}px 0 rgba(0,0,0,0.9)`,
+                          `${-subtitleThickness * 0.24}px 0 rgba(0,0,0,0.9)`,
+                          `0 ${subtitleThickness * 0.24}px rgba(0,0,0,0.9)`,
+                          `0 ${-subtitleThickness * 0.24}px rgba(0,0,0,0.9)`
+                        ]
+                      : []
+                  ),
+                  `${subtitleOutline * 0.24}px 0 ${normalizeHexColor(subtitle?.outlineColor, "#000000")}`,
+                  `${-subtitleOutline * 0.24}px 0 ${normalizeHexColor(subtitle?.outlineColor, "#000000")}`,
+                  `0 ${subtitleOutline * 0.24}px ${normalizeHexColor(subtitle?.outlineColor, "#000000")}`,
+                  `0 ${-subtitleOutline * 0.24}px ${normalizeHexColor(subtitle?.outlineColor, "#000000")}`,
+                  `${subtitleShadow * 0.4}px ${subtitleShadow * 0.4}px rgba(0,0,0,${subtitleShadowOpacity})`
+                ].join(", ")
+              }}
+            >
+              {subtitleText}
+            </div>
+            <p className="pointer-events-none absolute left-1 bottom-1 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-emerald-200">
+              자막 Y {Math.round(subtitleY)}% / {Math.round(Number(subtitle?.fontSize) || 16)}pt
+            </p>
           </div>
         </div>
       </div>

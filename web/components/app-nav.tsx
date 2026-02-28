@@ -2,17 +2,30 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Film, Home, LayoutTemplate, Lightbulb, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun } from "lucide-react";
+import {
+  Clapperboard,
+  Home,
+  LayoutTemplate,
+  Lightbulb,
+  Menu,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Scissors,
+  Settings,
+  Sun
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AppTheme, applyTheme, getStoredTheme, normalizeTheme, setStoredTheme, THEME_CHANGED_EVENT } from "@/lib/theme";
 
 const links = [
-  { href: "/create", label: "Create", icon: Film },
   { href: "/templates", label: "템플릿", icon: LayoutTemplate },
   { href: "/ideas", label: "아이디어", icon: Lightbulb },
   { href: "/dashboard", label: "Dashboard", icon: Home },
+  { href: "/longform-to-shorts", label: "롱폼 → 숏폼 변환", icon: Scissors },
+  { href: "/create", label: "영상 생성", icon: Clapperboard },
   { href: "/settings", label: "Settings", icon: Settings }
 ];
 

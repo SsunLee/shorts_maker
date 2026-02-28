@@ -11,6 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageStyleSnapshot } from "@/components/image-style-snapshot";
 import { ALL_VOICE_OPTIONS, filterVoiceOptions, resolveTtsVoiceProvider } from "@/lib/voice-options";
 import {
   AppSettings,
@@ -3326,6 +3327,7 @@ export function CreateVideoForm(): React.JSX.Element {
                 </p>
               </div>
             </div>
+            <ImageStyleSnapshot styleText={imageStyle} />
             <div className="space-y-2">
               <Label>Voice</Label>
               <div className="grid gap-2 sm:grid-cols-[1fr,auto]">

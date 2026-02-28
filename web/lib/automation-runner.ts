@@ -276,6 +276,7 @@ async function resolveDefaultsFromLatestWorkflow(
   const persistedTemplate = selectedTemplate
     ? {
         renderOptions: selectedTemplate.renderOptions,
+        imageStyle: selectedTemplate.imageStyle,
         sourceTitle: selectedTemplate.sourceTitle,
         sourceTopic: selectedTemplate.sourceTopic,
         templateName: selectedTemplate.templateName,
@@ -300,6 +301,7 @@ async function resolveDefaultsFromLatestWorkflow(
         templateMode,
         templateApplied: true,
         templateName: persistedTemplate.templateName,
+        imageStyle: persistedTemplate.imageStyle || DEFAULTS.imageStyle,
         voice: persistedTemplate.voice || DEFAULTS.voice,
         voiceSpeed:
           typeof persistedTemplate.voiceSpeed === "number"
@@ -343,7 +345,10 @@ async function resolveDefaultsFromLatestWorkflow(
   }
 
   return {
-    imageStyle: latestAny.input.imageStyle || DEFAULTS.imageStyle,
+    imageStyle:
+      templateMode === "applied_template" && persistedTemplate?.imageStyle
+        ? persistedTemplate.imageStyle
+        : latestAny.input.imageStyle || DEFAULTS.imageStyle,
     imageAspectRatio: latestAny.input.imageAspectRatio === "16:9" ? "16:9" : "9:16",
     voice:
       templateMode === "applied_template" && persistedTemplate?.voice

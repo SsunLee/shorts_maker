@@ -8,12 +8,19 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageStyleSnapshot } from "@/components/image-style-snapshot";
 import { AppSettings, RenderOptions } from "@/lib/types";
-import { ALL_VOICE_OPTIONS, filterVoiceOptions, resolveTtsVoiceProvider } from "@/lib/voice-options";
+import {
+  ALL_VOICE_OPTIONS,
+  filterVoiceOptions,
+  getVoiceHint,
+  resolveTtsVoiceProvider
+} from "@/lib/voice-options";
 
 interface AutomationTemplateItem {
   id: string;
   templateName?: string;
+  imageStyle?: string;
   sourceTitle?: string;
   sourceTopic?: string;
   voice?: string;
@@ -46,6 +53,8 @@ type CustomTextLayerEditor = {
 
 type TemplateEditorState = {
   templateName: string;
+  imageStyle: string;
+  imageStylePreset: string;
   sourceTitle: string;
   sourceTopic: string;
   voice: string;
@@ -94,6 +103,18 @@ const SAMPLE_NARRATION = "고대 이집트 문명 속에서 잊힌 진실이 드
 const SAMPLE_KEYWORD = "클레오파트라";
 const VOICE_PREVIEW_DEFAULT_TEXT = "This is a voice preview for your short-form content.";
 const voiceSpeedOptions = ["0.75", "0.9", "1", "1.1", "1.25", "1.5"];
+const customStyleOption = "__custom__";
+const imageStylePresets = [
+  "Cinematic photo-real",
+  "Minimal flat illustration",
+  "Anime cel-shaded",
+  "3D Pixar-style",
+  "Cyberpunk neon",
+  "Watercolor painting",
+  "Pencil sketch",
+  "Retro VHS film",
+  "Editorial product ad"
+];
 const templateFontOptions = [
   "Noto Sans KR",
   "Malgun Gothic",
@@ -105,6 +126,13 @@ const templateFontOptions = [
   "Segoe UI"
 ];
 const customTemplateFontOption = "__custom__";
+const VIDEO_RENDER_WIDTH = 1080;
+const VIDEO_RENDER_HEIGHT = 1920;
+const ASS_DEFAULT_PLAYRES_Y = 288;
+
+function detectImageStylePreset(style: string): string {
+  return imageStylePresets.includes(style) ? style : customStyleOption;
+}
 
 const BASE_SUBTITLE: RenderOptions["subtitle"] = {
   fontName: "Arial",
@@ -147,8 +175,11 @@ const BASE_OVERLAY: RenderOptions["overlay"] = {
 };
 
 function createInitialEditor(): TemplateEditorState {
+  const initialImageStyle = "Cinematic photo-real";
   return {
     templateName: "",
+    imageStyle: initialImageStyle,
+    imageStylePreset: detectImageStylePreset(initialImageStyle),
     sourceTitle: "{{title}}",
     sourceTopic: "{{topic}}",
     voice: "alloy",
@@ -209,6 +240,12 @@ function normalizeHex(value: string, fallback: string): string {
     return trimmed.toUpperCase();
   }
   return fallback;
+}
+
+function subtitleAssScaleForCanvas(canvasScale: number): number {
+  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
+  const assToOutputScale = VIDEO_RENDER_HEIGHT / ASS_DEFAULT_PLAYRES_Y;
+  return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
 }
 
 function detectTemplateFontPreset(fontName: string | undefined): string {
@@ -406,6 +443,7 @@ function extractLayerToggle(
 
 function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
   const overlay = item.renderOptions.overlay;
+  const imageStyle = String(item.imageStyle || "").trim() || "Cinematic photo-real";
   const hasSecondaryLayer = Boolean(
     (overlay.titleTemplates || []).find((layer) => layer.id === "__secondary_title__")
   );
@@ -429,6 +467,8 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
 
   return {
     templateName: item.templateName || "",
+    imageStyle,
+    imageStylePreset: detectImageStylePreset(imageStyle),
     sourceTitle: item.sourceTitle || "{{title}}",
     sourceTopic: item.sourceTopic || "{{topic}}",
     voice: (item.voice || "alloy").trim().toLowerCase() || "alloy",
@@ -568,6 +608,7 @@ type AutoSaveStatus = "idle" | "saving" | "saved" | "error";
 
 function buildTemplatePayload(editor: TemplateEditorState, renderOptions: RenderOptions): {
   templateName: string;
+  imageStyle: string;
   sourceTitle: string;
   sourceTopic: string;
   voice: string;
@@ -575,8 +616,13 @@ function buildTemplatePayload(editor: TemplateEditorState, renderOptions: Render
   renderOptions: RenderOptions;
 } {
   const voiceSpeed = clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1);
+  const imageStyle =
+    editor.imageStylePreset === customStyleOption
+      ? editor.imageStyle.trim()
+      : editor.imageStylePreset.trim();
   return {
     templateName: editor.templateName.trim(),
+    imageStyle: imageStyle || "Cinematic photo-real",
     sourceTitle: editor.sourceTitle.trim(),
     sourceTopic: editor.sourceTopic.trim(),
     voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
@@ -587,6 +633,7 @@ function buildTemplatePayload(editor: TemplateEditorState, renderOptions: Render
 
 function buildPayloadSignature(payload: {
   templateName: string;
+  imageStyle: string;
   sourceTitle: string;
   sourceTopic: string;
   voice: string;
@@ -599,6 +646,7 @@ function buildPayloadSignature(payload: {
 function buildTemplateSignature(item: AutomationTemplateItem): string {
   return JSON.stringify({
     templateName: String(item.templateName || "").trim(),
+    imageStyle: String(item.imageStyle || "").trim() || "Cinematic photo-real",
     sourceTitle: String(item.sourceTitle || "").trim(),
     sourceTopic: String(item.sourceTopic || "").trim(),
     voice: String(item.voice || "alloy").trim().toLowerCase() || "alloy",
@@ -626,6 +674,7 @@ export function TemplatesClient(): React.JSX.Element {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string>();
   const [selectedPreviewLayerId, setSelectedPreviewLayerId] = useState<string | null>(null);
+  const [previewCanvasWidth, setPreviewCanvasWidth] = useState(0);
   const previewCanvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -704,13 +753,54 @@ export function TemplatesClient(): React.JSX.Element {
     };
   }, []);
 
+  useEffect(() => {
+    const node = previewCanvasRef.current;
+    if (!node) {
+      return;
+    }
+    const updateSize = (): void => {
+      const width = node.getBoundingClientRect().width;
+      setPreviewCanvasWidth((prev) => (Math.abs(prev - width) > 0.5 ? width : prev));
+    };
+    updateSize();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateSize);
+      return () => window.removeEventListener("resize", updateSize);
+    }
+    const observer = new ResizeObserver(() => updateSize());
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
   const builtRenderOptions = useMemo(() => buildRenderOptionsFromEditor(editor), [editor]);
   const availableVoiceOptions = useMemo(() => {
     const provider = resolveTtsVoiceProvider(ttsProviderSettings);
     const filtered = filterVoiceOptions(provider);
     return filtered.length > 0 ? filtered : ALL_VOICE_OPTIONS;
   }, [ttsProviderSettings]);
+  const selectedVoiceHint = useMemo(() => getVoiceHint(editor.voice), [editor.voice]);
   const previewTemplates = builtRenderOptions.overlay.titleTemplates || [];
+  const templatePreviewScale = useMemo(() => {
+    const liveCanvasWidth = previewCanvasWidth || previewCanvasRef.current?.getBoundingClientRect().width || 0;
+    if (Number.isFinite(liveCanvasWidth) && liveCanvasWidth > 0) {
+      return clampNumber(liveCanvasWidth / VIDEO_RENDER_WIDTH, 0.12, 1, 0.28);
+    }
+    return 0.28;
+  }, [previewCanvasWidth]);
+  const subtitlePreviewRenderScale = useMemo(
+    () => subtitleAssScaleForCanvas(templatePreviewScale),
+    [templatePreviewScale]
+  );
+  const subtitlePreviewFontSize = useMemo(
+    () =>
+      clampNumber(
+        Number(editor.subtitleFontSize) * subtitlePreviewRenderScale,
+        10,
+        120,
+        24
+      ),
+    [editor.subtitleFontSize, subtitlePreviewRenderScale]
+  );
   const previewPanelTop = clampNumber(Number(editor.panelTopPercent), 0, 85, 34);
   const previewPanelWidth = clampNumber(Number(editor.panelWidthPercent), 60, 100, 100);
   const currentPayload = useMemo(
@@ -998,6 +1088,7 @@ export function TemplatesClient(): React.JSX.Element {
               body: JSON.stringify({
                 templateId: selectedTemplateId,
                 templateName: currentPayload.templateName || undefined,
+                imageStyle: currentPayload.imageStyle || undefined,
                 sourceTitle: currentPayload.sourceTitle || undefined,
                 sourceTopic: currentPayload.sourceTopic || undefined,
                 voice: currentPayload.voice || undefined,
@@ -1090,6 +1181,7 @@ export function TemplatesClient(): React.JSX.Element {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           templateName: editor.templateName.trim() || `Template ${new Date().toLocaleString()}`,
+          imageStyle: currentPayload.imageStyle || undefined,
           sourceTitle: editor.sourceTitle.trim() || undefined,
           sourceTopic: editor.sourceTopic.trim() || undefined,
           voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
@@ -1137,6 +1229,7 @@ export function TemplatesClient(): React.JSX.Element {
         body: JSON.stringify({
           templateId: selectedTemplateId,
           templateName: editor.templateName.trim() || undefined,
+          imageStyle: currentPayload.imageStyle || undefined,
           sourceTitle: editor.sourceTitle.trim() || undefined,
           sourceTopic: editor.sourceTopic.trim() || undefined,
           voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
@@ -1251,6 +1344,22 @@ export function TemplatesClient(): React.JSX.Element {
     setAutoSaveMessage("저장된 템플릿을 불러왔습니다.");
   }
 
+  function onImageStylePresetChange(value: string): void {
+    setEditor((prev) => {
+      if (value === customStyleOption) {
+        return {
+          ...prev,
+          imageStylePreset: customStyleOption
+        };
+      }
+      return {
+        ...prev,
+        imageStylePreset: value,
+        imageStyle: value
+      };
+    });
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border bg-card p-4">
@@ -1268,7 +1377,10 @@ export function TemplatesClient(): React.JSX.Element {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[320px,minmax(0,1fr)] xl:grid-cols-[360px,minmax(0,1fr)]">
-        <div className="order-2 min-w-0 space-y-4 rounded-xl border bg-card p-4 lg:order-2">
+        <div
+          className="order-2 min-w-0 space-y-4 rounded-xl border bg-card p-4 lg:order-2"
+          onPointerDownCapture={() => setSelectedPreviewLayerId(null)}
+        >
           <div className="grid gap-2 2xl:grid-cols-[1fr,1fr,auto]">
             <div className="space-y-1">
               <Label>템플릿 선택</Label>
@@ -1409,6 +1521,44 @@ export function TemplatesClient(): React.JSX.Element {
             </div>
           </div>
 
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="space-y-1">
+              <Label>이미지 스타일 프리셋</Label>
+              <Select value={editor.imageStylePreset} onValueChange={onImageStylePresetChange}>
+                <SelectTrigger className="bg-card dark:bg-zinc-900">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {imageStylePresets.map((preset) => (
+                    <SelectItem key={preset} value={preset}>
+                      {preset}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value={customStyleOption}>Custom</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>이미지 스타일 프롬프트</Label>
+              <Input
+                value={editor.imageStyle}
+                onChange={(event) =>
+                  setEditor((prev) => {
+                    const nextStyle = event.target.value;
+                    return {
+                      ...prev,
+                      imageStyle: nextStyle,
+                      imageStylePreset: detectImageStylePreset(nextStyle)
+                    };
+                  })
+                }
+                placeholder="예: Cinematic photo-real"
+              />
+            </div>
+          </div>
+
+          <ImageStyleSnapshot styleText={editor.imageStyle} />
+
           <div className="rounded-md border p-3">
             <div className="grid gap-2 md:grid-cols-[1fr,140px,auto]">
               <div className="space-y-1">
@@ -1428,11 +1578,12 @@ export function TemplatesClient(): React.JSX.Element {
                   <SelectContent>
                     {availableVoiceOptions.map((item) => (
                       <SelectItem key={item.id} value={item.id}>
-                        {item.label}
+                        {item.label} · {item.hint || getVoiceHint(item.id)}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">선택 보이스 특성: {selectedVoiceHint}</p>
               </div>
               <div className="space-y-1">
                 <Label>보이스 배속</Label>
@@ -2090,6 +2241,11 @@ export function TemplatesClient(): React.JSX.Element {
             <div
               ref={previewCanvasRef}
               className="relative h-full w-full overflow-hidden rounded-lg bg-black"
+              onPointerDown={(event) => {
+                if (event.target === event.currentTarget) {
+                  setSelectedPreviewLayerId(null);
+                }
+              }}
               onPointerMove={onDragMove}
               onPointerUp={endDrag}
               onPointerCancel={endDrag}
@@ -2195,7 +2351,7 @@ export function TemplatesClient(): React.JSX.Element {
                 <p
                   className="whitespace-pre-wrap"
                   style={{
-                    fontSize: `${clampNumber(Number(editor.subtitleFontSize), 10, 120, 16) * 0.42}px`
+                    fontSize: `${subtitlePreviewFontSize}px`
                   }}
                 >
                   {materializePreviewText({

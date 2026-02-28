@@ -2,6 +2,7 @@ export interface VoiceOption {
   id: string;
   label: string;
   provider: "openai" | "gemini" | "both";
+  hint?: string;
 }
 
 export type VoiceProviderFilter = "openai" | "gemini" | "both";
@@ -27,8 +28,44 @@ export const GEMINI_VOICE_IDS = [
 ] as const;
 
 export const ALL_VOICE_OPTIONS: VoiceOption[] = [
-  ...OPENAI_VOICE_IDS.map((id) => ({ id, label: id, provider: "openai" as const })),
-  ...GEMINI_VOICE_IDS.map((id) => ({ id, label: id, provider: "gemini" as const }))
+  ...OPENAI_VOICE_IDS.map((id) => ({
+    id,
+    label: id,
+    provider: "openai" as const,
+    hint:
+      id === "alloy"
+        ? "균형형 · 또렷한 중립 톤"
+        : id === "echo"
+          ? "차분형 · 안정적인 톤"
+          : id === "fable"
+            ? "스토리형 · 부드러운 톤"
+            : id === "nova"
+              ? "밝은형 · 경쾌한 톤"
+              : id === "onyx"
+                ? "저음형 · 묵직한 톤"
+                : "선명형 · 밝은 톤"
+  })),
+  ...GEMINI_VOICE_IDS.map((id) => ({
+    id,
+    label: id,
+    provider: "gemini" as const,
+    hint:
+      id === "aoede"
+        ? "밝은형 · 경쾌한 톤"
+        : id === "charon"
+          ? "차분형 · 또렷한 톤"
+          : id === "fenrir"
+            ? "강한형 · 단단한 톤"
+            : id === "kore"
+              ? "중립형 · 밸런스 톤"
+              : id === "leda"
+                ? "부드러운형 · 따뜻한 톤"
+                : id === "orus"
+                  ? "저음형 · 안정적인 톤"
+                  : id === "puck"
+                    ? "발랄형 · 속도감 있는 톤"
+                    : "맑은형 · 깨끗한 톤"
+  }))
 ];
 
 const GEMINI_TITLE_CASE: Record<string, string> = {
@@ -72,6 +109,12 @@ export function filterVoiceOptions(provider: VoiceProviderFilter): VoiceOption[]
     return ALL_VOICE_OPTIONS;
   }
   return ALL_VOICE_OPTIONS.filter((item) => item.provider === provider || item.provider === "both");
+}
+
+export function getVoiceHint(voiceId: string): string {
+  const normalized = String(voiceId || "").trim().toLowerCase();
+  const found = ALL_VOICE_OPTIONS.find((item) => item.id === normalized);
+  return found?.hint || "중립형 톤";
 }
 
 export function resolveTtsVoiceProvider(args: {
