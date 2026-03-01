@@ -8,6 +8,7 @@ import {
   Home,
   LayoutTemplate,
   Lightbulb,
+  LogOut,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -16,6 +17,7 @@ import {
   Sun
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AppTheme, applyTheme, getStoredTheme, normalizeTheme, setStoredTheme, THEME_CHANGED_EVENT } from "@/lib/theme";
@@ -72,6 +74,10 @@ export function AppNav(): React.JSX.Element {
     const nextTheme: AppTheme = theme === "dark" ? "light" : "dark";
     setTheme(nextTheme);
     setStoredTheme(nextTheme);
+  }
+
+  async function onLogout(): Promise<void> {
+    await signOut({ callbackUrl: "/auth/signin" });
   }
 
   if (hideForAuthRoute) {
@@ -132,17 +138,30 @@ export function AppNav(): React.JSX.Element {
       </nav>
 
       <div className="mt-3 border-t pt-3">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={toggleTheme}
-          className={cn("w-full", collapsed ? "px-0" : "")}
-          title={theme === "dark" ? "Light Mode" : "Dark Mode"}
-        >
-          {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          {collapsed ? null : <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>}
-        </Button>
+        <div className="flex flex-col gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={toggleTheme}
+            className={cn("w-full", collapsed ? "px-0" : "")}
+            title={theme === "dark" ? "Light Mode" : "Dark Mode"}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            {collapsed ? null : <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onLogout}
+            className={cn("w-full", collapsed ? "px-0" : "")}
+            title="로그아웃"
+          >
+            <LogOut className="h-4 w-4" />
+            {collapsed ? null : <span>로그아웃</span>}
+          </Button>
+        </div>
       </div>
     </aside>
   );

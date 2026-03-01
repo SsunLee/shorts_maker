@@ -153,18 +153,7 @@ function normalizeCatalog(
   }
 }
 
-async function readCatalog(userId?: string): Promise<AutomationTemplateCatalog> {
-  if (userId && prisma) {
-    const row = await prisma.userAutomationTemplateCatalog.findUnique({
-      where: { userId }
-    });
-    const parsed = row?.data as
-      | Partial<AutomationTemplateCatalog>
-      | Partial<AutomationTemplateSnapshot>
-      | undefined;
-    return normalizeCatalog(parsed);
-  }
-
+async function readCatalogFromFile(): Promise<AutomationTemplateCatalog> {
   const automationTemplateFile = resolveAutomationTemplateFile();
   await ensureAutomationTemplateFile();
   const raw = await fs.readFile(automationTemplateFile, "utf8");
@@ -176,6 +165,26 @@ async function readCatalog(userId?: string): Promise<AutomationTemplateCatalog> 
   } catch {
     return { templates: [] };
   }
+}
+
+async function readCatalog(userId?: string): Promise<AutomationTemplateCatalog> {
+  if (userId && prisma) {
+    const row = await prisma.userAutomationTemplateCatalog.findUnique({
+      where: { userId }
+    });
+    const parsed = row?.data as
+      | Partial<AutomationTemplateCatalog>
+      | Partial<AutomationTemplateSnapshot>
+      | undefined;
+    const normalized = normalizeCatalog(parsed);
+    if (normalized.templates.length > 0) {
+      return normalized;
+    }
+    // First-login fallback: surface existing local template file until user saves to DB.
+    return readCatalogFromFile();
+  }
+
+  return readCatalogFromFile();
 }
 
 async function writeCatalog(catalog: AutomationTemplateCatalog, userId?: string): Promise<void> {

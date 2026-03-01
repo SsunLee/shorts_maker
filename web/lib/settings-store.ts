@@ -34,28 +34,72 @@ async function ensureSettingsFile(): Promise<void> {
   }
 }
 
+function readSettingsFromEnv(): AppSettings {
+  return {
+    openaiApiKey: process.env.OPENAI_API_KEY || undefined,
+    geminiApiKey: process.env.GEMINI_API_KEY || undefined,
+    aiMode:
+      process.env.AI_PROVIDER === "openai" ||
+      process.env.AI_PROVIDER === "gemini" ||
+      process.env.AI_PROVIDER === "auto"
+        ? process.env.AI_PROVIDER
+        : undefined,
+    openaiTextModel: process.env.OPENAI_TEXT_MODEL || undefined,
+    openaiImageModel: process.env.OPENAI_IMAGE_MODEL || undefined,
+    openaiTtsModel: process.env.OPENAI_TTS_MODEL || undefined,
+    geminiTextModel: process.env.GEMINI_TEXT_MODEL || undefined,
+    geminiImageModel: process.env.GEMINI_IMAGE_MODEL || undefined,
+    geminiTtsModel: process.env.GEMINI_TTS_MODEL || undefined,
+    gsheetSpreadsheetId: process.env.GSHEETS_SPREADSHEET_ID || undefined,
+    gsheetClientEmail: process.env.GSHEETS_CLIENT_EMAIL || undefined,
+    gsheetPrivateKey: process.env.GSHEETS_PRIVATE_KEY || undefined,
+    gsheetSheetName: process.env.GSHEETS_SHEET_NAME || undefined,
+    youtubeClientId: process.env.YOUTUBE_CLIENT_ID || undefined,
+    youtubeClientSecret: process.env.YOUTUBE_CLIENT_SECRET || undefined,
+    youtubeRedirectUri: process.env.YOUTUBE_REDIRECT_URI || undefined,
+    youtubeRefreshToken: process.env.YOUTUBE_REFRESH_TOKEN || undefined
+  };
+}
+
+async function readSettingsFromFile(): Promise<AppSettings> {
+  const settingsFile = resolveSettingsFile();
+  await ensureSettingsFile();
+  const raw = await fs.readFile(settingsFile, "utf8");
+  try {
+    return JSON.parse(raw) as AppSettings;
+  } catch {
+    return {};
+  }
+}
+
 /** Read locally saved settings used as a fallback to environment variables. */
 export async function getSettings(userId?: string): Promise<AppSettings> {
+  const envSettings = readSettingsFromEnv();
+
   if (userId && prisma) {
     const row = await prisma.userSettings.findUnique({
       where: { userId }
     });
     const parsed = row?.data;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as AppSettings;
+      return {
+        ...envSettings,
+        ...(parsed as AppSettings)
+      };
     }
-    return {};
+
+    const fileSettings = await readSettingsFromFile();
+    return {
+      ...envSettings,
+      ...fileSettings
+    };
   }
 
-  const settingsFile = resolveSettingsFile();
-  await ensureSettingsFile();
-  const raw = await fs.readFile(settingsFile, "utf8");
-
-  try {
-    return JSON.parse(raw) as AppSettings;
-  } catch {
-    return {};
-  }
+  const fileSettings = await readSettingsFromFile();
+  return {
+    ...envSettings,
+    ...fileSettings
+  };
 }
 
 /** Persist settings to local disk for development and self-hosted usage. */
