@@ -6,6 +6,7 @@ import {
   startAutomationRun
 } from "@/lib/automation-runner";
 import { ensureAutomationSchedulerStarted } from "@/lib/automation-scheduler";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -20,16 +21,24 @@ const startSchema = z.object({
 
 /** Get current automation run status. */
 export async function GET(): Promise<NextResponse> {
-  await ensureAutomationSchedulerStarted();
-  return NextResponse.json({ state: getAutomationState() });
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  await ensureAutomationSchedulerStarted(userId);
+  return NextResponse.json({ state: getAutomationState(userId) });
 }
 
 /** Start batch automation run (ready rows -> render -> upload loop). */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json().catch(() => ({}));
     const payload = startSchema.parse(body || {});
-    const state = startAutomationRun(payload);
+    const state = startAutomationRun(userId, payload);
     return NextResponse.json({ state }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to start automation";
@@ -39,6 +48,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
 /** Request stop for active automation run. */
 export async function DELETE(): Promise<NextResponse> {
-  const state = requestAutomationStop();
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const state = requestAutomationStop(userId);
   return NextResponse.json({ state });
 }

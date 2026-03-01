@@ -1,6 +1,8 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { AutomationScheduleState } from "@/lib/types";
+import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -31,7 +33,20 @@ async function ensureScheduleFile(): Promise<void> {
   }
 }
 
-export async function readAutomationScheduleState(): Promise<Partial<AutomationScheduleState> | undefined> {
+export async function readAutomationScheduleState(
+  userId?: string
+): Promise<Partial<AutomationScheduleState> | undefined> {
+  if (userId && prisma) {
+    const row = await prisma.userAutomationScheduleState.findUnique({
+      where: { userId }
+    });
+    const parsed = row?.data;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return parsed as Partial<AutomationScheduleState>;
+  }
+
   const scheduleFile = resolveScheduleFile();
   await ensureScheduleFile();
   const raw = await fs.readFile(scheduleFile, "utf8");
@@ -46,7 +61,19 @@ export async function readAutomationScheduleState(): Promise<Partial<AutomationS
   }
 }
 
-export async function writeAutomationScheduleState(state: AutomationScheduleState): Promise<AutomationScheduleState> {
+export async function writeAutomationScheduleState(
+  state: AutomationScheduleState,
+  userId?: string
+): Promise<AutomationScheduleState> {
+  if (userId && prisma) {
+    await prisma.userAutomationScheduleState.upsert({
+      where: { userId },
+      update: { data: state as unknown as Prisma.InputJsonValue },
+      create: { userId, data: state as unknown as Prisma.InputJsonValue }
+    });
+    return state;
+  }
+
   const scheduleFile = resolveScheduleFile();
   await ensureScheduleFile();
   await fs.writeFile(scheduleFile, JSON.stringify(state, null, 2), "utf8");

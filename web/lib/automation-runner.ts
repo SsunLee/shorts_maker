@@ -61,8 +61,8 @@ const DEFAULTS: AutomationDefaults = {
 };
 
 declare global {
-  var __shortsAutomationState__: AutomationRunState | undefined;
-  var __shortsAutomationPromise__: Promise<void> | undefined;
+  var __shortsAutomationStates__: Record<string, AutomationRunState> | undefined;
+  var __shortsAutomationPromises__: Record<string, Promise<void> | undefined> | undefined;
 }
 
 function createInitialState(): AutomationRunState {
@@ -78,23 +78,44 @@ function createInitialState(): AutomationRunState {
   };
 }
 
-function getStateRef(): AutomationRunState {
-  if (!globalThis.__shortsAutomationState__) {
-    globalThis.__shortsAutomationState__ = createInitialState();
-  }
-  return globalThis.__shortsAutomationState__;
+function getUserKey(userId?: string): string {
+  const value = String(userId || "").trim();
+  return value || "__default__";
 }
 
-function snapshotState(): AutomationRunState {
-  const state = getStateRef();
+function getStateStore(): Record<string, AutomationRunState> {
+  if (!globalThis.__shortsAutomationStates__) {
+    globalThis.__shortsAutomationStates__ = {};
+  }
+  return globalThis.__shortsAutomationStates__;
+}
+
+function getPromiseStore(): Record<string, Promise<void> | undefined> {
+  if (!globalThis.__shortsAutomationPromises__) {
+    globalThis.__shortsAutomationPromises__ = {};
+  }
+  return globalThis.__shortsAutomationPromises__;
+}
+
+function getStateRef(userId?: string): AutomationRunState {
+  const key = getUserKey(userId);
+  const store = getStateStore();
+  if (!store[key]) {
+    store[key] = createInitialState();
+  }
+  return store[key];
+}
+
+function snapshotState(userId?: string): AutomationRunState {
+  const state = getStateRef(userId);
   return {
     ...state,
     logs: [...state.logs]
   };
 }
 
-function pushLog(level: "info" | "error", message: string): void {
-  const state = getStateRef();
+function pushLog(userId: string | undefined, level: "info" | "error", message: string): void {
+  const state = getStateRef(userId);
   const entry: AutomationLogEntry = {
     at: new Date().toISOString(),
     level,
@@ -262,12 +283,13 @@ function buildUploadDescription(topic: string | undefined, narration: string | u
 }
 
 async function resolveDefaultsFromLatestWorkflow(
+  userId: string | undefined,
   templateMode: AutomationTemplateMode,
   templateId?: string
 ): Promise<AutomationDefaults> {
   const selectedTemplate =
     templateMode === "applied_template" && templateId
-      ? await getAutomationTemplateEntryById(templateId)
+      ? await getAutomationTemplateEntryById(templateId, userId)
       : undefined;
   if (templateMode === "applied_template" && templateId && !selectedTemplate) {
     throw new Error("선택한 자동화 템플릿을 찾지 못했습니다. 템플릿을 다시 선택해 주세요.");
@@ -284,7 +306,7 @@ async function resolveDefaultsFromLatestWorkflow(
         voiceSpeed: selectedTemplate.voiceSpeed,
         updatedAt: selectedTemplate.updatedAt
       }
-    : await getAutomationTemplateSnapshot();
+    : await getAutomationTemplateSnapshot(userId);
   const workflows = await listWorkflows();
   const latestAny = workflows[0];
 
@@ -386,8 +408,8 @@ function isFatalUploadError(message: string): boolean {
   );
 }
 
-function requestStopInternal(reason: StopReason, errorMessage?: string): void {
-  const state = getStateRef();
+function requestStopInternal(userId: string | undefined, reason: StopReason, errorMessage?: string): void {
+  const state = getStateRef(userId);
   state.currentRowId = undefined;
   state.currentRowTitle = undefined;
   state.finishedAt = new Date().toISOString();
@@ -403,12 +425,13 @@ function requestStopInternal(reason: StopReason, errorMessage?: string): void {
 }
 
 async function processOneRow(args: {
+  userId?: string;
   row: Awaited<ReturnType<typeof listSheetContentRows>>[number];
   defaults: AutomationDefaults;
   privacyStatus: "private" | "public" | "unlisted";
   uploadMode: "youtube" | "pre_upload";
 }): Promise<{ fatal: boolean }> {
-  const state = getStateRef();
+  const state = getStateRef(args.userId);
   const row = args.row;
   const tags = extractRowTags(row);
 
@@ -428,7 +451,7 @@ async function processOneRow(args: {
   };
 
   try {
-    pushLog("info", `[${row.id}] 워크플로우 시작`);
+    pushLog(args.userId, "info", `[${row.id}] 워크플로우 시작`);
     let workflow = await startStagedWorkflow(createPayload);
 
     const rowRenderOptions = materializeRenderOptionsForRow({
@@ -445,14 +468,14 @@ async function processOneRow(args: {
       workflow = await updateSceneSplit(workflow.id, {
         renderOptions: rowRenderOptions
       });
-      pushLog("info", `[${row.id}] 최근 템플릿(renderOptions) 적용 + 제목/주제 텍스트 치환`);
+      pushLog(args.userId, "info", `[${row.id}] 최근 템플릿(renderOptions) 적용 + 제목/주제 텍스트 치환`);
     }
 
     let guard = 0;
     while (workflow.stage !== "final_ready" && workflow.status !== "failed" && guard < 6) {
       workflow = await runNextWorkflowStage(workflow.id);
       guard += 1;
-      pushLog("info", `[${row.id}] 단계 진행 -> ${workflow.stage} (${workflow.status})`);
+      pushLog(args.userId, "info", `[${row.id}] 단계 진행 -> ${workflow.stage} (${workflow.status})`);
     }
 
     if (workflow.status === "failed") {
@@ -467,7 +490,7 @@ async function processOneRow(args: {
     }
 
     if (args.uploadMode === "pre_upload") {
-      pushLog("info", `[${row.id}] 업로드 전 단계까지 완료 (YouTube 업로드 생략)`);
+      pushLog(args.userId, "info", `[${row.id}] 업로드 전 단계까지 완료 (YouTube 업로드 생략)`);
       return { fatal: false };
     }
 
@@ -493,7 +516,7 @@ async function processOneRow(args: {
     });
 
     state.uploaded += 1;
-    pushLog("info", `[${row.id}] 업로드 완료: ${youtubeUrl}`);
+    pushLog(args.userId, "info", `[${row.id}] 업로드 완료: ${youtubeUrl}`);
     return { fatal: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown automation error";
@@ -504,7 +527,7 @@ async function processOneRow(args: {
       status: "failed",
       error: message
     });
-    pushLog("error", `[${row.id}] 실패: ${message}`);
+    pushLog(args.userId, "error", `[${row.id}] 실패: ${message}`);
     return { fatal: isFatalUploadError(message) };
   } finally {
     state.processed += 1;
@@ -514,6 +537,7 @@ async function processOneRow(args: {
 }
 
 async function runAutomationLoop(args: {
+  userId?: string;
   sheetName?: string;
   privacyStatus: "private" | "public" | "unlisted";
   uploadMode: "youtube" | "pre_upload";
@@ -521,9 +545,10 @@ async function runAutomationLoop(args: {
   templateId?: string;
   maxItems?: number;
 }): Promise<void> {
-  const state = getStateRef();
+  const state = getStateRef(args.userId);
   try {
     const defaults = await resolveDefaultsFromLatestWorkflow(
+      args.userId,
       args.templateMode,
       args.templateId
     );
@@ -547,11 +572,12 @@ async function runAutomationLoop(args: {
           ? "최신 워크플로우 템플릿"
           : "템플릿 미사용";
     pushLog(
+      args.userId,
       "info",
       `자동화 시작 (모드: ${args.uploadMode === "youtube" ? "유튜브 업로드" : "업로드 전 단계"}, 템플릿 모드: ${templateModeLabel}, 옵션: ${defaults.imageStyle}, ${defaults.voice}, ${defaults.imageAspectRatio}, 템플릿 ${defaults.templateApplied ? "적용" : "미적용"})`
     );
     if (defaults.templateSourceTitle) {
-      pushLog("info", `템플릿 기준 워크플로우 제목: ${defaults.templateSourceTitle}`);
+      pushLog(args.userId, "info", `템플릿 기준 워크플로우 제목: ${defaults.templateSourceTitle}`);
     }
 
     const maxItems = typeof args.maxItems === "number" && args.maxItems > 0 ? args.maxItems : undefined;
@@ -563,22 +589,23 @@ async function runAutomationLoop(args: {
       state.totalDiscovered = Math.max(state.totalDiscovered, state.processed + rows.length);
 
       if (rows.length === 0) {
-        pushLog("info", "준비 상태 row가 없어 자동화를 종료합니다.");
-        requestStopInternal("completed");
+        pushLog(args.userId, "info", "준비 상태 row가 없어 자동화를 종료합니다.");
+        requestStopInternal(args.userId, "completed");
         return;
       }
       if (maxItems && processedThisRun >= maxItems) {
-        pushLog("info", `maxItems(${maxItems})에 도달하여 자동화를 종료합니다.`);
-        requestStopInternal("completed");
+        pushLog(args.userId, "info", `maxItems(${maxItems})에 도달하여 자동화를 종료합니다.`);
+        requestStopInternal(args.userId, "completed");
         return;
       }
 
       const row = rows[0];
       state.currentRowId = row.id;
       state.currentRowTitle = row.subject || row.keyword || row.id;
-      pushLog("info", `[${row.id}] 처리 시작 (${state.currentRowTitle})`);
+      pushLog(args.userId, "info", `[${row.id}] 처리 시작 (${state.currentRowTitle})`);
 
       const result = await processOneRow({
+        userId: args.userId,
         row,
         defaults,
         privacyStatus: args.privacyStatus,
@@ -586,36 +613,37 @@ async function runAutomationLoop(args: {
       });
       processedThisRun += 1;
       if (result.fatal) {
-        requestStopInternal("failed", state.lastError || "Fatal automation error");
+        requestStopInternal(args.userId, "failed", state.lastError || "Fatal automation error");
         return;
       }
     }
 
-    pushLog("info", "중지 요청으로 자동화를 종료합니다.");
-    requestStopInternal("requested");
+    pushLog(args.userId, "info", "중지 요청으로 자동화를 종료합니다.");
+    requestStopInternal(args.userId, "requested");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown automation failure";
-    pushLog("error", `자동화 전체 실패: ${message}`);
-    requestStopInternal("failed", message);
+    pushLog(args.userId, "error", `자동화 전체 실패: ${message}`);
+    requestStopInternal(args.userId, "failed", message);
   }
 }
 
-export function getAutomationState(): AutomationRunState {
-  return snapshotState();
+export function getAutomationState(userId?: string): AutomationRunState {
+  return snapshotState(userId);
 }
 
-export function requestAutomationStop(): AutomationRunState {
-  const state = getStateRef();
+export function requestAutomationStop(userId?: string): AutomationRunState {
+  const state = getStateRef(userId);
   if (state.phase === "running") {
     state.stopRequested = true;
     state.phase = "stopping";
-    pushLog("info", "사용자 중지 요청을 수신했습니다.");
+    pushLog(userId, "info", "사용자 중지 요청을 수신했습니다.");
   }
-  return snapshotState();
+  return snapshotState(userId);
 }
 
-export function startAutomationRun(args: StartAutomationArgs): AutomationRunState {
-  const state = getStateRef();
+export function startAutomationRun(userId: string | undefined, args: StartAutomationArgs): AutomationRunState {
+  const key = getUserKey(userId);
+  const state = getStateRef(userId);
   if (state.phase === "running" || state.phase === "stopping") {
     throw new Error("Automation is already running.");
   }
@@ -642,10 +670,11 @@ export function startAutomationRun(args: StartAutomationArgs): AutomationRunStat
     logs: [],
     defaultsSummary: undefined
   };
-  globalThis.__shortsAutomationState__ = nextState;
-  pushLog("info", "자동화 작업을 생성했습니다.");
+  getStateStore()[key] = nextState;
+  pushLog(userId, "info", "자동화 작업을 생성했습니다.");
 
-  globalThis.__shortsAutomationPromise__ = runAutomationLoop({
+  getPromiseStore()[key] = runAutomationLoop({
+    userId,
     sheetName: args.sheetName?.trim() || undefined,
     privacyStatus: args.privacyStatus || "private",
     uploadMode: args.uploadMode === "pre_upload" ? "pre_upload" : "youtube",
@@ -656,8 +685,8 @@ export function startAutomationRun(args: StartAutomationArgs): AutomationRunStat
     templateId: args.templateId?.trim() || undefined,
     maxItems: args.maxItems
   }).finally(() => {
-    globalThis.__shortsAutomationPromise__ = undefined;
+    delete getPromiseStore()[key];
   });
 
-  return snapshotState();
+  return snapshotState(userId);
 }

@@ -34,16 +34,16 @@ export const ALL_VOICE_OPTIONS: VoiceOption[] = [
     provider: "openai" as const,
     hint:
       id === "alloy"
-        ? "균형형 · 또렷한 중립 톤"
+        ? "중성 톤 · 균형형 · 또렷함"
         : id === "echo"
-          ? "차분형 · 안정적인 톤"
+          ? "남성 톤(추정) · 차분형 · 안정적"
           : id === "fable"
-            ? "스토리형 · 부드러운 톤"
+            ? "남성 톤(추정) · 스토리형 · 부드러움"
             : id === "nova"
-              ? "밝은형 · 경쾌한 톤"
+              ? "여성 톤(추정) · 밝은형 · 경쾌함"
               : id === "onyx"
-                ? "저음형 · 묵직한 톤"
-                : "선명형 · 밝은 톤"
+                ? "남성 톤(추정) · 저음형 · 묵직함"
+                : "여성 톤(추정) · 선명형 · 밝음"
   })),
   ...GEMINI_VOICE_IDS.map((id) => ({
     id,
@@ -51,20 +51,20 @@ export const ALL_VOICE_OPTIONS: VoiceOption[] = [
     provider: "gemini" as const,
     hint:
       id === "aoede"
-        ? "밝은형 · 경쾌한 톤"
+        ? "여성 톤(추정) · 밝은형 · 경쾌함"
         : id === "charon"
-          ? "차분형 · 또렷한 톤"
+          ? "남성 톤(추정) · 차분형 · 또렷함"
           : id === "fenrir"
-            ? "강한형 · 단단한 톤"
+            ? "남성 톤(추정) · 강한형 · 단단함"
             : id === "kore"
-              ? "중립형 · 밸런스 톤"
+              ? "여성 톤(추정) · 중립형 · 밸런스"
               : id === "leda"
-                ? "부드러운형 · 따뜻한 톤"
+                ? "여성 톤(추정) · 부드러운형 · 따뜻함"
                 : id === "orus"
-                  ? "저음형 · 안정적인 톤"
+                  ? "남성 톤(추정) · 저음형 · 안정적"
                   : id === "puck"
-                    ? "발랄형 · 속도감 있는 톤"
-                    : "맑은형 · 깨끗한 톤"
+                    ? "중성 톤(추정) · 발랄형 · 속도감"
+                    : "여성 톤(추정) · 맑은형 · 깨끗함"
   }))
 ];
 
@@ -114,7 +114,7 @@ export function filterVoiceOptions(provider: VoiceProviderFilter): VoiceOption[]
 export function getVoiceHint(voiceId: string): string {
   const normalized = String(voiceId || "").trim().toLowerCase();
   const found = ALL_VOICE_OPTIONS.find((item) => item.id === normalized);
-  return found?.hint || "중립형 톤";
+  return found?.hint || "중성 톤";
 }
 
 export function resolveTtsVoiceProvider(args: {

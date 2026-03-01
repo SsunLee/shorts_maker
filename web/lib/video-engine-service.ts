@@ -24,6 +24,10 @@ function asFiniteNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 function normalizeRenderOptionsForEngine(
   renderOptions: BuildVideoPayload["renderOptions"]
 ): RenderOptions | undefined {
@@ -58,18 +62,18 @@ function normalizeRenderOptionsForEngine(
       return {
         id: asText(row.id, `layer-${index + 1}`),
         text: asText(row.text),
-        x: asFiniteNumber(row.x, 50),
-        y: asFiniteNumber(row.y, 10),
-        width: asFiniteNumber(row.width, 60),
-        fontSize: Math.round(asFiniteNumber(row.fontSize, 48)),
+        x: clampNumber(asFiniteNumber(row.x, 50), 0, 100),
+        y: clampNumber(asFiniteNumber(row.y, 10), 0, 100),
+        width: clampNumber(asFiniteNumber(row.width, 60), 10, 95),
+        fontSize: Math.round(clampNumber(asFiniteNumber(row.fontSize, 48), 12, 120)),
         color: asText(row.color, "#FFFFFF"),
-        paddingX: Math.round(asFiniteNumber(row.paddingX, 8)),
-        paddingY: Math.round(asFiniteNumber(row.paddingY, 4)),
-        shadowX: Math.round(asFiniteNumber(row.shadowX, 2)),
-        shadowY: Math.round(asFiniteNumber(row.shadowY, 2)),
+        paddingX: Math.round(clampNumber(asFiniteNumber(row.paddingX, 8), 0, 80)),
+        paddingY: Math.round(clampNumber(asFiniteNumber(row.paddingY, 4), 0, 80)),
+        shadowX: Math.round(clampNumber(asFiniteNumber(row.shadowX, 2), -20, 20)),
+        shadowY: Math.round(clampNumber(asFiniteNumber(row.shadowY, 2), -20, 20)),
         shadowColor: asText(row.shadowColor, "#000000"),
-        shadowOpacity: asFiniteNumber(row.shadowOpacity, 1),
-        fontThickness: Math.round(asFiniteNumber(row.fontThickness, 0)),
+        shadowOpacity: clampNumber(asFiniteNumber(row.shadowOpacity, 1), 0, 1),
+        fontThickness: Math.round(clampNumber(asFiniteNumber(row.fontThickness, 0), 0, 8)),
         fontName: asText(row.fontName),
         fontBold: Boolean(row.fontBold),
         fontItalic: Boolean(row.fontItalic),
@@ -81,40 +85,40 @@ function normalizeRenderOptionsForEngine(
   return {
     subtitle: {
       fontName: asText(subtitleRaw.fontName, "Arial"),
-      fontSize: Math.round(asFiniteNumber(subtitleRaw.fontSize, 16)),
+      fontSize: Math.round(clampNumber(asFiniteNumber(subtitleRaw.fontSize, 16), 10, 80)),
       primaryColor: asText(subtitleRaw.primaryColor, "#FFFFFF"),
       outlineColor: asText(subtitleRaw.outlineColor, "#000000"),
-      outline: Math.round(asFiniteNumber(subtitleRaw.outline, 2)),
-      shadow: Math.round(asFiniteNumber(subtitleRaw.shadow, 1)),
-      shadowOpacity: asFiniteNumber(subtitleRaw.shadowOpacity, 1),
-      fontThickness: Math.round(asFiniteNumber(subtitleRaw.fontThickness, 0)),
-      subtitleDelayMs: Math.round(asFiniteNumber(subtitleRaw.subtitleDelayMs, 180)),
+      outline: Math.round(clampNumber(asFiniteNumber(subtitleRaw.outline, 2), 0, 8)),
+      shadow: Math.round(clampNumber(asFiniteNumber(subtitleRaw.shadow, 1), 0, 8)),
+      shadowOpacity: clampNumber(asFiniteNumber(subtitleRaw.shadowOpacity, 1), 0, 1),
+      fontThickness: Math.round(clampNumber(asFiniteNumber(subtitleRaw.fontThickness, 0), 0, 8)),
+      subtitleDelayMs: Math.round(clampNumber(asFiniteNumber(subtitleRaw.subtitleDelayMs, 180), -500, 1500)),
       position: (asText(subtitleRaw.position, "bottom") as RenderOptions["subtitle"]["position"]),
-      subtitleYPercent: asFiniteNumber(subtitleRaw.subtitleYPercent, 86),
-      wordsPerCaption: Math.round(asFiniteNumber(subtitleRaw.wordsPerCaption, 5)),
+      subtitleYPercent: clampNumber(asFiniteNumber(subtitleRaw.subtitleYPercent, 86), 0, 100),
+      wordsPerCaption: Math.round(clampNumber(asFiniteNumber(subtitleRaw.wordsPerCaption, 5), 2, 10)),
       manualCues
     },
     overlay: {
       showTitle: Boolean(overlayRaw.showTitle),
       titleText: asText(overlayRaw.titleText, ""),
       titlePosition: asText(overlayRaw.titlePosition, "top") as RenderOptions["overlay"]["titlePosition"],
-      titleFontSize: Math.round(asFiniteNumber(overlayRaw.titleFontSize, 48)),
+      titleFontSize: Math.round(clampNumber(asFiniteNumber(overlayRaw.titleFontSize, 48), 16, 120)),
       titleColor: asText(overlayRaw.titleColor, "#FFFFFF"),
       titleFontName: asText(overlayRaw.titleFontName, "Malgun Gothic"),
       titleFontBold: Boolean(overlayRaw.titleFontBold),
       titleFontItalic: Boolean(overlayRaw.titleFontItalic),
       titleFontFile: asText(overlayRaw.titleFontFile),
       sceneMotionPreset: asText(overlayRaw.sceneMotionPreset, "gentle_zoom") as RenderOptions["overlay"]["sceneMotionPreset"],
-      motionSpeedPercent: asFiniteNumber(overlayRaw.motionSpeedPercent, 135),
-      focusXPercent: asFiniteNumber(overlayRaw.focusXPercent, 50),
-      focusYPercent: asFiniteNumber(overlayRaw.focusYPercent, 50),
-      focusDriftPercent: asFiniteNumber(overlayRaw.focusDriftPercent, 6),
-      focusZoomPercent: asFiniteNumber(overlayRaw.focusZoomPercent, 9),
+      motionSpeedPercent: clampNumber(asFiniteNumber(overlayRaw.motionSpeedPercent, 135), 60, 220),
+      focusXPercent: clampNumber(asFiniteNumber(overlayRaw.focusXPercent, 50), 0, 100),
+      focusYPercent: clampNumber(asFiniteNumber(overlayRaw.focusYPercent, 50), 0, 100),
+      focusDriftPercent: clampNumber(asFiniteNumber(overlayRaw.focusDriftPercent, 6), 0, 20),
+      focusZoomPercent: clampNumber(asFiniteNumber(overlayRaw.focusZoomPercent, 9), 3, 20),
       outputFps: (Math.round(asFiniteNumber(overlayRaw.outputFps, 30)) as RenderOptions["overlay"]["outputFps"]),
       videoLayout: asText(overlayRaw.videoLayout, "fill_9_16") as RenderOptions["overlay"]["videoLayout"],
       usePreviewAsFinal: Boolean(overlayRaw.usePreviewAsFinal),
-      panelTopPercent: asFiniteNumber(overlayRaw.panelTopPercent, 34),
-      panelWidthPercent: asFiniteNumber(overlayRaw.panelWidthPercent, 100),
+      panelTopPercent: clampNumber(asFiniteNumber(overlayRaw.panelTopPercent, 34), 0, 85),
+      panelWidthPercent: clampNumber(asFiniteNumber(overlayRaw.panelWidthPercent, 100), 60, 100),
       titleTemplates
     }
   };

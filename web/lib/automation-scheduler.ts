@@ -24,13 +24,41 @@ const DEFAULT_CONFIG: AutomationScheduleConfig = {
 };
 
 declare global {
-  var __shortsAutomationScheduleTimer__: ReturnType<typeof setTimeout> | undefined;
-  var __shortsAutomationSchedulerInitialized__: boolean | undefined;
-  var __shortsAutomationScheduleCache__: AutomationScheduleState | undefined;
+  var __shortsAutomationScheduleTimers__:
+    | Record<string, ReturnType<typeof setTimeout> | undefined>
+    | undefined;
+  var __shortsAutomationSchedulerInitializedUsers__: Record<string, boolean> | undefined;
+  var __shortsAutomationScheduleCacheByUser__: Record<string, AutomationScheduleState> | undefined;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function getUserKey(userId?: string): string {
+  const value = String(userId || "").trim();
+  return value || "__default__";
+}
+
+function getTimerStore(): Record<string, ReturnType<typeof setTimeout> | undefined> {
+  if (!globalThis.__shortsAutomationScheduleTimers__) {
+    globalThis.__shortsAutomationScheduleTimers__ = {};
+  }
+  return globalThis.__shortsAutomationScheduleTimers__;
+}
+
+function getInitializedStore(): Record<string, boolean> {
+  if (!globalThis.__shortsAutomationSchedulerInitializedUsers__) {
+    globalThis.__shortsAutomationSchedulerInitializedUsers__ = {};
+  }
+  return globalThis.__shortsAutomationSchedulerInitializedUsers__;
+}
+
+function getScheduleCacheStore(): Record<string, AutomationScheduleState> {
+  if (!globalThis.__shortsAutomationScheduleCacheByUser__) {
+    globalThis.__shortsAutomationScheduleCacheByUser__ = {};
+  }
+  return globalThis.__shortsAutomationScheduleCacheByUser__;
 }
 
 function clampInt(value: number, min: number, max: number, fallback: number): number {
@@ -119,34 +147,42 @@ function computeNextRunAt(config: AutomationScheduleConfig, from = new Date()): 
   return candidate;
 }
 
-async function persistState(next: AutomationScheduleState): Promise<AutomationScheduleState> {
+async function persistState(
+  userId: string | undefined,
+  next: AutomationScheduleState
+): Promise<AutomationScheduleState> {
   const state = {
     ...next,
     updatedAt: nowIso()
   };
-  globalThis.__shortsAutomationScheduleCache__ = state;
-  return writeAutomationScheduleState(state);
+  const key = getUserKey(userId);
+  getScheduleCacheStore()[key] = state;
+  return writeAutomationScheduleState(state, userId);
 }
 
-async function getStateInternal(): Promise<AutomationScheduleState> {
-  if (globalThis.__shortsAutomationScheduleCache__) {
-    return globalThis.__shortsAutomationScheduleCache__;
+async function getStateInternal(userId?: string): Promise<AutomationScheduleState> {
+  const key = getUserKey(userId);
+  const cacheStore = getScheduleCacheStore();
+  if (cacheStore[key]) {
+    return cacheStore[key];
   }
-  const loaded = normalizeState(await readAutomationScheduleState());
-  globalThis.__shortsAutomationScheduleCache__ = loaded;
+  const loaded = normalizeState(await readAutomationScheduleState(userId));
+  cacheStore[key] = loaded;
   return loaded;
 }
 
-function clearTimer(): void {
-  if (globalThis.__shortsAutomationScheduleTimer__) {
-    clearTimeout(globalThis.__shortsAutomationScheduleTimer__);
-    globalThis.__shortsAutomationScheduleTimer__ = undefined;
+function clearTimer(userId?: string): void {
+  const key = getUserKey(userId);
+  const timerStore = getTimerStore();
+  if (timerStore[key]) {
+    clearTimeout(timerStore[key]);
+    delete timerStore[key];
   }
 }
 
-async function scheduleNextTimer(): Promise<void> {
-  clearTimer();
-  const state = await getStateInternal();
+async function scheduleNextTimer(userId?: string): Promise<void> {
+  clearTimer(userId);
+  const state = await getStateInternal(userId);
   if (!state.config.enabled) {
     return;
   }
@@ -155,20 +191,21 @@ async function scheduleNextTimer(): Promise<void> {
   const now = new Date();
   if (!nextRunAt || !Number.isFinite(nextRunAt.getTime()) || nextRunAt.getTime() <= now.getTime()) {
     nextRunAt = computeNextRunAt(state.config, now);
-    await persistState({
+    await persistState(userId, {
       ...state,
       nextRunAt: nextRunAt.toISOString()
     });
   }
 
   const delayMs = Math.max(1000, nextRunAt.getTime() - now.getTime());
-  globalThis.__shortsAutomationScheduleTimer__ = setTimeout(() => {
-    void runScheduledTick();
+  const key = getUserKey(userId);
+  getTimerStore()[key] = setTimeout(() => {
+    void runScheduledTick(userId);
   }, delayMs);
 }
 
-async function runScheduledTick(): Promise<void> {
-  const state = await getStateInternal();
+async function runScheduledTick(userId?: string): Promise<void> {
+  const state = await getStateInternal(userId);
   if (!state.config.enabled) {
     return;
   }
@@ -176,11 +213,11 @@ async function runScheduledTick(): Promise<void> {
   const now = new Date();
   const nextRun = state.nextRunAt ? new Date(state.nextRunAt) : undefined;
   if (nextRun && Number.isFinite(nextRun.getTime()) && now.getTime() + 500 < nextRun.getTime()) {
-    await scheduleNextTimer();
+    await scheduleNextTimer(userId);
     return;
   }
 
-  const automationState = getAutomationState();
+  const automationState = getAutomationState(userId);
   let lastResult: AutomationScheduleState["lastResult"] = "started";
   let lastError: string | undefined;
   try {
@@ -188,7 +225,7 @@ async function runScheduledTick(): Promise<void> {
       lastResult = "skipped_running";
       lastError = "기존 자동화가 실행 중이라 이번 스케줄은 건너뛰었습니다.";
     } else {
-      startAutomationRun({
+      startAutomationRun(userId, {
         sheetName: state.config.sheetName,
         privacyStatus: state.config.privacyStatus,
         uploadMode: state.config.uploadMode,
@@ -205,50 +242,53 @@ async function runScheduledTick(): Promise<void> {
   }
 
   const nextRunAt = computeNextRunAt(state.config, now).toISOString();
-  await persistState({
+  await persistState(userId, {
     ...state,
     lastRunAt: now.toISOString(),
     lastResult,
     lastError,
     nextRunAt
   });
-  await scheduleNextTimer();
+  await scheduleNextTimer(userId);
 }
 
-export async function ensureAutomationSchedulerStarted(): Promise<void> {
-  if (globalThis.__shortsAutomationSchedulerInitialized__) {
+export async function ensureAutomationSchedulerStarted(userId?: string): Promise<void> {
+  const key = getUserKey(userId);
+  const initializedStore = getInitializedStore();
+  if (initializedStore[key]) {
     return;
   }
-  globalThis.__shortsAutomationSchedulerInitialized__ = true;
-  await getStateInternal();
-  await scheduleNextTimer();
+  initializedStore[key] = true;
+  await getStateInternal(userId);
+  await scheduleNextTimer(userId);
 }
 
-export async function getAutomationScheduleState(): Promise<AutomationScheduleState> {
-  await ensureAutomationSchedulerStarted();
-  return getStateInternal();
+export async function getAutomationScheduleState(userId?: string): Promise<AutomationScheduleState> {
+  await ensureAutomationSchedulerStarted(userId);
+  return getStateInternal(userId);
 }
 
 export async function updateAutomationScheduleConfig(
+  userId: string | undefined,
   patch: Partial<AutomationScheduleConfig>
 ): Promise<AutomationScheduleState> {
-  await ensureAutomationSchedulerStarted();
-  const state = await getStateInternal();
+  await ensureAutomationSchedulerStarted(userId);
+  const state = await getStateInternal(userId);
   const config = normalizeConfig({
     ...state.config,
     ...patch
   });
   const nextRunAt = config.enabled ? computeNextRunAt(config, new Date()).toISOString() : undefined;
-  const next = await persistState({
+  const next = await persistState(userId, {
     ...state,
     config,
     nextRunAt,
     lastError: undefined
   });
-  await scheduleNextTimer();
+  await scheduleNextTimer(userId);
   return next;
 }
 
-export async function disableAutomationSchedule(): Promise<AutomationScheduleState> {
-  return updateAutomationScheduleConfig({ enabled: false });
+export async function disableAutomationSchedule(userId?: string): Promise<AutomationScheduleState> {
+  return updateAutomationScheduleConfig(userId, { enabled: false });
 }

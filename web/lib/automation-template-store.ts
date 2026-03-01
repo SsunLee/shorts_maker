@@ -2,6 +2,8 @@ import { promises as fs } from "fs";
 import path from "path";
 import { randomUUID } from "node:crypto";
 import { RenderOptions } from "@/lib/types";
+import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -90,14 +92,10 @@ function sortByUpdatedAtDesc(items: AutomationTemplateEntry[]): AutomationTempla
   return [...items].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-async function readCatalog(): Promise<AutomationTemplateCatalog> {
-  const automationTemplateFile = resolveAutomationTemplateFile();
-  await ensureAutomationTemplateFile();
-  const raw = await fs.readFile(automationTemplateFile, "utf8");
+function normalizeCatalog(
+  parsed: Partial<AutomationTemplateCatalog> | Partial<AutomationTemplateSnapshot> | undefined
+): AutomationTemplateCatalog {
   try {
-    const parsed = JSON.parse(raw) as
-      | Partial<AutomationTemplateCatalog>
-      | Partial<AutomationTemplateSnapshot>;
     if (!parsed || typeof parsed !== "object") {
       return { templates: [] };
     }
@@ -155,14 +153,62 @@ async function readCatalog(): Promise<AutomationTemplateCatalog> {
   }
 }
 
-async function writeCatalog(catalog: AutomationTemplateCatalog): Promise<void> {
+async function readCatalogFromFile(): Promise<AutomationTemplateCatalog> {
   const automationTemplateFile = resolveAutomationTemplateFile();
   await ensureAutomationTemplateFile();
+  const raw = await fs.readFile(automationTemplateFile, "utf8");
+  try {
+    const parsed = JSON.parse(raw) as
+      | Partial<AutomationTemplateCatalog>
+      | Partial<AutomationTemplateSnapshot>;
+    return normalizeCatalog(parsed);
+  } catch {
+    return { templates: [] };
+  }
+}
+
+async function readCatalog(userId?: string): Promise<AutomationTemplateCatalog> {
+  if (userId && prisma) {
+    const row = await prisma.userAutomationTemplateCatalog.findUnique({
+      where: { userId }
+    });
+    const parsed = row?.data as
+      | Partial<AutomationTemplateCatalog>
+      | Partial<AutomationTemplateSnapshot>
+      | undefined;
+    const normalized = normalizeCatalog(parsed);
+    if (normalized.templates.length > 0) {
+      return normalized;
+    }
+    // First-login fallback: surface existing local template file until user saves to DB.
+    return readCatalogFromFile();
+  }
+
+  return readCatalogFromFile();
+}
+
+async function writeCatalog(catalog: AutomationTemplateCatalog, userId?: string): Promise<void> {
+  const automationTemplateFile = resolveAutomationTemplateFile();
   const templates = sortByUpdatedAtDesc(catalog.templates);
   const activeTemplateId =
     catalog.activeTemplateId && templates.some((item) => item.id === catalog.activeTemplateId)
       ? catalog.activeTemplateId
       : templates[0]?.id;
+
+  if (userId && prisma) {
+    const data = {
+      activeTemplateId,
+      templates
+    } satisfies AutomationTemplateCatalog;
+    await prisma.userAutomationTemplateCatalog.upsert({
+      where: { userId },
+      update: { data: data as unknown as Prisma.InputJsonValue },
+      create: { userId, data: data as unknown as Prisma.InputJsonValue }
+    });
+    return;
+  }
+
+  await ensureAutomationTemplateFile();
   await fs.writeFile(
     automationTemplateFile,
     JSON.stringify(
@@ -177,11 +223,11 @@ async function writeCatalog(catalog: AutomationTemplateCatalog): Promise<void> {
   );
 }
 
-export async function listAutomationTemplates(): Promise<{
+export async function listAutomationTemplates(userId?: string): Promise<{
   activeTemplateId?: string;
   templates: AutomationTemplateEntry[];
 }> {
-  const catalog = await readCatalog();
+  const catalog = await readCatalog(userId);
   return {
     activeTemplateId: catalog.activeTemplateId,
     templates: catalog.templates
@@ -189,23 +235,25 @@ export async function listAutomationTemplates(): Promise<{
 }
 
 export async function getAutomationTemplateEntryById(
-  templateId: string
+  templateId: string,
+  userId?: string
 ): Promise<AutomationTemplateEntry | undefined> {
-  const catalog = await readCatalog();
+  const catalog = await readCatalog(userId);
   return catalog.templates.find((item) => item.id === templateId);
 }
 
 export async function setActiveAutomationTemplate(
-  templateId: string
+  templateId: string,
+  userId?: string
 ): Promise<AutomationTemplateSnapshot | undefined> {
-  const catalog = await readCatalog();
+  const catalog = await readCatalog(userId);
   if (!catalog.templates.some((item) => item.id === templateId)) {
     throw new Error("Selected template was not found.");
   }
   await writeCatalog({
     ...catalog,
     activeTemplateId: templateId
-  });
+  }, userId);
   const selected = catalog.templates.find((item) => item.id === templateId);
   if (!selected) {
     return undefined;
@@ -222,17 +270,17 @@ export async function setActiveAutomationTemplate(
   };
 }
 
-export async function deleteAutomationTemplate(templateId: string): Promise<{
+export async function deleteAutomationTemplate(templateId: string, userId?: string): Promise<{
   activeTemplateId?: string;
   templates: AutomationTemplateEntry[];
 }> {
-  const catalog = await readCatalog();
+  const catalog = await readCatalog(userId);
   const next = catalog.templates.filter((item) => item.id !== templateId);
   await writeCatalog({
     activeTemplateId: catalog.activeTemplateId,
     templates: next
-  });
-  return listAutomationTemplates();
+  }, userId);
+  return listAutomationTemplates(userId);
 }
 
 export async function updateAutomationTemplate(args: {
@@ -244,8 +292,9 @@ export async function updateAutomationTemplate(args: {
   templateName?: string;
   voice?: string;
   voiceSpeed?: number;
+  userId?: string;
 }): Promise<AutomationTemplateSnapshot> {
-  const catalog = await readCatalog();
+  const catalog = await readCatalog(args.userId);
   const index = catalog.templates.findIndex((item) => item.id === args.templateId);
   if (index < 0) {
     throw new Error("Selected template was not found.");
@@ -272,7 +321,7 @@ export async function updateAutomationTemplate(args: {
   await writeCatalog({
     activeTemplateId: catalog.activeTemplateId || updated.id,
     templates: nextTemplates
-  });
+  }, args.userId);
 
   return {
     renderOptions: updated.renderOptions,
@@ -286,8 +335,10 @@ export async function updateAutomationTemplate(args: {
   };
 }
 
-export async function getAutomationTemplateSnapshot(): Promise<AutomationTemplateSnapshot | undefined> {
-  const catalog = await readCatalog();
+export async function getAutomationTemplateSnapshot(
+  userId?: string
+): Promise<AutomationTemplateSnapshot | undefined> {
+  const catalog = await readCatalog(userId);
   if (catalog.templates.length === 0) {
     return undefined;
   }
@@ -310,9 +361,12 @@ export async function getAutomationTemplateSnapshot(): Promise<AutomationTemplat
 }
 
 export async function saveAutomationTemplateSnapshot(
-  value: Omit<AutomationTemplateSnapshot, "updatedAt"> & { updatedAt?: string }
+  value: Omit<AutomationTemplateSnapshot, "updatedAt"> & {
+    updatedAt?: string;
+    userId?: string;
+  }
 ): Promise<AutomationTemplateSnapshot> {
-  const catalog = await readCatalog();
+  const catalog = await readCatalog(value.userId);
   const entry: AutomationTemplateEntry = {
     id: randomUUID(),
     renderOptions: value.renderOptions,
@@ -331,7 +385,7 @@ export async function saveAutomationTemplateSnapshot(
   await writeCatalog({
     activeTemplateId: entry.id,
     templates: nextTemplates
-  });
+  }, value.userId);
 
   const snapshot: AutomationTemplateSnapshot = {
     renderOptions: entry.renderOptions,

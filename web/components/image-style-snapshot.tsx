@@ -173,7 +173,7 @@ export function ImageStyleSnapshot(props: { styleText: string; className?: strin
         <button
           type="button"
           onClick={() => setCollapsed((prev) => !prev)}
-          className="rounded border px-2 py-1 text-xs text-muted-foreground transition hover:bg-muted"
+          className="rounded border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground"
         >
           {collapsed ? "펼치기" : "접기"}
         </button>

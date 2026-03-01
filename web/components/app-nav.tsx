@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -7,7 +8,7 @@ import {
   Home,
   LayoutTemplate,
   Lightbulb,
-  Menu,
+  LogOut,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -16,6 +17,7 @@ import {
   Sun
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AppTheme, applyTheme, getStoredTheme, normalizeTheme, setStoredTheme, THEME_CHANGED_EVENT } from "@/lib/theme";
@@ -58,6 +60,7 @@ export function AppNav(): React.JSX.Element {
   }, []);
 
   const navWidthClass = useMemo(() => (collapsed ? "w-[78px]" : "w-[248px]"), [collapsed]);
+  const hideForAuthRoute = pathname.startsWith("/auth");
 
   function toggleCollapsed(): void {
     setCollapsed((prev) => {
@@ -73,6 +76,14 @@ export function AppNav(): React.JSX.Element {
     setStoredTheme(nextTheme);
   }
 
+  async function onLogout(): Promise<void> {
+    await signOut({ callbackUrl: "/auth/signin" });
+  }
+
+  if (hideForAuthRoute) {
+    return <></>;
+  }
+
   return (
     <aside
       className={cn(
@@ -84,12 +95,15 @@ export function AppNav(): React.JSX.Element {
         <Link
           href="/create"
           className={cn(
-            "inline-flex h-9 items-center rounded-md px-2 text-sm font-semibold text-foreground",
-            collapsed ? "w-9 justify-center" : "w-auto"
+            "inline-flex h-11 items-center rounded-md px-1.5 text-sm font-semibold text-foreground",
+            collapsed ? "w-11 justify-center" : "w-auto"
           )}
           title="Shorts Maker"
         >
-          {collapsed ? <Menu className="h-4 w-4" /> : "Shorts Maker"}
+          <span className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border/80 bg-background/80 p-1 shadow-sm">
+            <Image src="/favicon_ssun.png" alt="ssunEdu" fill sizes="36px" className="object-contain" />
+          </span>
+          {collapsed ? null : <span className="ml-2.5 text-xl leading-none">Shorts Maker</span>}
         </Link>
         <Button
           type="button"
@@ -112,7 +126,7 @@ export function AppNav(): React.JSX.Element {
               "inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
               pathname === href
                 ? "bg-primary text-primary-foreground"
-                : "text-foreground hover:bg-muted",
+                : "text-foreground hover:bg-accent hover:text-accent-foreground",
               collapsed ? "justify-center px-2" : ""
             )}
             title={label}
@@ -124,17 +138,30 @@ export function AppNav(): React.JSX.Element {
       </nav>
 
       <div className="mt-3 border-t pt-3">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={toggleTheme}
-          className={cn("w-full", collapsed ? "px-0" : "")}
-          title={theme === "dark" ? "Light Mode" : "Dark Mode"}
-        >
-          {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          {collapsed ? null : <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>}
-        </Button>
+        <div className="flex flex-col gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={toggleTheme}
+            className={cn("w-full", collapsed ? "px-0" : "")}
+            title={theme === "dark" ? "Light Mode" : "Dark Mode"}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            {collapsed ? null : <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onLogout}
+            className={cn("w-full", collapsed ? "px-0" : "")}
+            title="로그아웃"
+          >
+            <LogOut className="h-4 w-4" />
+            {collapsed ? null : <span>로그아웃</span>}
+          </Button>
+        </div>
       </div>
     </aside>
   );

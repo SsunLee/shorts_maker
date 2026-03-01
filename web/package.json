@@ -7,10 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sync:env": "node scripts/sync-env-from-settings.js"
   },
   "dependencies": {
     "@google/genai": "^1.41.0",
+    "@prisma/client": "^6.16.0",
     "@radix-ui/react-dialog": "^1.1.2",
     "@radix-ui/react-progress": "^1.1.0",
     "@radix-ui/react-select": "^2.1.1",
@@ -21,9 +23,11 @@
     "googleapis": "^146.0.0",
     "lucide-react": "^0.468.0",
     "next": "^15.5.12",
+    "next-auth": "^4.24.13",
     "openai": "^4.78.1",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
+    "prisma": "^6.16.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
     "tailwind-merge": "^2.5.5",
     "zod": "^3.24.1"
   },

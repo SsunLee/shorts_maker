@@ -612,7 +612,7 @@ export function IdeasClient(): React.JSX.Element {
                             return (
                               <label
                                 key={`keyword-option-${value}`}
-                                className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-muted/50"
+                                className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-accent/50"
                               >
                                 <input
                                   type="checkbox"

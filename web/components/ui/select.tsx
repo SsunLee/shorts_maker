@@ -14,7 +14,7 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-10 w-full items-center justify-between rounded-md border border-input bg-card px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-900",
+      "flex h-10 w-full items-center justify-between rounded-md border border-input bg-card px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 hover:bg-accent/40 dark:bg-zinc-900 dark:hover:bg-accent/45",
       className
     )}
     {...props}
@@ -53,7 +53,7 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex w-full cursor-default select-none items-center rounded-sm bg-card py-1.5 pl-8 pr-2 text-sm text-foreground outline-none focus:bg-accent focus:text-accent-foreground data-[state=checked]:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50 dark:bg-zinc-900",
+      "relative flex w-full cursor-default select-none items-center rounded-sm bg-card py-1.5 pl-8 pr-2 text-sm text-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground data-[state=checked]:bg-accent/80 data-[state=checked]:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 dark:bg-zinc-900 dark:hover:bg-accent dark:hover:text-accent-foreground",
       className
     )}
     {...props}

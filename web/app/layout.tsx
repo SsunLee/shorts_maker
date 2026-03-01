@@ -4,7 +4,12 @@ import { AppNav } from "@/components/app-nav";
 
 export const metadata: Metadata = {
   title: "Shorts Maker",
-  description: "Generate and publish short-form videos with OpenAI + FFmpeg."
+  description: "Generate and publish short-form videos with OpenAI + FFmpeg.",
+  icons: {
+    icon: "/favicon_ssun.png",
+    shortcut: "/favicon_ssun.png",
+    apple: "/favicon_ssun.png"
+  }
 };
 
 export default function RootLayout({

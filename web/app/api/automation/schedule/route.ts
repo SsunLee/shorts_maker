@@ -6,6 +6,7 @@ import {
   getAutomationScheduleState,
   updateAutomationScheduleConfig
 } from "@/lib/automation-scheduler";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -24,18 +25,26 @@ const schema = z.object({
 
 /** Get automation schedule config/state. */
 export async function GET(): Promise<NextResponse> {
-  await ensureAutomationSchedulerStarted();
-  const schedule = await getAutomationScheduleState();
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  await ensureAutomationSchedulerStarted(userId);
+  const schedule = await getAutomationScheduleState(userId);
   return NextResponse.json({ schedule });
 }
 
 /** Create or update automation schedule config. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    await ensureAutomationSchedulerStarted();
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    await ensureAutomationSchedulerStarted(userId);
     const body = await request.json().catch(() => ({}));
     const payload = schema.parse(body || {});
-    const schedule = await updateAutomationScheduleConfig(payload);
+    const schedule = await updateAutomationScheduleConfig(userId, payload);
     return NextResponse.json({ schedule });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to update schedule";
@@ -45,7 +54,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
 /** Disable automation schedule. */
 export async function DELETE(): Promise<NextResponse> {
-  await ensureAutomationSchedulerStarted();
-  const schedule = await disableAutomationSchedule();
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  await ensureAutomationSchedulerStarted(userId);
+  const schedule = await disableAutomationSchedule(userId);
   return NextResponse.json({ schedule });
 }

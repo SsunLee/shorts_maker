@@ -43,9 +43,9 @@ html {
   --primary-foreground: 0 0% 10%;
   --secondary: 0 0% 20%;
   --secondary-foreground: 0 0% 96%;
-  --muted: 0 0% 14%;
-  --muted-foreground: 0 0% 70%;
-  --accent: 0 0% 16%;
+  --muted: 156 18% 14%;
+  --muted-foreground: 0 0% 72%;
+  --accent: 152 58% 24%;
   --accent-foreground: 0 0% 96%;
   --destructive: 0 72% 50%;
   --destructive-foreground: 0 0% 100%;
