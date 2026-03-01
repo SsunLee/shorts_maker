@@ -6,6 +6,7 @@ import {
   getAutomationScheduleState,
   updateAutomationScheduleConfig
 } from "@/lib/automation-scheduler";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,10 @@ const schema = z.object({
 
 /** Get automation schedule config/state. */
 export async function GET(): Promise<NextResponse> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   await ensureAutomationSchedulerStarted();
   const schedule = await getAutomationScheduleState();
   return NextResponse.json({ schedule });
@@ -32,6 +37,10 @@ export async function GET(): Promise<NextResponse> {
 /** Create or update automation schedule config. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     await ensureAutomationSchedulerStarted();
     const body = await request.json().catch(() => ({}));
     const payload = schema.parse(body || {});
@@ -45,6 +54,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
 /** Disable automation schedule. */
 export async function DELETE(): Promise<NextResponse> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   await ensureAutomationSchedulerStarted();
   const schedule = await disableAutomationSchedule();
   return NextResponse.json({ schedule });

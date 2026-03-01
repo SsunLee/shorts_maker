@@ -1,6 +1,8 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { AppSettings } from "@/lib/types";
+import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -33,7 +35,18 @@ async function ensureSettingsFile(): Promise<void> {
 }
 
 /** Read locally saved settings used as a fallback to environment variables. */
-export async function getSettings(): Promise<AppSettings> {
+export async function getSettings(userId?: string): Promise<AppSettings> {
+  if (userId && prisma) {
+    const row = await prisma.userSettings.findUnique({
+      where: { userId }
+    });
+    const parsed = row?.data;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as AppSettings;
+    }
+    return {};
+  }
+
   const settingsFile = resolveSettingsFile();
   await ensureSettingsFile();
   const raw = await fs.readFile(settingsFile, "utf8");
@@ -46,7 +59,16 @@ export async function getSettings(): Promise<AppSettings> {
 }
 
 /** Persist settings to local disk for development and self-hosted usage. */
-export async function saveSettings(settings: AppSettings): Promise<AppSettings> {
+export async function saveSettings(settings: AppSettings, userId?: string): Promise<AppSettings> {
+  if (userId && prisma) {
+    await prisma.userSettings.upsert({
+      where: { userId },
+      update: { data: settings as unknown as Prisma.InputJsonValue },
+      create: { userId, data: settings as unknown as Prisma.InputJsonValue }
+    });
+    return settings;
+  }
+
   const settingsFile = resolveSettingsFile();
   await ensureSettingsFile();
   await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2), "utf8");

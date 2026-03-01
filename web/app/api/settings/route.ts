@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSettings, saveSettings } from "@/lib/settings-store";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -29,16 +30,24 @@ const schema = z.object({
 
 /** Retrieve saved local integration settings. */
 export async function GET(): Promise<NextResponse> {
-  const settings = await getSettings();
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const settings = await getSettings(userId);
   return NextResponse.json(settings);
 }
 
 /** Persist integration settings to local storage. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
     const payload = schema.parse(body);
-    const saved = await saveSettings(payload);
+    const saved = await saveSettings(payload, userId);
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid payload";

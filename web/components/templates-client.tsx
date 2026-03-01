@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Eye, Pencil, Plus, Trash2 } from "lucide-react";
+import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Eye, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -230,6 +230,12 @@ function clampNumber(value: number, min: number, max: number, fallback: number):
   return Math.max(min, Math.min(max, value));
 }
 
+function formatPercentString(value: number, digits = 2): string {
+  const normalized = Number.isFinite(value) ? value : 0;
+  const fixed = normalized.toFixed(digits);
+  return String(Number(fixed));
+}
+
 function normalizeText(value: string): string {
   return String(value || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
@@ -246,6 +252,11 @@ function subtitleAssScaleForCanvas(canvasScale: number): number {
   const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
   const assToOutputScale = VIDEO_RENDER_HEIGHT / ASS_DEFAULT_PLAYRES_Y;
   return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
+}
+
+function titleLayerScaleForCanvas(canvasScale: number): number {
+  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
+  return clampNumber(safeCanvasScale * 1.52, 0.24, 0.5, 0.4);
 }
 
 function detectTemplateFontPreset(fontName: string | undefined): string {
@@ -316,7 +327,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       x: clampNumber(Number(editor.badgeX), 0, 100, 72),
       y: clampNumber(Number(editor.badgeY), 0, 100, 10),
       width: clampNumber(Number(editor.badgeWidth), 20, 100, 40),
-      fontSize: clampNumber(Number(editor.badgeFontSize), 10, 60, 16),
+      fontSize: clampNumber(Number(editor.badgeFontSize), 12, 60, 16),
       color: normalizeHex(editor.badgeColor, "#FFFFFF"),
       paddingX: 4,
       paddingY: 2,
@@ -339,7 +350,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       x: clampNumber(Number(layer.x), 0, 100, 50),
       y: clampNumber(Number(layer.y), 0, 100, 50),
       width: clampNumber(Number(layer.width), 20, 100, 60),
-      fontSize: clampNumber(Number(layer.fontSize), 10, 120, 28),
+      fontSize: clampNumber(Number(layer.fontSize), 12, 120, 28),
       fontThickness: clampNumber(Number(layer.fontThickness), 0, 8, 0),
       color: normalizeHex(layer.color, "#FFFFFF"),
       paddingX: 8,
@@ -404,7 +415,7 @@ function extractLayerNumber(
   if (field === "fontThickness") {
     return String(clampNumber(Number(found?.[field]), 0, 8, fallback));
   }
-  return String(clampNumber(Number(found?.[field]), 8, 200, fallback));
+  return String(clampNumber(Number(found?.[field]), 12, 200, fallback));
 }
 
 function extractLayerMetric(
@@ -416,7 +427,7 @@ function extractLayerMetric(
   fallback: number
 ): string {
   const found = (renderOptions.overlay.titleTemplates || []).find((item) => item.id === id);
-  return String(clampNumber(Number(found?.[field]), min, max, fallback));
+  return formatPercentString(clampNumber(Number(found?.[field]), min, max, fallback));
 }
 
 function extractLayerColor(
@@ -457,10 +468,10 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
     .map((layer, index) => ({
       id: layer.id || `custom_${index + 1}`,
       text: normalizeText(layer.text || ""),
-      x: String(clampNumber(Number(layer.x), 0, 100, 50)),
-      y: String(clampNumber(Number(layer.y), 0, 100, 50)),
-      width: String(clampNumber(Number(layer.width), 20, 100, 60)),
-      fontSize: String(clampNumber(Number(layer.fontSize), 10, 120, 28)),
+      x: formatPercentString(clampNumber(Number(layer.x), 0, 100, 50)),
+      y: formatPercentString(clampNumber(Number(layer.y), 0, 100, 50)),
+      width: formatPercentString(clampNumber(Number(layer.width), 20, 100, 60)),
+      fontSize: String(clampNumber(Number(layer.fontSize), 12, 120, 28)),
       fontThickness: String(clampNumber(Number(layer.fontThickness), 0, 8, 0)),
       color: normalizeHex(layer.color || "", "#FFFFFF")
     }));
@@ -518,11 +529,15 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
         ? item.renderOptions.subtitle.position
         : "bottom",
     subtitleFontSize: String(clampNumber(Number(item.renderOptions.subtitle.fontSize), 10, 120, 16)),
-    subtitleYPercent: String(clampNumber(Number(item.renderOptions.subtitle.subtitleYPercent), 0, 100, 86)),
+    subtitleYPercent: formatPercentString(
+      clampNumber(Number(item.renderOptions.subtitle.subtitleYPercent), 0, 100, 86)
+    ),
     subtitleSampleText: SAMPLE_NARRATION,
     videoLayout: overlay.videoLayout === "panel_16_9" ? "panel_16_9" : "fill_9_16",
-    panelTopPercent: String(clampNumber(Number(overlay.panelTopPercent), 0, 85, 34)),
-    panelWidthPercent: String(clampNumber(Number(overlay.panelWidthPercent), 60, 100, 100)),
+    panelTopPercent: formatPercentString(clampNumber(Number(overlay.panelTopPercent), 0, 85, 34)),
+    panelWidthPercent: formatPercentString(
+      clampNumber(Number(overlay.panelWidthPercent), 60, 100, 100)
+    ),
     motionPreset:
       overlay.sceneMotionPreset === "up_down" ||
       overlay.sceneMotionPreset === "left_right" ||
@@ -597,11 +612,13 @@ type DragTarget = string;
 type DragState = {
   pointerId: number;
   target: DragTarget;
+  mode: "move" | "resize-left" | "resize-right";
   rect: { left: number; top: number; width: number; height: number };
   startX: number;
   startY: number;
   initialPercentX?: number;
   initialPercentY: number;
+  initialPercentWidth?: number;
 };
 
 type AutoSaveStatus = "idle" | "saving" | "saved" | "error";
@@ -675,6 +692,10 @@ export function TemplatesClient(): React.JSX.Element {
   const [previewError, setPreviewError] = useState<string>();
   const [selectedPreviewLayerId, setSelectedPreviewLayerId] = useState<string | null>(null);
   const [previewCanvasWidth, setPreviewCanvasWidth] = useState(0);
+  const [previewPaneWidth, setPreviewPaneWidth] = useState(360);
+  const [templateSelectOpen, setTemplateSelectOpen] = useState(true);
+  const [templateNameOpen, setTemplateNameOpen] = useState(true);
+  const [voiceSectionOpen, setVoiceSectionOpen] = useState(true);
   const previewCanvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -791,6 +812,10 @@ export function TemplatesClient(): React.JSX.Element {
     () => subtitleAssScaleForCanvas(templatePreviewScale),
     [templatePreviewScale]
   );
+  const titlePreviewRenderScale = useMemo(
+    () => titleLayerScaleForCanvas(templatePreviewScale),
+    [templatePreviewScale]
+  );
   const subtitlePreviewFontSize = useMemo(
     () =>
       clampNumber(
@@ -811,6 +836,13 @@ export function TemplatesClient(): React.JSX.Element {
     () => buildPayloadSignature(currentPayload),
     [currentPayload]
   );
+  const templateLayoutStyle = useMemo(
+    () =>
+      ({
+        ["--tpl-preview-width" as const]: `${clampNumber(previewPaneWidth, 280, 560, 360)}px`
+      }) as CSSProperties,
+    [previewPaneWidth]
+  );
 
   useEffect(() => {
     if (!availableVoiceOptions.length) {
@@ -827,15 +859,28 @@ export function TemplatesClient(): React.JSX.Element {
     });
   }, [availableVoiceOptions]);
 
-  function updateLayerPosition(target: DragTarget, nextX?: number, nextY?: number): void {
+  function updateLayerPosition(
+    target: DragTarget,
+    nextX?: number,
+    nextY?: number,
+    nextWidth?: number
+  ): void {
     setEditor((prev) => {
       if (target === "__primary_title__") {
         return {
           ...prev,
           primaryX:
-            nextX === undefined ? prev.primaryX : String(clampNumber(nextX, 0, 100, Number(prev.primaryX))),
+            nextX === undefined
+              ? prev.primaryX
+              : formatPercentString(clampNumber(nextX, 0, 100, Number(prev.primaryX))),
           primaryY:
-            nextY === undefined ? prev.primaryY : String(clampNumber(nextY, 0, 100, Number(prev.primaryY)))
+            nextY === undefined
+              ? prev.primaryY
+              : formatPercentString(clampNumber(nextY, 0, 100, Number(prev.primaryY))),
+          primaryWidth:
+            nextWidth === undefined
+              ? prev.primaryWidth
+              : formatPercentString(clampNumber(nextWidth, 20, 100, Number(prev.primaryWidth)))
         };
       }
       if (target === "__secondary_title__") {
@@ -844,20 +889,32 @@ export function TemplatesClient(): React.JSX.Element {
           secondaryX:
             nextX === undefined
               ? prev.secondaryX
-              : String(clampNumber(nextX, 0, 100, Number(prev.secondaryX))),
+              : formatPercentString(clampNumber(nextX, 0, 100, Number(prev.secondaryX))),
           secondaryY:
             nextY === undefined
               ? prev.secondaryY
-              : String(clampNumber(nextY, 0, 100, Number(prev.secondaryY)))
+              : formatPercentString(clampNumber(nextY, 0, 100, Number(prev.secondaryY))),
+          secondaryWidth:
+            nextWidth === undefined
+              ? prev.secondaryWidth
+              : formatPercentString(clampNumber(nextWidth, 20, 100, Number(prev.secondaryWidth)))
         };
       }
       if (target === "__badge__") {
         return {
           ...prev,
           badgeX:
-            nextX === undefined ? prev.badgeX : String(clampNumber(nextX, 0, 100, Number(prev.badgeX))),
+            nextX === undefined
+              ? prev.badgeX
+              : formatPercentString(clampNumber(nextX, 0, 100, Number(prev.badgeX))),
           badgeY:
-            nextY === undefined ? prev.badgeY : String(clampNumber(nextY, 0, 100, Number(prev.badgeY)))
+            nextY === undefined
+              ? prev.badgeY
+              : formatPercentString(clampNumber(nextY, 0, 100, Number(prev.badgeY))),
+          badgeWidth:
+            nextWidth === undefined
+              ? prev.badgeWidth
+              : formatPercentString(clampNumber(nextWidth, 20, 100, Number(prev.badgeWidth)))
         };
       }
       if (target !== "__subtitle__") {
@@ -868,9 +925,17 @@ export function TemplatesClient(): React.JSX.Element {
           return {
             ...layer,
             x:
-              nextX === undefined ? layer.x : String(clampNumber(nextX, 0, 100, Number(layer.x))),
+              nextX === undefined
+                ? layer.x
+                : formatPercentString(clampNumber(nextX, 0, 100, Number(layer.x))),
             y:
-              nextY === undefined ? layer.y : String(clampNumber(nextY, 0, 100, Number(layer.y)))
+              nextY === undefined
+                ? layer.y
+                : formatPercentString(clampNumber(nextY, 0, 100, Number(layer.y))),
+            width:
+              nextWidth === undefined
+                ? layer.width
+                : formatPercentString(clampNumber(nextWidth, 20, 100, Number(layer.width)))
           };
         });
         if (nextCustomLayers !== prev.customLayers) {
@@ -885,7 +950,7 @@ export function TemplatesClient(): React.JSX.Element {
         subtitleYPercent:
           nextY === undefined
             ? prev.subtitleYPercent
-            : String(clampNumber(nextY, 0, 100, Number(prev.subtitleYPercent)))
+            : formatPercentString(clampNumber(nextY, 0, 100, Number(prev.subtitleYPercent)))
       };
     });
   }
@@ -893,8 +958,10 @@ export function TemplatesClient(): React.JSX.Element {
   function beginDrag(
     target: DragTarget,
     event: React.PointerEvent<HTMLElement>,
+    mode: DragState["mode"],
     initialPercentX?: number,
-    initialPercentY?: number
+    initialPercentY?: number,
+    initialPercentWidth?: number
   ): void {
     if (!previewCanvasRef.current) {
       return;
@@ -903,6 +970,7 @@ export function TemplatesClient(): React.JSX.Element {
     dragRef.current = {
       pointerId: event.pointerId,
       target,
+      mode,
       rect: {
         left: rect.left,
         top: rect.top,
@@ -912,7 +980,8 @@ export function TemplatesClient(): React.JSX.Element {
       startX: event.clientX,
       startY: event.clientY,
       initialPercentX,
-      initialPercentY: initialPercentY ?? 50
+      initialPercentY: initialPercentY ?? 50,
+      initialPercentWidth
     };
     setSelectedPreviewLayerId(target);
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -931,8 +1000,29 @@ export function TemplatesClient(): React.JSX.Element {
       updateLayerPosition(drag.target, undefined, nextY);
       return;
     }
-    const nextX = (drag.initialPercentX ?? 50) + dx;
-    updateLayerPosition(drag.target, nextX, nextY);
+    const initialX = drag.initialPercentX ?? 50;
+    if (drag.mode === "move") {
+      const nextX = initialX + dx;
+      updateLayerPosition(drag.target, nextX, nextY);
+      return;
+    }
+
+    const initialWidth = clampNumber(drag.initialPercentWidth ?? 60, 20, 100, 60);
+    const initialLeft = initialX - initialWidth / 2;
+    const initialRight = initialX + initialWidth / 2;
+
+    if (drag.mode === "resize-right") {
+      const nextRight = initialRight + dx;
+      const nextWidth = clampNumber(nextRight - initialLeft, 20, 100, initialWidth);
+      const nextX = initialLeft + nextWidth / 2;
+      updateLayerPosition(drag.target, nextX, undefined, nextWidth);
+      return;
+    }
+
+    const nextLeft = initialLeft + dx;
+    const nextWidth = clampNumber(initialRight - nextLeft, 20, 100, initialWidth);
+    const nextX = initialRight - nextWidth / 2;
+    updateLayerPosition(drag.target, nextX, undefined, nextWidth);
   }
 
   function endDrag(event: React.PointerEvent<HTMLElement>): void {
@@ -1370,81 +1460,159 @@ export function TemplatesClient(): React.JSX.Element {
               Create 화면 없이도 자동화 템플릿을 생성/수정/선택할 수 있습니다.
             </p>
           </div>
-          <Button type="button" variant="outline" onClick={() => void refreshTemplates()} disabled={busy}>
-            새로고침
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-[320px,minmax(0,1fr)] xl:grid-cols-[360px,minmax(0,1fr)]">
-        <div
-          className="order-2 min-w-0 space-y-4 rounded-xl border bg-card p-4 lg:order-2"
-          onPointerDownCapture={() => setSelectedPreviewLayerId(null)}
-        >
-          <div className="grid gap-2 2xl:grid-cols-[1fr,1fr,auto]">
-            <div className="space-y-1">
-              <Label>템플릿 선택</Label>
-              <Select value={selectedTemplateId} onValueChange={onSelectTemplate}>
-                <SelectTrigger className="bg-card dark:bg-zinc-900">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__new__">+ 새 템플릿 생성</SelectItem>
-                  {templates.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      {(item.templateName || "(이름 없음)") + " · " + new Date(item.updatedAt).toLocaleString()}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label>자동화 활성 템플릿</Label>
-              <Input
-                value={
-                  templates.find((item) => item.id === activeTemplateId)?.templateName ||
-                  (activeTemplateId ? activeTemplateId : "없음")
-                }
-                readOnly
-              />
-            </div>
-            <div className="flex items-end gap-2">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">좌/우 너비</span>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setEditor(createInitialEditor())}
-                disabled={busy}
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setPreviewPaneWidth((prev) => clampNumber(prev - 20, 280, 560, 360))}
               >
-                <Plus className="mr-1 h-4 w-4" />
-                신규 초기화
+                -
+              </Button>
+              <Input
+                type="range"
+                min={280}
+                max={560}
+                step={10}
+                value={previewPaneWidth}
+                onChange={(event) =>
+                  setPreviewPaneWidth(clampNumber(Number(event.target.value), 280, 560, 360))
+                }
+                className="h-2 w-40 border-0 px-0"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setPreviewPaneWidth((prev) => clampNumber(prev + 20, 280, 560, 360))}
+              >
+                +
+              </Button>
+              <span className="w-12 text-right text-xs text-muted-foreground">
+                {previewPaneWidth}px
+              </span>
+            </div>
+            <Button type="button" variant="outline" onClick={() => void refreshTemplates()} disabled={busy}>
+              새로고침
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div
+        className="grid gap-4 lg:[grid-template-columns:minmax(280px,var(--tpl-preview-width))_minmax(0,1fr)]"
+        style={templateLayoutStyle}
+      >
+        <div
+          className="order-2 min-w-0 space-y-4 overflow-hidden break-words rounded-xl border bg-card p-4 lg:order-2"
+          onPointerDownCapture={() => setSelectedPreviewLayerId(null)}
+        >
+          <div className="rounded-md border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-sm font-semibold">템플릿 선택</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 px-2 text-xs"
+                onClick={() => setTemplateSelectOpen((prev) => !prev)}
+              >
+                {templateSelectOpen ? "접기" : "펼치기"}
+                {templateSelectOpen ? <ChevronUp className="ml-1 h-4 w-4" /> : <ChevronDown className="ml-1 h-4 w-4" />}
               </Button>
             </div>
+            {templateSelectOpen ? (
+              <div className="mt-3 space-y-2">
+                <div className="grid gap-2 2xl:grid-cols-[1fr,1fr,auto]">
+                  <div className="space-y-1">
+                    <Label>저장된 템플릿</Label>
+                    <Select value={selectedTemplateId} onValueChange={onSelectTemplate}>
+                      <SelectTrigger className="bg-card dark:bg-zinc-900">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__new__">+ 새 템플릿 생성</SelectItem>
+                        {templates.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {(item.templateName || "(이름 없음)") + " · " + new Date(item.updatedAt).toLocaleString()}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>자동화 활성 템플릿</Label>
+                    <Input
+                      value={
+                        templates.find((item) => item.id === activeTemplateId)?.templateName ||
+                        (activeTemplateId ? activeTemplateId : "없음")
+                      }
+                      readOnly
+                    />
+                  </div>
+                  <div className="flex items-end gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setEditor(createInitialEditor())}
+                      disabled={busy}
+                    >
+                      <Plus className="mr-1 h-4 w-4" />
+                      신규 초기화
+                    </Button>
+                  </div>
+                </div>
+                {selectedTemplateId !== "__new__" ? (
+                  <p
+                    className={`text-xs ${
+                      autoSaveStatus === "error"
+                        ? "text-destructive"
+                        : autoSaveStatus === "saving"
+                          ? "text-amber-500"
+                          : "text-emerald-500"
+                    }`}
+                  >
+                    {autoSaveMessage || "자동 저장 대기 중"}
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {autoSaveMessage || "새 템플릿은 수동 저장이 필요합니다."}
+                  </p>
+                )}
+              </div>
+            ) : null}
           </div>
-          {selectedTemplateId !== "__new__" ? (
-            <p
-              className={`text-xs ${
-                autoSaveStatus === "error"
-                  ? "text-destructive"
-                  : autoSaveStatus === "saving"
-                    ? "text-amber-500"
-                    : "text-emerald-500"
-              }`}
-            >
-              {autoSaveMessage || "자동 저장 대기 중"}
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">{autoSaveMessage || "새 템플릿은 수동 저장이 필요합니다."}</p>
-          )}
 
-          <div className="grid gap-2 md:grid-cols-5">
-            <div className="space-y-1 md:col-span-2">
-              <Label>템플릿 이름</Label>
-              <Input
-                value={editor.templateName}
-                onChange={(event) => setEditor((prev) => ({ ...prev, templateName: event.target.value }))}
-                placeholder="예: 뉴스형 자막 템플릿"
-              />
+          <div className="rounded-md border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-sm font-semibold">템플릿 이름</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 px-2 text-xs"
+                onClick={() => setTemplateNameOpen((prev) => !prev)}
+              >
+                {templateNameOpen ? "접기" : "펼치기"}
+                {templateNameOpen ? <ChevronUp className="ml-1 h-4 w-4" /> : <ChevronDown className="ml-1 h-4 w-4" />}
+              </Button>
             </div>
+            {templateNameOpen ? (
+              <div className="mt-3 space-y-1">
+                <Input
+                  value={editor.templateName}
+                  onChange={(event) => setEditor((prev) => ({ ...prev, templateName: event.target.value }))}
+                  placeholder="예: 뉴스형 자막 템플릿"
+                />
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-3">
             <div className="space-y-1">
               <Label>폰트명</Label>
               <Select
@@ -1560,84 +1728,101 @@ export function TemplatesClient(): React.JSX.Element {
           <ImageStyleSnapshot styleText={editor.imageStyle} />
 
           <div className="rounded-md border p-3">
-            <div className="grid gap-2 md:grid-cols-[1fr,140px,auto]">
-              <div className="space-y-1">
-                <Label>오디오 보이스</Label>
-                <Select
-                  value={editor.voice}
-                  onValueChange={(value) =>
-                    setEditor((prev) => ({
-                      ...prev,
-                      voice: value
-                    }))
-                  }
-                >
-                  <SelectTrigger className="bg-card dark:bg-zinc-900">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableVoiceOptions.map((item) => (
-                      <SelectItem key={item.id} value={item.id}>
-                        {item.label} · {item.hint || getVoiceHint(item.id)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">선택 보이스 특성: {selectedVoiceHint}</p>
-              </div>
-              <div className="space-y-1">
-                <Label>보이스 배속</Label>
-                <Select
-                  value={editor.voiceSpeed}
-                  onValueChange={(value) =>
-                    setEditor((prev) => ({
-                      ...prev,
-                      voiceSpeed: value
-                    }))
-                  }
-                >
-                  <SelectTrigger className="bg-card dark:bg-zinc-900">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {voiceSpeedOptions.map((value) => (
-                      <SelectItem key={value} value={value}>
-                        {value}x
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-end">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void previewVoice()}
-                  disabled={previewLoading}
-                >
-                  {previewLoading ? "미리듣기 생성 중..." : "보이스 미리 듣기"}
-                </Button>
-              </div>
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-sm font-semibold">오디오 보이스</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 px-2 text-xs"
+                onClick={() => setVoiceSectionOpen((prev) => !prev)}
+              >
+                {voiceSectionOpen ? "접기" : "펼치기"}
+                {voiceSectionOpen ? <ChevronUp className="ml-1 h-4 w-4" /> : <ChevronDown className="ml-1 h-4 w-4" />}
+              </Button>
             </div>
-            <div className="mt-2 space-y-2">
-              <Label>미리듣기 텍스트</Label>
-              <Textarea
-                rows={2}
-                value={previewText}
-                onChange={(event) => setPreviewText(event.target.value)}
-                placeholder={VOICE_PREVIEW_DEFAULT_TEXT}
-              />
-              {previewAudioUrl ? (
-                <audio ref={previewAudioRef} src={previewAudioUrl} controls className="w-full" />
-              ) : null}
-              {previewError ? (
-                <p className="text-xs text-destructive">{previewError}</p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  템플릿에 저장된 보이스/배속이 자동화 생성 시 그대로 사용됩니다.
-                </p>
-              )}
-            </div>
+            {voiceSectionOpen ? (
+              <div className="mt-3">
+                <div className="grid items-end gap-2 md:grid-cols-[1fr,140px,auto]">
+                  <div className="space-y-1">
+                    <Label>오디오 보이스</Label>
+                    <Select
+                      value={editor.voice}
+                      onValueChange={(value) =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          voice: value
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="bg-card dark:bg-zinc-900">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableVoiceOptions.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {item.label} · {item.hint || getVoiceHint(item.id)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>보이스 배속</Label>
+                    <Select
+                      value={editor.voiceSpeed}
+                      onValueChange={(value) =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          voiceSpeed: value
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="bg-card dark:bg-zinc-900">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {voiceSpeedOptions.map((value) => (
+                          <SelectItem key={value} value={value}>
+                            {value}x
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-end">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void previewVoice()}
+                      disabled={previewLoading}
+                    >
+                      {previewLoading ? "미리듣기 생성 중..." : "보이스 미리 듣기"}
+                    </Button>
+                  </div>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">선택 보이스 특성: {selectedVoiceHint}</p>
+                <div className="mt-2 space-y-2">
+                  <Label>미리듣기 텍스트</Label>
+                  <Textarea
+                    rows={2}
+                    value={previewText}
+                    onChange={(event) => setPreviewText(event.target.value)}
+                    placeholder={VOICE_PREVIEW_DEFAULT_TEXT}
+                  />
+                  {previewAudioUrl ? (
+                    <audio ref={previewAudioRef} src={previewAudioUrl} controls className="w-full" />
+                  ) : null}
+                  {previewError ? (
+                    <p className="text-xs text-destructive">{previewError}</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      템플릿에 저장된 보이스/배속이 자동화 생성 시 그대로 사용됩니다.
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="grid gap-2 md:grid-cols-3">
@@ -1782,6 +1967,8 @@ export function TemplatesClient(): React.JSX.Element {
                 <Label>크기</Label>
                 <Input
                   type="number"
+                  min={12}
+                  max={120}
                   value={editor.primaryFontSize}
                   onChange={(event) => setEditor((prev) => ({ ...prev, primaryFontSize: event.target.value }))}
                 />
@@ -1871,6 +2058,8 @@ export function TemplatesClient(): React.JSX.Element {
                 <Label>크기</Label>
                 <Input
                   type="number"
+                  min={12}
+                  max={120}
                   value={editor.secondaryFontSize}
                   disabled={!editor.secondaryEnabled}
                   onChange={(event) => setEditor((prev) => ({ ...prev, secondaryFontSize: event.target.value }))}
@@ -1947,6 +2136,8 @@ export function TemplatesClient(): React.JSX.Element {
                 <Label>크기</Label>
                 <Input
                   type="number"
+                  min={12}
+                  max={60}
                   value={editor.badgeFontSize}
                   onChange={(event) => setEditor((prev) => ({ ...prev, badgeFontSize: event.target.value }))}
                 />
@@ -2050,6 +2241,8 @@ export function TemplatesClient(): React.JSX.Element {
                       <Label>크기</Label>
                       <Input
                         type="number"
+                        min={12}
+                        max={120}
                         value={layer.fontSize}
                         onFocus={() => setSelectedPreviewLayerId(layer.id)}
                         onChange={(event) =>
@@ -2222,7 +2415,7 @@ export function TemplatesClient(): React.JSX.Element {
           {loading ? <p className="text-sm text-muted-foreground">Loading...</p> : null}
         </div>
 
-        <div className="order-1 space-y-3 rounded-xl border bg-card p-4 lg:order-1">
+        <div className="order-1 min-w-0 space-y-3 overflow-hidden break-words rounded-xl border bg-card p-4 lg:order-1">
           <div className="flex items-center gap-2">
             <Eye className="h-4 w-4" />
             <h2 className="text-base font-semibold">템플릿 미리보기</h2>
@@ -2301,14 +2494,18 @@ export function TemplatesClient(): React.JSX.Element {
                       top: `${clampNumber(Number(item.y), 0, 100, 50)}%`,
                       width: `${clampNumber(Number(item.width), 20, 100, 70)}%`,
                       color: normalizeHex(item.color || "#FFFFFF", "#FFFFFF"),
-                      fontSize: `${clampNumber(Number(item.fontSize), 10, 90, 24) * 0.42}px`,
+                      fontSize: `${clampNumber(Number(item.fontSize), 12, 120, 28) * titlePreviewRenderScale}px`,
                       fontFamily: item.fontName || editor.fontName || "Noto Sans KR",
                       fontWeight: item.fontBold ? 700 : 400,
                       fontStyle: item.fontItalic ? "italic" : "normal",
                       overflowWrap: "anywhere",
                       wordBreak: "break-word",
+                      overflow: "hidden",
                       textShadow: "0 1px 2px rgba(0,0,0,0.8)",
-                      WebkitTextStrokeWidth: `${clampNumber(Number(item.fontThickness), 0, 8, 0) * 0.2}px`,
+                      WebkitTextStrokeWidth: `${
+                        clampNumber(Number(item.fontThickness), 0, 8, 0) *
+                        (0.2 * (titlePreviewRenderScale / 0.42))
+                      }px`,
                       WebkitTextStrokeColor: "rgba(0,0,0,0.85)",
                       backgroundColor: isSelected ? "rgba(8,145,178,0.16)" : "rgba(0,0,0,0.15)"
                     }}
@@ -2316,11 +2513,49 @@ export function TemplatesClient(): React.JSX.Element {
                       beginDrag(
                         item.id,
                         event,
+                        "move",
                         clampNumber(Number(item.x), 0, 100, 50),
-                        clampNumber(Number(item.y), 0, 100, 50)
+                        clampNumber(Number(item.y), 0, 100, 50),
+                        clampNumber(Number(item.width), 20, 100, 70)
                       );
                     }}
                   >
+                    {isSelected ? (
+                      <>
+                        <button
+                          type="button"
+                          className="absolute -left-2 top-1/2 h-4 w-4 -translate-y-1/2 cursor-ew-resize rounded-full border border-cyan-200 bg-cyan-500/90"
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            beginDrag(
+                              item.id,
+                              event,
+                              "resize-left",
+                              clampNumber(Number(item.x), 0, 100, 50),
+                              clampNumber(Number(item.y), 0, 100, 50),
+                              clampNumber(Number(item.width), 20, 100, 70)
+                            );
+                          }}
+                          title="왼쪽 핸들 너비 조절"
+                        />
+                        <button
+                          type="button"
+                          className="absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 cursor-ew-resize rounded-full border border-cyan-200 bg-cyan-500/90"
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            beginDrag(
+                              item.id,
+                              event,
+                              "resize-right",
+                              clampNumber(Number(item.x), 0, 100, 50),
+                              clampNumber(Number(item.y), 0, 100, 50),
+                              clampNumber(Number(item.width), 20, 100, 70)
+                            );
+                          }}
+                          title="오른쪽 핸들 너비 조절"
+                        />
+                      </>
+                    ) : null}
                     {text}
                     {hint ? (
                       <span className="mt-1 block rounded bg-emerald-500/20 px-1 py-0.5 text-[10px] text-emerald-300">
@@ -2343,6 +2578,7 @@ export function TemplatesClient(): React.JSX.Element {
                   beginDrag(
                     "__subtitle__",
                     event,
+                    "move",
                     undefined,
                     clampNumber(Number(editor.subtitleYPercent), 0, 100, 86)
                   )
@@ -2351,7 +2587,9 @@ export function TemplatesClient(): React.JSX.Element {
                 <p
                   className="whitespace-pre-wrap"
                   style={{
-                    fontSize: `${subtitlePreviewFontSize}px`
+                    fontSize: `${subtitlePreviewFontSize}px`,
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word"
                   }}
                 >
                   {materializePreviewText({

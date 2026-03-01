@@ -12,7 +12,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageStyleSnapshot } from "@/components/image-style-snapshot";
-import { ALL_VOICE_OPTIONS, filterVoiceOptions, resolveTtsVoiceProvider } from "@/lib/voice-options";
+import {
+  ALL_VOICE_OPTIONS,
+  filterVoiceOptions,
+  getVoiceHint,
+  resolveTtsVoiceProvider
+} from "@/lib/voice-options";
 import {
   AppSettings,
   ImageAspectRatio,
@@ -1120,6 +1125,7 @@ export function CreateVideoForm(): React.JSX.Element {
     const filtered = filterVoiceOptions(provider);
     return filtered.length > 0 ? filtered : ALL_VOICE_OPTIONS;
   }, [ttsProviderSettings]);
+  const selectedVoiceHint = useMemo(() => getVoiceHint(voice), [voice]);
   const estimatedSceneSplitTokens = useMemo(() => {
     const videoLength = Number.parseInt(videoLengthSec, 10);
     return estimateSceneSplitTokens({
@@ -3338,7 +3344,7 @@ export function CreateVideoForm(): React.JSX.Element {
                   <SelectContent>
                     {availableVoiceOptions.map((item) => (
                       <SelectItem key={item.id} value={item.id}>
-                        {item.label}
+                        {item.label} · {item.hint || getVoiceHint(item.id)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -3355,6 +3361,7 @@ export function CreateVideoForm(): React.JSX.Element {
               <p className="text-xs text-muted-foreground">
                 Preview Voice 예상 소모: {formatTokenCount(previewVoiceEstimatedTokens)} 토큰
               </p>
+              <p className="text-xs text-muted-foreground">선택 보이스 특성: {selectedVoiceHint}</p>
               <div className="space-y-2">
                 <Label>Voice Speed</Label>
                 <Select value={voiceSpeed} onValueChange={setVoiceSpeed}>

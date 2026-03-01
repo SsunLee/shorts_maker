@@ -1,1 +1,15 @@
-{}
+{
+  "config": {
+    "enabled": true,
+    "cadence": "daily",
+    "intervalHours": 24,
+    "dailyTime": "00:00",
+    "itemsPerRun": 2,
+    "uploadMode": "youtube",
+    "privacyStatus": "public"
+  },
+  "nextRunAt": "2026-02-26T15:00:00.000Z",
+  "lastRunAt": "2026-02-25T15:00:00.007Z",
+  "lastResult": "started",
+  "updatedAt": "2026-02-25T15:00:00.008Z"
+}

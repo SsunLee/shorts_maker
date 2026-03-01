@@ -150,6 +150,11 @@ function subtitleAssScaleForCanvas(canvasScale: number): number {
   return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
 }
 
+function titleLayerScaleForCanvas(canvasScale: number): number {
+  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.2);
+  return clampNumber(safeCanvasScale * 1.52, 0.24, 0.5, 0.4);
+}
+
 function materializeSnapshotText(args: {
   text: string;
   sourceTitle?: string;
@@ -611,6 +616,7 @@ export function DashboardClient(): React.JSX.Element {
     const panelWidth = clampNumber(Number(overlay?.panelWidthPercent), 60, 100, 100);
     const previewWidth = 220;
     const previewScale = clampNumber(previewWidth / 1080, 0.12, 1, 0.2);
+    const titlePreviewRenderScale = titleLayerScaleForCanvas(previewScale);
     const subtitleScale = subtitleAssScaleForCanvas(previewScale);
     const subtitleY = clampNumber(Number(subtitle?.subtitleYPercent), 0, 100, 86);
     const subtitleFontSize = clampNumber(
@@ -663,19 +669,24 @@ export function DashboardClient(): React.JSX.Element {
                   top: `${clampNumber(Number(item.y), 0, 100, 50)}%`,
                   width: `${clampNumber(Number(item.width), 20, 100, 70)}%`,
                   color: normalizeHexColor(item.color, "#FFFFFF"),
-                  fontSize: `${Math.max(7, clampNumber(Number(item.fontSize), 10, 120, 28) * 0.2)}px`,
+                  fontSize: `${
+                    clampNumber(Number(item.fontSize), 12, 120, 28) * titlePreviewRenderScale
+                  }px`,
                   fontFamily: item.fontName || "Noto Sans KR",
                   fontWeight: item.fontBold ? 700 : 400,
                   fontStyle: item.fontItalic ? "italic" : "normal",
                   overflowWrap: "anywhere",
                   wordBreak: "break-word",
                   textShadow: "0 1px 2px rgba(0,0,0,0.75)",
-                  WebkitTextStrokeWidth: `${clampNumber(Number(item.fontThickness), 0, 8, 0) * 0.16}px`,
+                  WebkitTextStrokeWidth: `${
+                    clampNumber(Number(item.fontThickness), 0, 8, 0) *
+                    (0.2 * (titlePreviewRenderScale / 0.42))
+                  }px`,
                   WebkitTextStrokeColor: "rgba(0,0,0,0.85)"
                 }}
                 title={text}
               >
-                {text.slice(0, 70)}
+                {text}
               </div>
             )})}
             <div
