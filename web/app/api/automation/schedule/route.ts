@@ -29,8 +29,8 @@ export async function GET(): Promise<NextResponse> {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  await ensureAutomationSchedulerStarted();
-  const schedule = await getAutomationScheduleState();
+  await ensureAutomationSchedulerStarted(userId);
+  const schedule = await getAutomationScheduleState(userId);
   return NextResponse.json({ schedule });
 }
 
@@ -41,10 +41,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    await ensureAutomationSchedulerStarted();
+    await ensureAutomationSchedulerStarted(userId);
     const body = await request.json().catch(() => ({}));
     const payload = schema.parse(body || {});
-    const schedule = await updateAutomationScheduleConfig(payload);
+    const schedule = await updateAutomationScheduleConfig(userId, payload);
     return NextResponse.json({ schedule });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to update schedule";
@@ -58,7 +58,7 @@ export async function DELETE(): Promise<NextResponse> {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  await ensureAutomationSchedulerStarted();
-  const schedule = await disableAutomationSchedule();
+  await ensureAutomationSchedulerStarted(userId);
+  const schedule = await disableAutomationSchedule(userId);
   return NextResponse.json({ schedule });
 }
