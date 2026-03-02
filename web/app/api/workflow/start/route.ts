@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { startStagedWorkflow } from "@/lib/staged-workflow";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -22,9 +23,13 @@ const requestSchema = z.object({
 /** Start staged workflow and return scene-split review data. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
     const payload = requestSchema.parse(body);
-    const workflow = await startStagedWorkflow(payload);
+    const workflow = await startStagedWorkflow(payload, userId);
     return NextResponse.json(workflow);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to start workflow";

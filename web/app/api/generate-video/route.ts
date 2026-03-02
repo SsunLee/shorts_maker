@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { enqueueGeneration } from "@/lib/generation-worker";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -22,9 +23,13 @@ const requestSchema = z.object({
 /** Start a background generation job and return its ID for polling. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
     const payload = requestSchema.parse(body);
-    const id = await enqueueGeneration(payload);
+    const id = await enqueueGeneration(payload, userId);
     return NextResponse.json({ id });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid request";

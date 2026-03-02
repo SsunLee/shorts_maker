@@ -3,6 +3,7 @@ import path from "path";
 import { AutomationScheduleState } from "@/lib/types";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import { scopedUserId } from "@/lib/user-storage-namespace";
 
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -36,9 +37,10 @@ async function ensureScheduleFile(): Promise<void> {
 export async function readAutomationScheduleState(
   userId?: string
 ): Promise<Partial<AutomationScheduleState> | undefined> {
-  if (userId && prisma) {
+  const storageUserId = scopedUserId(userId, "automation");
+  if (storageUserId && prisma) {
     const row = await prisma.userAutomationScheduleState.findUnique({
-      where: { userId }
+      where: { userId: storageUserId }
     });
     const parsed = row?.data;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -65,11 +67,12 @@ export async function writeAutomationScheduleState(
   state: AutomationScheduleState,
   userId?: string
 ): Promise<AutomationScheduleState> {
-  if (userId && prisma) {
+  const storageUserId = scopedUserId(userId, "automation");
+  if (storageUserId && prisma) {
     await prisma.userAutomationScheduleState.upsert({
-      where: { userId },
+      where: { userId: storageUserId },
       update: { data: state as unknown as Prisma.InputJsonValue },
-      create: { userId, data: state as unknown as Prisma.InputJsonValue }
+      create: { userId: storageUserId, data: state as unknown as Prisma.InputJsonValue }
     });
     return state;
   }

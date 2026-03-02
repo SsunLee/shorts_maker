@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { deleteRow } from "@/lib/repository";
 import { deleteWorkflow } from "@/lib/workflow-store";
 import { cleanupJobAssetsFromStorage } from "@/lib/object-storage";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -21,8 +22,12 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const { id } = await context.params;
-    const deletedRow = await deleteRow(id);
+    const deletedRow = await deleteRow(id, userId);
     await deleteWorkflow(id);
     await cleanupJobAssetsFromStorage(id);
 

@@ -259,7 +259,11 @@ function validateScenes(scenes: WorkflowScene[]): void {
   });
 }
 
-async function markFailure(workflow: VideoWorkflow, message: string): Promise<VideoWorkflow> {
+async function markFailure(
+  workflow: VideoWorkflow,
+  message: string,
+  userId?: string
+): Promise<VideoWorkflow> {
   const failed = withTimestamps(
     {
       ...workflow,
@@ -273,13 +277,14 @@ async function markFailure(workflow: VideoWorkflow, message: string): Promise<Vi
     id: workflow.id,
     status: "failed",
     error: message
-  });
+  }, userId);
   return failed;
 }
 
 /** Step 1: generate narration and scene split data for manual review. */
 export async function startStagedWorkflow(
-  input: CreateVideoRequest
+  input: CreateVideoRequest,
+  userId?: string
 ): Promise<VideoWorkflow> {
   const normalizedInput: CreateVideoRequest = {
     ...input,
@@ -300,7 +305,7 @@ export async function startStagedWorkflow(
     voiceSpeed: normalizedInput.voiceSpeed,
     useSfx: normalizedInput.useSfx,
     videoLengthSec: normalizedInput.videoLengthSec
-  });
+  }, userId);
 
   try {
     const narration =
@@ -336,7 +341,7 @@ export async function startStagedWorkflow(
       narration,
       imagePrompts: scenes.map((scene) => scene.imagePrompt),
       status: "queued"
-    });
+    }, userId);
     return workflow;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to start workflow";
@@ -354,7 +359,7 @@ export async function startStagedWorkflow(
       id,
       status: "failed",
       error: message
-    });
+    }, userId);
     return failed;
   }
 }
@@ -366,7 +371,8 @@ export async function updateSceneSplit(
     scenes?: WorkflowScene[];
     renderOptions?: RenderOptionsInput;
     stage?: WorkflowStage;
-  }
+  },
+  userId?: string
 ): Promise<VideoWorkflow> {
   const workflow = await getWorkflow(id);
   if (!workflow) {
@@ -435,14 +441,15 @@ export async function updateSceneSplit(
         : updated.stage === "final_ready"
           ? updated.finalVideoUrl
           : undefined
-  });
+  }, userId);
   return updated;
 }
 
 /** Re-generate one scene image during assets review. */
 export async function regenerateWorkflowSceneImage(
   id: string,
-  sceneIndex: number
+  sceneIndex: number,
+  userId?: string
 ): Promise<VideoWorkflow> {
   const workflow = await getWorkflow(id);
   if (!workflow) {
@@ -464,7 +471,7 @@ export async function regenerateWorkflowSceneImage(
     throw new Error(`Scene ${targetIndex} has an empty image prompt.`);
   }
 
-  await upsertRow({ id, status: "generating_images", progress: 55 });
+  await upsertRow({ id, status: "generating_images", progress: 55 }, userId);
   const [nextImageUrl] = await generateImages(workflow.id, [targetScene.imagePrompt], {
     startIndex: targetIndex - 1,
     imageAspectRatio: workflow.input.imageAspectRatio === "16:9" ? "16:9" : "9:16"
@@ -493,13 +500,13 @@ export async function regenerateWorkflowSceneImage(
     id,
     imagePrompts: scenes.map((scene) => scene.imagePrompt),
     status: "queued"
-  });
+  }, userId);
 
   return updated;
 }
 
 /** Move one step forward: scene split -> assets -> preview video -> final video. */
-export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
+export async function runNextWorkflowStage(id: string, userId?: string): Promise<VideoWorkflow> {
   let workflow = await getWorkflow(id);
   if (!workflow) {
     throw new Error("Workflow not found.");
@@ -546,7 +553,7 @@ export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
 
   try {
     if (workflow.stage === "scene_split_review") {
-      await upsertRow({ id, status: "generating_images", progress: 45 });
+      await upsertRow({ id, status: "generating_images", progress: 45 }, userId);
       const imageUrls = await generateImages(
         workflow.id,
         workflow.scenes.map((scene) => scene.imagePrompt),
@@ -558,12 +565,12 @@ export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
               id,
               status: "generating_images",
               progress
-            });
+            }, userId);
           }
         }
       );
 
-      await upsertRow({ id, status: "generating_tts" });
+      await upsertRow({ id, status: "generating_tts" }, userId);
       const tts = await generateTtsAudio({
         jobId: workflow.id,
         narration: workflow.narration,
@@ -591,7 +598,7 @@ export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
         id,
         imagePrompts: scenes.map((scene) => scene.imagePrompt),
         status: "queued"
-      });
+      }, userId);
       return updated;
     }
 
@@ -599,7 +606,7 @@ export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
       if (!workflow.ttsUrl || workflow.scenes.some((scene) => !scene.imageUrl)) {
         throw new Error("Audio/images are missing. Complete previous stage first.");
       }
-      await upsertRow({ id, status: "video_rendering" });
+      await upsertRow({ id, status: "video_rendering" }, userId);
 
       const renderOptionsForVideo = normalizeRenderOptions(workflow.renderOptions);
       renderOptionsForVideo.overlay.videoLayout = resolveVideoLayoutForAspect(
@@ -634,7 +641,7 @@ export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
         id,
         status: "queued",
         videoUrl: updated.previewVideoUrl
-      });
+      }, userId);
       return updated;
     }
 
@@ -655,7 +662,7 @@ export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
       if (shouldReusePreview) {
         finalVideoUrl = workflow.previewVideoUrl;
       } else {
-        await upsertRow({ id, status: "video_rendering" });
+        await upsertRow({ id, status: "video_rendering" }, userId);
         const finalRenderId = `${workflow.id}-final-${Date.now()}`;
         const finalVideo = await buildVideoWithEngine({
           jobId: finalRenderId,
@@ -687,13 +694,13 @@ export async function runNextWorkflowStage(id: string): Promise<VideoWorkflow> {
         narration: workflow.narration,
         imagePrompts: workflow.scenes.map((scene) => scene.imagePrompt),
         tags: workflow.input.tags ?? []
-      });
+      }, userId);
       return updated;
     }
 
     return workflow;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to run next stage";
-    return markFailure(workflow, message);
+    return markFailure(workflow, message, userId);
   }
 }

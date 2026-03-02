@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listSheetContentRows } from "@/lib/sheet-content";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
+import { getSheetsContext } from "@/lib/google-sheets-client";
 
 export const runtime = "nodejs";
 
@@ -13,11 +14,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
     const sheetName = request.nextUrl.searchParams.get("sheetName") || undefined;
     const rows = await listSheetContentRows(sheetName, userId);
+    const context = await getSheetsContext(sheetName, userId);
     return NextResponse.json({
       rows,
       count: rows.length,
       readyOnly: true,
-      sheetName: sheetName || process.env.GSHEETS_SHEET_NAME || "Shorts"
+      sheetName: context?.sheetName || sheetName || "Shorts"
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to fetch sheet rows";

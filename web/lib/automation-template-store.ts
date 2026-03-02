@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { RenderOptions } from "@/lib/types";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
+import { scopedUserId } from "@/lib/user-storage-namespace";
 
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -168,9 +169,10 @@ async function readCatalogFromFile(): Promise<AutomationTemplateCatalog> {
 }
 
 async function readCatalog(userId?: string): Promise<AutomationTemplateCatalog> {
-  if (userId && prisma) {
+  const storageUserId = scopedUserId(userId, "automation");
+  if (storageUserId && prisma) {
     const row = await prisma.userAutomationTemplateCatalog.findUnique({
-      where: { userId }
+      where: { userId: storageUserId }
     });
     const parsed = row?.data as
       | Partial<AutomationTemplateCatalog>
@@ -195,15 +197,16 @@ async function writeCatalog(catalog: AutomationTemplateCatalog, userId?: string)
       ? catalog.activeTemplateId
       : templates[0]?.id;
 
-  if (userId && prisma) {
+  const storageUserId = scopedUserId(userId, "automation");
+  if (storageUserId && prisma) {
     const data = {
       activeTemplateId,
       templates
     } satisfies AutomationTemplateCatalog;
     await prisma.userAutomationTemplateCatalog.upsert({
-      where: { userId },
+      where: { userId: storageUserId },
       update: { data: data as unknown as Prisma.InputJsonValue },
-      create: { userId, data: data as unknown as Prisma.InputJsonValue }
+      create: { userId: storageUserId, data: data as unknown as Prisma.InputJsonValue }
     });
     return;
   }

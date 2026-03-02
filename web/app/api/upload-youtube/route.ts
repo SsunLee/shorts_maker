@@ -25,7 +25,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
     const body = await request.json();
     const payload = schema.parse(body);
-    const row = payload.id ? await getRow(payload.id) : undefined;
+    const row = payload.id ? await getRow(payload.id, userId) : undefined;
     const workflow = payload.id ? await getWorkflow(payload.id) : undefined;
 
     const title = payload.title || row?.title || workflow?.input.title;
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         id: row.id,
         status: "uploading",
         videoUrl: row.videoUrl || videoUrl
-      });
+      }, userId);
     }
 
     const requestId =
@@ -77,7 +77,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         id: row.id,
         youtubeUrl,
         status: "uploaded"
-      });
+      }, userId);
     }
 
     return NextResponse.json({ youtubeUrl });

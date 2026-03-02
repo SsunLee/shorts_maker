@@ -650,8 +650,8 @@ async function deleteRowInSheets(
 }
 
 /** Return every row from storage, preferring Google Sheets when configured. */
-export async function listRows(): Promise<VideoRow[]> {
-  const sheetsContext = await getSheetsContext();
+export async function listRows(userId?: string): Promise<VideoRow[]> {
+  const sheetsContext = await getSheetsContext(undefined, userId);
   if (!sheetsContext) {
     const rows = await readRowsFile();
     return normalizeRows(rows).sort(compareIsoDesc);
@@ -667,14 +667,14 @@ export async function listRows(): Promise<VideoRow[]> {
 }
 
 /** Fetch a single row by its ID. */
-export async function getRow(id: string): Promise<VideoRow | undefined> {
-  const rows = await listRows();
+export async function getRow(id: string, userId?: string): Promise<VideoRow | undefined> {
+  const rows = await listRows(userId);
   return rows.find((row) => row.id === id);
 }
 
 /** Insert or update a row in storage while keeping timestamps current. */
-export async function upsertRow(partial: Partial<VideoRow>): Promise<VideoRow> {
-  const existing = partial.id ? await getRow(partial.id) : undefined;
+export async function upsertRow(partial: Partial<VideoRow>, userId?: string): Promise<VideoRow> {
+  const existing = partial.id ? await getRow(partial.id, userId) : undefined;
   const status = toVideoStatus((partial.status ?? existing?.status ?? "queued") as string);
   const now = new Date().toISOString();
 
@@ -688,7 +688,7 @@ export async function upsertRow(partial: Partial<VideoRow>): Promise<VideoRow> {
     updatedAt: now
   });
 
-  const sheetsContext = await getSheetsContext();
+  const sheetsContext = await getSheetsContext(undefined, userId);
   if (!sheetsContext) {
     const rows = await readRowsFile();
     const index = rows.findIndex((item) => item.id === row.id);
@@ -705,8 +705,8 @@ export async function upsertRow(partial: Partial<VideoRow>): Promise<VideoRow> {
 }
 
 /** Delete a row by ID from active storage. */
-export async function deleteRow(id: string): Promise<boolean> {
-  const sheetsContext = await getSheetsContext();
+export async function deleteRow(id: string, userId?: string): Promise<boolean> {
+  const sheetsContext = await getSheetsContext(undefined, userId);
   if (!sheetsContext) {
     const rows = await readRowsFile();
     const index = rows.findIndex((row) => row.id === id);

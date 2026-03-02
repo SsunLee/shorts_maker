@@ -452,7 +452,7 @@ async function processOneRow(args: {
 
   try {
     pushLog(args.userId, "info", `[${row.id}] 워크플로우 시작`);
-    let workflow = await startStagedWorkflow(createPayload);
+    let workflow = await startStagedWorkflow(createPayload, args.userId);
 
     const rowRenderOptions = materializeRenderOptionsForRow({
       base: args.defaults.renderOptions,
@@ -467,13 +467,13 @@ async function processOneRow(args: {
     if (rowRenderOptions) {
       workflow = await updateSceneSplit(workflow.id, {
         renderOptions: rowRenderOptions
-      });
+      }, args.userId);
       pushLog(args.userId, "info", `[${row.id}] 최근 템플릿(renderOptions) 적용 + 제목/주제 텍스트 치환`);
     }
 
     let guard = 0;
     while (workflow.stage !== "final_ready" && workflow.status !== "failed" && guard < 6) {
-      workflow = await runNextWorkflowStage(workflow.id);
+      workflow = await runNextWorkflowStage(workflow.id, args.userId);
       guard += 1;
       pushLog(args.userId, "info", `[${row.id}] 단계 진행 -> ${workflow.stage} (${workflow.status})`);
     }
@@ -499,7 +499,7 @@ async function processOneRow(args: {
       id: workflow.id,
       status: "uploading",
       videoUrl
-    });
+    }, args.userId);
     const youtubeUrl = await uploadVideoToYoutube({
       title: workflow.input.title,
       description,
@@ -519,7 +519,7 @@ async function processOneRow(args: {
       videoUrl,
       youtubeUrl,
       tags
-    });
+    }, args.userId);
 
     state.uploaded += 1;
     pushLog(args.userId, "info", `[${row.id}] 업로드 완료: ${youtubeUrl}`);
@@ -532,7 +532,7 @@ async function processOneRow(args: {
       id: row.id,
       status: "failed",
       error: message
-    });
+    }, args.userId);
     pushLog(args.userId, "error", `[${row.id}] 실패: ${message}`);
     return { fatal: isFatalUploadError(message) };
   } finally {

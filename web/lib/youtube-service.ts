@@ -23,15 +23,15 @@ interface UploadArgs {
 
 async function resolveYoutubeCredentials(userId?: string) {
   const settings = await getSettings(userId);
-  const clientId = process.env.YOUTUBE_CLIENT_ID || settings.youtubeClientId;
+  const clientId = settings.youtubeClientId || process.env.YOUTUBE_CLIENT_ID;
   const clientSecret =
-    process.env.YOUTUBE_CLIENT_SECRET || settings.youtubeClientSecret;
+    settings.youtubeClientSecret || process.env.YOUTUBE_CLIENT_SECRET;
   const redirectUri =
-    process.env.YOUTUBE_REDIRECT_URI ||
     settings.youtubeRedirectUri ||
+    process.env.YOUTUBE_REDIRECT_URI ||
     "http://localhost:3000/oauth2callback";
   const refreshToken =
-    process.env.YOUTUBE_REFRESH_TOKEN || settings.youtubeRefreshToken;
+    settings.youtubeRefreshToken || process.env.YOUTUBE_REFRESH_TOKEN;
 
   if (!clientId || !clientSecret || !refreshToken) {
     const missing: string[] = [];

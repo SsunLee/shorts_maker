@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getWorkflow } from "@/lib/workflow-store";
 import { updateSceneSplit } from "@/lib/staged-workflow";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -108,6 +109,10 @@ export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await context.params;
   const workflow = await getWorkflow(id);
   if (!workflow) {
@@ -122,10 +127,14 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const { id } = await context.params;
     const body = await request.json();
     const payload = patchSchema.parse(body);
-    const workflow = await updateSceneSplit(id, payload);
+    const workflow = await updateSceneSplit(id, payload, userId);
     return NextResponse.json(workflow);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to update workflow";

@@ -14,15 +14,15 @@ export async function getSheetsContext(
 ): Promise<SheetsContext | null> {
   const settings = await getSettings(userId);
   const spreadsheetId =
-    process.env.GSHEETS_SPREADSHEET_ID || settings.gsheetSpreadsheetId || "";
+    settings.gsheetSpreadsheetId || process.env.GSHEETS_SPREADSHEET_ID || "";
   const clientEmail =
-    process.env.GSHEETS_CLIENT_EMAIL || settings.gsheetClientEmail || "";
+    settings.gsheetClientEmail || process.env.GSHEETS_CLIENT_EMAIL || "";
   const privateKeyRaw =
-    process.env.GSHEETS_PRIVATE_KEY || settings.gsheetPrivateKey || "";
+    settings.gsheetPrivateKey || process.env.GSHEETS_PRIVATE_KEY || "";
   const sheetName =
     overrideSheetName ||
-    process.env.GSHEETS_SHEET_NAME ||
     settings.gsheetSheetName ||
+    process.env.GSHEETS_SHEET_NAME ||
     "Shorts";
 
   if (!spreadsheetId || !clientEmail || !privateKeyRaw) {

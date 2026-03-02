@@ -10,12 +10,12 @@ import { buildVideoWithEngine } from "@/lib/video-engine-service";
 
 const activeJobs = new Map<string, Promise<void>>();
 
-async function processJob(id: string, payload: CreateVideoRequest): Promise<void> {
+async function processJob(id: string, payload: CreateVideoRequest, userId?: string): Promise<void> {
   try {
     await upsertRow({
       id,
       status: "generating_script"
-    });
+    }, userId);
 
     const narration =
       payload.narration?.trim() ||
@@ -39,7 +39,7 @@ async function processJob(id: string, payload: CreateVideoRequest): Promise<void
       imagePrompts,
       status: "generating_images",
       progress: 45
-    });
+    }, userId);
 
     const imageUrls = await generateImages(id, imagePrompts, {
       imageAspectRatio: payload.imageAspectRatio === "16:9" ? "16:9" : "9:16",
@@ -49,14 +49,14 @@ async function processJob(id: string, payload: CreateVideoRequest): Promise<void
           id,
           status: "generating_images",
           progress
-        });
+        }, userId);
       }
     });
 
     await upsertRow({
       id,
       status: "generating_tts"
-    });
+    }, userId);
 
     const tts = await generateTtsAudio({
       jobId: id,
@@ -68,7 +68,7 @@ async function processJob(id: string, payload: CreateVideoRequest): Promise<void
     await upsertRow({
       id,
       status: "video_rendering"
-    });
+    }, userId);
 
     const video = await buildVideoWithEngine({
       jobId: id,
@@ -94,13 +94,13 @@ async function processJob(id: string, payload: CreateVideoRequest): Promise<void
       voiceSpeed: payload.voiceSpeed,
       useSfx: payload.useSfx,
       videoLengthSec: payload.videoLengthSec
-    });
+    }, userId);
   } catch (error) {
     await upsertRow({
       id,
       status: "failed",
       error: error instanceof Error ? error.message : "Unknown generation error"
-    });
+    }, userId);
   }
 }
 
@@ -108,7 +108,7 @@ async function processJob(id: string, payload: CreateVideoRequest): Promise<void
  * Queue a generation job and return immediately while work continues asynchronously.
  * Status can be polled via `/api/status/:id`.
  */
-export async function enqueueGeneration(payload: CreateVideoRequest): Promise<string> {
+export async function enqueueGeneration(payload: CreateVideoRequest, userId?: string): Promise<string> {
   const id = payload.id?.trim() || crypto.randomUUID();
   await upsertRow({
     id,
@@ -123,9 +123,9 @@ export async function enqueueGeneration(payload: CreateVideoRequest): Promise<st
     voiceSpeed: payload.voiceSpeed,
     useSfx: payload.useSfx,
     videoLengthSec: payload.videoLengthSec
-  });
+  }, userId);
 
-  const promise = processJob(id, payload).finally(() => {
+  const promise = processJob(id, payload, userId).finally(() => {
     activeJobs.delete(id);
   });
 
