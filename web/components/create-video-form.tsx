@@ -112,6 +112,8 @@ const TIMELINE_LANE_DEFAULT = 6;
 const TIMELINE_LANE_HEIGHT = 34;
 const TIMELINE_TOP_PADDING = 8;
 const TIMELINE_BOTTOM_PADDING = 10;
+const UUID_V4_LIKE_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface SubtitleStylePreset {
   id: string;
@@ -1452,7 +1454,7 @@ export function CreateVideoForm(): React.JSX.Element {
       setUseSfx(data.input.useSfx ?? true);
       setVideoLengthSec(String(data.input.videoLengthSec || 30));
       setSceneCount(String(data.input.sceneCount || 5));
-      setAppliedSheetRowId(data.id || "");
+      setAppliedSheetRowId(data.input.id || "");
       setRenderOptions(ensureRenderOptions(data.renderOptions));
       setError(undefined);
     } catch (resumeErr) {
@@ -1849,6 +1851,14 @@ export function CreateVideoForm(): React.JSX.Element {
     () => sheetRows.find((row) => row.id === selectedSheetRowId),
     [selectedSheetRowId, sheetRows]
   );
+  useEffect(() => {
+    if (!appliedSheetRowId || sheetRows.length === 0) {
+      return;
+    }
+    if (!sheetRows.some((row) => row.id === appliedSheetRowId)) {
+      setAppliedSheetRowId("");
+    }
+  }, [appliedSheetRowId, sheetRows]);
   const selectedRenderTemplatePreset = useMemo(
     () => renderTemplatePresets.find((item) => item.id === selectedTemplatePresetId),
     [renderTemplatePresets, selectedTemplatePresetId]
@@ -3121,8 +3131,44 @@ export function CreateVideoForm(): React.JSX.Element {
     setSubmitting(true);
     setError(undefined);
     setWorkflow(undefined);
-    const effectiveSheetRowId = selectedSheetRow?.id || appliedSheetRowId || undefined;
+    const appliedId = appliedSheetRowId.trim();
+    const selectedId = selectedSheetRow?.id?.trim();
+    const hasAppliedInSheetRows = sheetRows.some((row) => row.id === appliedId);
+    const canUseAppliedId =
+      Boolean(appliedId) &&
+      (hasAppliedInSheetRows ||
+        (sheetRows.length === 0 && !UUID_V4_LIKE_PATTERN.test(appliedId)));
+    let effectiveSheetRowId = selectedId || (canUseAppliedId ? appliedId : undefined);
     try {
+      if (!effectiveSheetRowId) {
+        const query = sheetName.trim()
+          ? `?sheetName=${encodeURIComponent(sheetName.trim())}`
+          : "";
+        const sheetResponse = await fetch(`/api/sheet-rows${query}`, { cache: "no-store" });
+        const sheetData = (await sheetResponse.json()) as {
+          rows?: SheetContentRow[];
+          error?: string;
+        };
+        if (sheetResponse.ok) {
+          const rows = sheetData.rows || [];
+          if (rows.length > 0) {
+            effectiveSheetRowId = rows[0].id;
+            setSheetRows(rows);
+            setSelectedSheetRowId(rows[0].id);
+            setAppliedSheetRowId(rows[0].id);
+          } else {
+            throw new Error(
+              "준비 상태의 시트 row가 없습니다. 시트에서 status='준비'인 row를 확인해 주세요."
+            );
+          }
+        } else {
+          const message = String(sheetData.error || "Failed to load sheet rows.");
+          if (!message.includes("Google Sheets is not configured")) {
+            throw new Error(message);
+          }
+        }
+      }
+
       const response = await fetch("/api/workflow/start", {
         method: "POST",
         headers: {

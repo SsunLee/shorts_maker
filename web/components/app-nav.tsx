@@ -14,10 +14,11 @@ import {
   PanelLeftOpen,
   Scissors,
   Settings,
-  Sun
+  Sun,
+  UserRound
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { signOut } from "next-auth/react";
+import { getSession, signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AppTheme, applyTheme, getStoredTheme, normalizeTheme, setStoredTheme, THEME_CHANGED_EVENT } from "@/lib/theme";
@@ -35,6 +36,7 @@ export function AppNav(): React.JSX.Element {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useState<AppTheme>("light");
+  const [accountLabel, setAccountLabel] = useState("계정");
 
   useEffect(() => {
     try {
@@ -57,6 +59,31 @@ export function AppNav(): React.JSX.Element {
     };
     window.addEventListener(THEME_CHANGED_EVENT, onThemeChanged);
     return () => window.removeEventListener(THEME_CHANGED_EVENT, onThemeChanged);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadSession = async () => {
+      try {
+        const session = await getSession();
+        const rawId =
+          session?.user?.email?.split("@")[0]?.trim() ||
+          session?.user?.name?.trim() ||
+          session?.user?.email?.trim() ||
+          "계정";
+        if (mounted) {
+          setAccountLabel(rawId);
+        }
+      } catch {
+        if (mounted) {
+          setAccountLabel("계정");
+        }
+      }
+    };
+    void loadSession();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const navWidthClass = useMemo(() => (collapsed ? "w-[78px]" : "w-[248px]"), [collapsed]);
@@ -139,6 +166,19 @@ export function AppNav(): React.JSX.Element {
 
       <div className="mt-3 border-t pt-3">
         <div className="flex flex-col gap-2">
+          <div
+            className={cn(
+              "rounded-md border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground",
+              collapsed ? "flex items-center justify-center px-0" : ""
+            )}
+            title={`${accountLabel} (로그인됨)`}
+          >
+            {collapsed ? (
+              <UserRound className="h-4 w-4 text-emerald-400" />
+            ) : (
+              <span className="truncate">{accountLabel} (로그인됨)</span>
+            )}
+          </div>
           <Button
             type="button"
             variant="outline"
