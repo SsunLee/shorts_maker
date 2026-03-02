@@ -97,7 +97,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       topic: payload.topic,
       count: payload.count,
       existingKeywords,
-      language: (payload.language || "ko") as IdeaLanguage
+      language: (payload.language || "ko") as IdeaLanguage,
+      userId
     });
     const idBase = normalizeIdBase(payload.idBase || payload.topic);
     const withIds = attachIdeaIds({

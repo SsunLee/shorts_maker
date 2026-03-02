@@ -30,8 +30,10 @@ function resolveMode(settings: AppSettings): AiMode {
   return normalizeMode(process.env.AI_PROVIDER);
 }
 
-export async function resolveApiKeys(): Promise<{ openaiKey?: string; geminiKey?: string }> {
-  const settings = await getSettings();
+export async function resolveApiKeys(
+  userId?: string
+): Promise<{ openaiKey?: string; geminiKey?: string }> {
+  const settings = await getSettings(userId);
   return {
     openaiKey: process.env.OPENAI_API_KEY || settings.openaiApiKey,
     geminiKey: process.env.GEMINI_API_KEY || settings.geminiApiKey
@@ -67,8 +69,8 @@ function mixedTaskProvider(settings: AppSettings, task: AiTask): AiProvider | un
   return normalizeProvider(settings.aiTtsProvider);
 }
 
-export async function resolveProviderForTask(task: AiTask): Promise<AiProvider> {
-  const settings = await getSettings();
+export async function resolveProviderForTask(task: AiTask, userId?: string): Promise<AiProvider> {
+  const settings = await getSettings(userId);
   const keys = {
     openaiKey: process.env.OPENAI_API_KEY || settings.openaiApiKey,
     geminiKey: process.env.GEMINI_API_KEY || settings.geminiApiKey
@@ -94,9 +96,10 @@ export async function resolveProviderForTask(task: AiTask): Promise<AiProvider> 
 
 export async function resolveModelForTask(
   provider: AiProvider,
-  task: AiTask
+  task: AiTask,
+  userId?: string
 ): Promise<string> {
-  const settings = await getSettings();
+  const settings = await getSettings(userId);
 
   if (provider === "openai") {
     if (task === "text") {
@@ -116,4 +119,3 @@ export async function resolveModelForTask(
   }
   return settings.geminiTtsModel || process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
 }
-

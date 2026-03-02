@@ -118,8 +118,8 @@ async function runGeminiWithRetry<T>(task: () => Promise<T>): Promise<T> {
   throw lastError instanceof Error ? lastError : new Error("Idea generation failed.");
 }
 
-async function resolveProvider(): Promise<Provider> {
-  return resolveProviderForTask("text");
+async function resolveProvider(userId?: string): Promise<Provider> {
+  return resolveProviderForTask("text", userId);
 }
 
 function resolveLanguageInstruction(language: IdeaLanguage): string {
@@ -267,9 +267,13 @@ function enforceRules(args: {
   return output;
 }
 
-async function requestIdeaRows(provider: Provider, prompt: string): Promise<IdeaDraftRow[]> {
-  const keys = await resolveApiKeys();
-  const textModel = await resolveModelForTask(provider, "text");
+async function requestIdeaRows(
+  provider: Provider,
+  prompt: string,
+  userId?: string
+): Promise<IdeaDraftRow[]> {
+  const keys = await resolveApiKeys(userId);
+  const textModel = await resolveModelForTask(provider, "text", userId);
 
   if (provider === "gemini") {
     const client = new GoogleGenAI({ apiKey: keys.geminiKey });
@@ -305,6 +309,7 @@ export async function generateIdeas(args: {
   count: number;
   existingKeywords?: string[];
   language?: IdeaLanguage;
+  userId?: string;
 }): Promise<IdeaDraftRow[]> {
   const topic = args.topic.trim();
   const count = Math.max(1, Math.min(10, Math.floor(args.count)));
@@ -318,7 +323,7 @@ export async function generateIdeas(args: {
   if (!topic) {
     throw new Error("주제를 입력해 주세요.");
   }
-  const provider = await resolveProvider();
+  const provider = await resolveProvider(args.userId);
   const blockedKeywords = new Set(
     (args.existingKeywords || [])
       .map((value) => normalizeKeywordKey(value))
@@ -331,7 +336,7 @@ export async function generateIdeas(args: {
   for (let attempt = 1; attempt <= maxAttempts && collected.length < count; attempt += 1) {
     const remaining = count - collected.length;
     const prompt = buildPrompt(topic, remaining, Array.from(blockedKeywords), language);
-    const rows = await requestIdeaRows(provider, prompt);
+    const rows = await requestIdeaRows(provider, prompt, args.userId);
     if (rows.length === 0) {
       parseFailureCount += 1;
       continue;
