@@ -1,5 +1,6 @@
 import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import { ensureUserAccount, getUserAccessStatus } from "@/lib/user-access";
 
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -27,6 +28,32 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt"
   },
   callbacks: {
+    async signIn({ user }) {
+      const userId = String(user.email || user.id || "").trim();
+      if (!userId) {
+        return false;
+      }
+
+      try {
+        await ensureUserAccount({
+          userId,
+          email: user.email || undefined,
+          name: user.name || undefined
+        });
+        const access = await getUserAccessStatus({
+          userId,
+          email: user.email || undefined,
+          name: user.name || undefined
+        });
+        if (!access.allowed) {
+          return "/auth/blocked";
+        }
+      } catch {
+        // If user table is not yet migrated, do not block signin.
+      }
+
+      return true;
+    },
     async session({ session, token }) {
       if (session.user) {
         session.user.id =

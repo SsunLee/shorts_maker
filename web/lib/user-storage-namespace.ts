@@ -48,3 +48,24 @@ export function scopedUserId(
   return `${base}::${namespace}`;
 }
 
+export function unscopedUserId(
+  storageUserId: string | undefined,
+  scope: "settings" | "automation"
+): string | undefined {
+  const value = String(storageUserId || "").trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const namespace = resolveStorageNamespace(scope);
+  if (!namespace) {
+    return value;
+  }
+
+  const suffix = `::${namespace}`;
+  if (value.endsWith(suffix)) {
+    return value.slice(0, value.length - suffix.length) || undefined;
+  }
+
+  return value;
+}

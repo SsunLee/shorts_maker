@@ -32,11 +32,19 @@ const links = [
   { href: "/settings", label: "Settings", icon: Settings }
 ];
 
+const superAdminEmailSet = new Set(
+  String(process.env.NEXT_PUBLIC_SUPER_ADMIN_EMAILS || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+);
+
 export function AppNav(): React.JSX.Element {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [theme, setTheme] = useState<AppTheme>("light");
   const [accountLabel, setAccountLabel] = useState("계정");
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
 
   useEffect(() => {
     try {
@@ -71,12 +79,15 @@ export function AppNav(): React.JSX.Element {
           session?.user?.name?.trim() ||
           session?.user?.email?.trim() ||
           "계정";
+        const email = String(session?.user?.email || "").trim().toLowerCase();
         if (mounted) {
           setAccountLabel(rawId);
+          setIsSuperAdmin(Boolean(email) && superAdminEmailSet.has(email));
         }
       } catch {
         if (mounted) {
           setAccountLabel("계정");
+          setIsSuperAdmin(false);
         }
       }
     };
@@ -88,6 +99,12 @@ export function AppNav(): React.JSX.Element {
 
   const navWidthClass = useMemo(() => (collapsed ? "w-[78px]" : "w-[248px]"), [collapsed]);
   const hideForAuthRoute = pathname.startsWith("/auth");
+  const visibleLinks = useMemo(() => {
+    if (!isSuperAdmin) {
+      return links;
+    }
+    return [...links, { href: "/admin/users", label: "관리자", icon: UserRound }];
+  }, [isSuperAdmin]);
 
   function toggleCollapsed(): void {
     setCollapsed((prev) => {
@@ -145,7 +162,7 @@ export function AppNav(): React.JSX.Element {
       </div>
 
       <nav className="flex flex-1 flex-col gap-1">
-        {links.map(({ href, label, icon: Icon }) => (
+        {visibleLinks.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}

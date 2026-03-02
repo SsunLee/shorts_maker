@@ -3,7 +3,7 @@ import path from "path";
 import { AutomationScheduleState } from "@/lib/types";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { scopedUserId } from "@/lib/user-storage-namespace";
+import { scopedUserId, unscopedUserId } from "@/lib/user-storage-namespace";
 
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -81,4 +81,35 @@ export async function writeAutomationScheduleState(
   await ensureScheduleFile();
   await fs.writeFile(scheduleFile, JSON.stringify(state, null, 2), "utf8");
   return state;
+}
+
+export async function listEnabledAutomationScheduleUsers(): Promise<string[]> {
+  if (!prisma) {
+    return [];
+  }
+
+  const rows = await prisma.userAutomationScheduleState.findMany({
+    select: {
+      userId: true,
+      data: true
+    }
+  });
+
+  const users = new Set<string>();
+  rows.forEach((row) => {
+    const parsed = row.data;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return;
+    }
+    const state = parsed as Partial<AutomationScheduleState>;
+    if (!state.config?.enabled) {
+      return;
+    }
+    const userId = unscopedUserId(row.userId, "automation");
+    if (userId) {
+      users.add(userId);
+    }
+  });
+
+  return Array.from(users);
 }

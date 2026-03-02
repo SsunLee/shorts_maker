@@ -1,4 +1,5 @@
 import {
+  listEnabledAutomationScheduleUsers,
   readAutomationScheduleState,
   writeAutomationScheduleState
 } from "@/lib/automation-schedule-store";
@@ -59,6 +60,14 @@ function getScheduleCacheStore(): Record<string, AutomationScheduleState> {
     globalThis.__shortsAutomationScheduleCacheByUser__ = {};
   }
   return globalThis.__shortsAutomationScheduleCacheByUser__;
+}
+
+function supportsInProcessTimers(): boolean {
+  return !(
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
 }
 
 function clampInt(value: number, min: number, max: number, fallback: number): number {
@@ -181,6 +190,9 @@ function clearTimer(userId?: string): void {
 }
 
 async function scheduleNextTimer(userId?: string): Promise<void> {
+  if (!supportsInProcessTimers()) {
+    return;
+  }
   clearTimer(userId);
   const state = await getStateInternal(userId);
   if (!state.config.enabled) {
@@ -205,16 +217,33 @@ async function scheduleNextTimer(userId?: string): Promise<void> {
 }
 
 async function runScheduledTick(userId?: string): Promise<void> {
+  await runAutomationScheduleTick(userId);
+}
+
+function isScheduleDue(state: AutomationScheduleState, now = new Date()): boolean {
+  const nextRun = state.nextRunAt ? new Date(state.nextRunAt) : undefined;
+  if (!nextRun || !Number.isFinite(nextRun.getTime())) {
+    return true;
+  }
+  return now.getTime() + 500 >= nextRun.getTime();
+}
+
+export async function runAutomationScheduleTick(
+  userId?: string,
+  options?: { force?: boolean }
+): Promise<AutomationScheduleState> {
   const state = await getStateInternal(userId);
   if (!state.config.enabled) {
-    return;
+    return state;
   }
 
   const now = new Date();
-  const nextRun = state.nextRunAt ? new Date(state.nextRunAt) : undefined;
-  if (nextRun && Number.isFinite(nextRun.getTime()) && now.getTime() + 500 < nextRun.getTime()) {
-    await scheduleNextTimer(userId);
-    return;
+  const force = Boolean(options?.force);
+  if (!force && !isScheduleDue(state, now)) {
+    if (supportsInProcessTimers()) {
+      await scheduleNextTimer(userId);
+    }
+    return state;
   }
 
   const automationState = getAutomationState(userId);
@@ -241,15 +270,62 @@ async function runScheduledTick(userId?: string): Promise<void> {
     lastError = error instanceof Error ? error.message : "Failed to start scheduled automation.";
   }
 
-  const nextRunAt = computeNextRunAt(state.config, now).toISOString();
-  await persistState(userId, {
+  const nextState = await persistState(userId, {
     ...state,
     lastRunAt: now.toISOString(),
     lastResult,
     lastError,
-    nextRunAt
+    nextRunAt: computeNextRunAt(state.config, now).toISOString()
   });
-  await scheduleNextTimer(userId);
+
+  if (supportsInProcessTimers()) {
+    await scheduleNextTimer(userId);
+  }
+  return nextState;
+}
+
+export async function runDueAutomationSchedules(
+  options?: { force?: boolean; userIds?: string[] }
+): Promise<{
+  scanned: number;
+  attempted: number;
+  started: number;
+  skippedRunning: number;
+  failed: number;
+  users: string[];
+}> {
+  const userIds = options?.userIds?.length
+    ? options.userIds
+    : await listEnabledAutomationScheduleUsers();
+
+  let attempted = 0;
+  let started = 0;
+  let skippedRunning = 0;
+  let failed = 0;
+  for (const userId of userIds) {
+    const state = await runAutomationScheduleTick(userId, { force: options?.force });
+    const ranNow = state.lastRunAt ? Date.now() - Date.parse(state.lastRunAt) < 60_000 : false;
+    if (!ranNow && !options?.force) {
+      continue;
+    }
+    attempted += 1;
+    if (state.lastResult === "started") {
+      started += 1;
+    } else if (state.lastResult === "skipped_running") {
+      skippedRunning += 1;
+    } else if (state.lastResult === "failed") {
+      failed += 1;
+    }
+  }
+
+  return {
+    scanned: userIds.length,
+    attempted,
+    started,
+    skippedRunning,
+    failed,
+    users: userIds
+  };
 }
 
 export async function ensureAutomationSchedulerStarted(userId?: string): Promise<void> {
@@ -260,7 +336,9 @@ export async function ensureAutomationSchedulerStarted(userId?: string): Promise
   }
   initializedStore[key] = true;
   await getStateInternal(userId);
-  await scheduleNextTimer(userId);
+  if (supportsInProcessTimers()) {
+    await scheduleNextTimer(userId);
+  }
 }
 
 export async function getAutomationScheduleState(userId?: string): Promise<AutomationScheduleState> {
@@ -285,7 +363,9 @@ export async function updateAutomationScheduleConfig(
     nextRunAt,
     lastError: undefined
   });
-  await scheduleNextTimer(userId);
+  if (supportsInProcessTimers()) {
+    await scheduleNextTimer(userId);
+  }
   return next;
 }
 

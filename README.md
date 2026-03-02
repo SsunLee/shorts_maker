@@ -218,6 +218,11 @@ Content-row fetch (`/api/sheet-rows`) required columns:
 1. Import `web/` as a Vercel project.
 2. Add environment variables from `web/.env.example`.
 3. Set `VIDEO_ENGINE_URL` to a reachable public URL for your FastAPI engine.
+4. Add `CRON_SECRET` (랜덤 긴 문자열) for protected cron endpoint.
+5. (선택) `SUPER_ADMIN_EMAILS` / `NEXT_PUBLIC_SUPER_ADMIN_EMAILS`에 관리자 이메일 목록(`,` 구분) 설정.
+
+스케줄 자동 실행은 `web/vercel.json`의 cron 설정(`*/5 * * * *`)으로
+`/api/cron/automation`를 호출해 동작합니다.
 
 ### Expose local engine securely
 - ngrok:
@@ -328,6 +333,11 @@ AWS 콘솔에서:
   - `uploadMode`: `youtube` | `pre_upload`
   - `templateMode`: `applied_template` | `latest_workflow` | `none`
   - `templateId`: `templateMode=applied_template`일 때 특정 템플릿 직접 지정(없으면 활성 템플릿 사용)
+- `GET /api/cron/automation`
+  - Vercel Cron 전용 엔드포인트 (`Authorization: Bearer $CRON_SECRET` 필수)
+  - 활성화된 사용자 스케줄 중 실행 시각이 지난 항목을 서버에서 실행
+- `GET/PATCH /api/admin/users`
+  - 슈퍼 관리자 전용 사용자 만료/활성 관리 API
 - `GET/POST /api/automation-template`
   - `POST`: Create 화면 `[템플릿 적용]` 시 자동화 템플릿 저장 + 활성화
   - `GET`: 현재 활성 템플릿 + 템플릿 목록 조회
