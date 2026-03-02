@@ -4,6 +4,14 @@ import { AppSettings } from "@/lib/types";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return normalized.replace(/^-+|-+$/g, "") || "default";
@@ -62,6 +70,9 @@ function readSettingsFromEnv(): AppSettings {
 }
 
 async function readSettingsFromFile(): Promise<AppSettings> {
+  if (isReadOnlyServerlessRuntime()) {
+    return {};
+  }
   const settingsFile = resolveSettingsFile();
   await ensureSettingsFile();
   const raw = await fs.readFile(settingsFile, "utf8");
@@ -111,6 +122,12 @@ export async function saveSettings(settings: AppSettings, userId?: string): Prom
       create: { userId, data: settings as unknown as Prisma.InputJsonValue }
     });
     return settings;
+  }
+
+  if (isReadOnlyServerlessRuntime()) {
+    throw new Error(
+      "Settings persistence requires DATABASE_URL on serverless runtime. Add DATABASE_URL and retry."
+    );
   }
 
   const settingsFile = resolveSettingsFile();
