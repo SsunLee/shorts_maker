@@ -12,7 +12,7 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const rows = await listRows(userId);
-  const workflows = await listWorkflows();
+  const workflows = await listWorkflows(userId);
   const workflowById = new Map(workflows.map((item) => [item.id, item]));
   const hydratedRows = rows.map((row) => {
     if (row.videoUrl) {

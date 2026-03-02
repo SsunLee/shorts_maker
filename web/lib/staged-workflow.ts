@@ -272,7 +272,7 @@ async function markFailure(
     },
     workflow.createdAt
   );
-  await upsertWorkflow(failed);
+  await upsertWorkflow(failed, userId);
   await upsertRow({
     id: workflow.id,
     status: "failed",
@@ -335,7 +335,7 @@ export async function startStagedWorkflow(
       renderOptions: normalizeRenderOptions()
     });
 
-    await upsertWorkflow(workflow);
+    await upsertWorkflow(workflow, userId);
     await upsertRow({
       id,
       narration,
@@ -354,7 +354,7 @@ export async function startStagedWorkflow(
       narration: normalizedInput.narration || "",
       scenes: []
     });
-    await upsertWorkflow(failed);
+    await upsertWorkflow(failed, userId);
     await upsertRow({
       id,
       status: "failed",
@@ -374,7 +374,7 @@ export async function updateSceneSplit(
   },
   userId?: string
 ): Promise<VideoWorkflow> {
-  const workflow = await getWorkflow(id);
+  const workflow = await getWorkflow(id, userId);
   if (!workflow) {
     throw new Error("Workflow not found.");
   }
@@ -429,7 +429,7 @@ export async function updateSceneSplit(
     workflow.createdAt
   );
 
-  await upsertWorkflow(updated);
+  await upsertWorkflow(updated, userId);
   await upsertRow({
     id: workflow.id,
     narration: updated.narration,
@@ -451,7 +451,7 @@ export async function regenerateWorkflowSceneImage(
   sceneIndex: number,
   userId?: string
 ): Promise<VideoWorkflow> {
-  const workflow = await getWorkflow(id);
+  const workflow = await getWorkflow(id, userId);
   if (!workflow) {
     throw new Error("Workflow not found.");
   }
@@ -495,7 +495,7 @@ export async function regenerateWorkflowSceneImage(
     },
     workflow.createdAt
   );
-  await upsertWorkflow(updated);
+  await upsertWorkflow(updated, userId);
   await upsertRow({
     id,
     imagePrompts: scenes.map((scene) => scene.imagePrompt),
@@ -507,7 +507,7 @@ export async function regenerateWorkflowSceneImage(
 
 /** Move one step forward: scene split -> assets -> preview video -> final video. */
 export async function runNextWorkflowStage(id: string, userId?: string): Promise<VideoWorkflow> {
-  let workflow = await getWorkflow(id);
+  let workflow = await getWorkflow(id, userId);
   if (!workflow) {
     throw new Error("Workflow not found.");
   }
@@ -521,7 +521,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         },
         workflow.createdAt
       );
-      await upsertWorkflow(workflow);
+      await upsertWorkflow(workflow, userId);
     } else {
       throw new Error(
         "Workflow is already processing. Wait a moment and retry. " +
@@ -538,7 +538,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
       },
       workflow.createdAt
     );
-    await upsertWorkflow(workflow);
+    await upsertWorkflow(workflow, userId);
   }
 
   const processing = withTimestamps(
@@ -549,7 +549,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
     },
     workflow.createdAt
   );
-  await upsertWorkflow(processing);
+  await upsertWorkflow(processing, userId);
 
   try {
     if (workflow.stage === "scene_split_review") {
@@ -593,7 +593,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         },
         workflow.createdAt
       );
-      await upsertWorkflow(updated);
+      await upsertWorkflow(updated, userId);
       await upsertRow({
         id,
         imagePrompts: scenes.map((scene) => scene.imagePrompt),
@@ -636,7 +636,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         },
         workflow.createdAt
       );
-      await upsertWorkflow(updated);
+      await upsertWorkflow(updated, userId);
       await upsertRow({
         id,
         status: "queued",
@@ -686,7 +686,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         },
         workflow.createdAt
       );
-      await upsertWorkflow(updated);
+      await upsertWorkflow(updated, userId);
       await upsertRow({
         id,
         status: "ready",

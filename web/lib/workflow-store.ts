@@ -1,10 +1,24 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
+import { scopedUserId } from "@/lib/user-storage-namespace";
 import { VideoWorkflow } from "@/lib/types";
 
 const workflowFile = path.join(process.cwd(), "data", "workflows.json");
 
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 async function ensureWorkflowFile(): Promise<void> {
+  if (isReadOnlyServerlessRuntime()) {
+    return;
+  }
   await fs.mkdir(path.dirname(workflowFile), { recursive: true });
   try {
     await fs.access(workflowFile);
@@ -13,51 +27,122 @@ async function ensureWorkflowFile(): Promise<void> {
   }
 }
 
-async function readAll(): Promise<VideoWorkflow[]> {
+function parseWorkflows(value: unknown): VideoWorkflow[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is VideoWorkflow => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+    const row = item as Partial<VideoWorkflow>;
+    return Boolean(typeof row.id === "string" && row.id.trim());
+  });
+}
+
+async function readAllFromDb(userId?: string): Promise<VideoWorkflow[] | undefined> {
+  const storageUserId = scopedUserId(userId, "automation");
+  if (!storageUserId || !prisma) {
+    return undefined;
+  }
+  try {
+    const row = await prisma.userWorkflowCatalog.findUnique({
+      where: { userId: storageUserId }
+    });
+    return parseWorkflows(row?.data);
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeAllToDb(items: VideoWorkflow[], userId?: string): Promise<boolean> {
+  const storageUserId = scopedUserId(userId, "automation");
+  if (!storageUserId || !prisma) {
+    return false;
+  }
+  try {
+    await prisma.userWorkflowCatalog.upsert({
+      where: { userId: storageUserId },
+      update: { data: items as unknown as Prisma.InputJsonValue },
+      create: { userId: storageUserId, data: items as unknown as Prisma.InputJsonValue }
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readAllFromFile(): Promise<VideoWorkflow[]> {
+  if (isReadOnlyServerlessRuntime()) {
+    return [];
+  }
   await ensureWorkflowFile();
   const raw = await fs.readFile(workflowFile, "utf8");
   try {
-    return JSON.parse(raw) as VideoWorkflow[];
+    return parseWorkflows(JSON.parse(raw));
   } catch {
     return [];
   }
 }
 
-async function writeAll(items: VideoWorkflow[]): Promise<void> {
+async function writeAllToFile(items: VideoWorkflow[]): Promise<void> {
+  if (isReadOnlyServerlessRuntime()) {
+    return;
+  }
   await ensureWorkflowFile();
   await fs.writeFile(workflowFile, JSON.stringify(items, null, 2), "utf8");
 }
 
-export async function getWorkflow(id: string): Promise<VideoWorkflow | undefined> {
-  const items = await readAll();
+async function readAll(userId?: string): Promise<VideoWorkflow[]> {
+  const dbRows = await readAllFromDb(userId);
+  if (dbRows) {
+    return dbRows;
+  }
+  return readAllFromFile();
+}
+
+async function writeAll(items: VideoWorkflow[], userId?: string): Promise<void> {
+  const savedToDb = await writeAllToDb(items, userId);
+  if (savedToDb) {
+    return;
+  }
+  await writeAllToFile(items);
+}
+
+export async function getWorkflow(id: string, userId?: string): Promise<VideoWorkflow | undefined> {
+  const items = await readAll(userId);
   return items.find((item) => item.id === id);
 }
 
-export async function upsertWorkflow(workflow: VideoWorkflow): Promise<VideoWorkflow> {
-  const items = await readAll();
+export async function upsertWorkflow(
+  workflow: VideoWorkflow,
+  userId?: string
+): Promise<VideoWorkflow> {
+  const items = await readAll(userId);
   const index = items.findIndex((item) => item.id === workflow.id);
   if (index >= 0) {
     items[index] = workflow;
   } else {
     items.push(workflow);
   }
-  await writeAll(items);
+  await writeAll(items, userId);
   return workflow;
 }
 
 /** List workflows sorted by most recently updated first. */
-export async function listWorkflows(): Promise<VideoWorkflow[]> {
-  const items = await readAll();
+export async function listWorkflows(userId?: string): Promise<VideoWorkflow[]> {
+  const items = await readAll(userId);
   return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 /** Delete workflow by ID. Returns true when deleted. */
-export async function deleteWorkflow(id: string): Promise<boolean> {
-  const items = await readAll();
+export async function deleteWorkflow(id: string, userId?: string): Promise<boolean> {
+  const items = await readAll(userId);
   const next = items.filter((item) => item.id !== id);
   if (next.length === items.length) {
     return false;
   }
-  await writeAll(next);
+  await writeAll(next, userId);
   return true;
 }
+

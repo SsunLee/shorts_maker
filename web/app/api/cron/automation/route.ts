@@ -5,25 +5,42 @@ export const runtime = "nodejs";
 
 function isAuthorizedCronRequest(request: NextRequest): boolean {
   const secret = String(process.env.CRON_SECRET || "").trim();
-  if (!secret) {
-    return false;
-  }
   const authHeader = request.headers.get("authorization") || "";
-  return authHeader === `Bearer ${secret}`;
+  const vercelCronHeader = request.headers.get("x-vercel-cron") || "";
+
+  if (secret && authHeader === `Bearer ${secret}`) {
+    return true;
+  }
+
+  // Fallback for Vercel cron requests when authorization header is unavailable.
+  if (process.env.VERCEL === "1" && vercelCronHeader === "1") {
+    return true;
+  }
+
+  return false;
 }
 
 /** Vercel Cron entrypoint: executes due automation schedules for all enabled users. */
 export async function GET(request: NextRequest): Promise<NextResponse> {
+  console.log("[cron.automation] tick", {
+    path: request.nextUrl.pathname,
+    force: request.nextUrl.searchParams.get("force") === "1",
+    hasAuthHeader: Boolean(request.headers.get("authorization")),
+    vercelCronHeader: request.headers.get("x-vercel-cron") || "",
+    now: new Date().toISOString()
+  });
+
   if (!isAuthorizedCronRequest(request)) {
+    console.warn("[cron.automation] unauthorized");
     return NextResponse.json({ error: "Unauthorized cron request." }, { status: 401 });
   }
 
   const force = request.nextUrl.searchParams.get("force") === "1";
   const result = await runDueAutomationSchedules({ force });
+  console.log("[cron.automation] result", result);
   return NextResponse.json({
     ok: true,
     force,
     ...result
   });
 }
-

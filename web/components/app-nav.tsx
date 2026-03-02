@@ -32,13 +32,6 @@ const links = [
   { href: "/settings", label: "Settings", icon: Settings }
 ];
 
-const superAdminEmailSet = new Set(
-  String(process.env.NEXT_PUBLIC_SUPER_ADMIN_EMAILS || "")
-    .split(",")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean)
-);
-
 export function AppNav(): React.JSX.Element {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
@@ -79,10 +72,11 @@ export function AppNav(): React.JSX.Element {
           session?.user?.name?.trim() ||
           session?.user?.email?.trim() ||
           "계정";
-        const email = String(session?.user?.email || "").trim().toLowerCase();
+        const meResponse = await fetch("/api/me", { cache: "no-store" });
+        const meData = (await meResponse.json().catch(() => ({}))) as { isSuperAdmin?: boolean };
         if (mounted) {
           setAccountLabel(rawId);
-          setIsSuperAdmin(Boolean(email) && superAdminEmailSet.has(email));
+          setIsSuperAdmin(Boolean(meData.isSuperAdmin));
         }
       } catch {
         if (mounted) {

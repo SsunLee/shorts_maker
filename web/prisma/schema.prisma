@@ -39,3 +39,10 @@ model UserAccount {
   updatedAt DateTime @updatedAt
 }
 
+model UserWorkflowCatalog {
+  userId    String   @id
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+

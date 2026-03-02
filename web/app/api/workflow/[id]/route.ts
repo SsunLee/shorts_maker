@@ -114,7 +114,7 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { id } = await context.params;
-  const workflow = await getWorkflow(id);
+  const workflow = await getWorkflow(id, userId);
   if (!workflow) {
     return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
   }

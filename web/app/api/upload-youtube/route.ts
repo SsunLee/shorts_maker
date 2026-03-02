@@ -26,7 +26,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body = await request.json();
     const payload = schema.parse(body);
     const row = payload.id ? await getRow(payload.id, userId) : undefined;
-    const workflow = payload.id ? await getWorkflow(payload.id) : undefined;
+    const workflow = payload.id ? await getWorkflow(payload.id, userId) : undefined;
 
     const title = payload.title || row?.title || workflow?.input.title;
     const videoUrl =

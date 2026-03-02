@@ -307,7 +307,7 @@ async function resolveDefaultsFromLatestWorkflow(
         updatedAt: selectedTemplate.updatedAt
       }
     : await getAutomationTemplateSnapshot(userId);
-  const workflows = await listWorkflows();
+  const workflows = await listWorkflows(userId);
   const latestAny = workflows[0];
 
   if (templateMode === "applied_template" && !persistedTemplate) {
