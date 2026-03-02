@@ -10,6 +10,15 @@ interface UploadArgs {
   tags?: string[];
   videoUrl: string;
   privacyStatus?: "private" | "public" | "unlisted";
+  trace?: {
+    source?: string;
+    requestPath?: string;
+    requestId?: string;
+    userId?: string;
+    rowId?: string;
+    workflowId?: string;
+    referer?: string;
+  };
 }
 
 async function resolveYoutubeCredentials() {
@@ -69,6 +78,20 @@ async function resolveUploadPath(videoUrl: string): Promise<string> {
 
 /** Upload an MP4 to YouTube and return the final watch URL. */
 export async function uploadVideoToYoutube(args: UploadArgs): Promise<string> {
+  const trace = {
+    source: args.trace?.source || "unknown",
+    requestPath: args.trace?.requestPath || "",
+    requestId: args.trace?.requestId || "",
+    userId: args.trace?.userId || "",
+    rowId: args.trace?.rowId || "",
+    workflowId: args.trace?.workflowId || "",
+    referer: args.trace?.referer || ""
+  };
+  const startedAt = Date.now();
+  console.info(
+    `[youtube-upload:start] source=${trace.source} path=${trace.requestPath} requestId=${trace.requestId} userId=${trace.userId} rowId=${trace.rowId} workflowId=${trace.workflowId} title="${args.title}" privacy=${args.privacyStatus || "private"} videoUrl=${args.videoUrl}`
+  );
+
   const creds = await resolveYoutubeCredentials();
   const auth = new google.auth.OAuth2(
     creds.clientId,
@@ -102,6 +125,9 @@ export async function uploadVideoToYoutube(args: UploadArgs): Promise<string> {
       }
     });
   } catch (error) {
+    console.error(
+      `[youtube-upload:error] source=${trace.source} path=${trace.requestPath} requestId=${trace.requestId} userId=${trace.userId} rowId=${trace.rowId} workflowId=${trace.workflowId} elapsedMs=${Date.now() - startedAt} message=${error instanceof Error ? error.message : String(error)}`
+    );
     const message =
       error instanceof Error ? error.message : "YouTube upload failed.";
     const details =
@@ -126,8 +152,14 @@ export async function uploadVideoToYoutube(args: UploadArgs): Promise<string> {
 
   const videoId = response.data.id;
   if (!videoId) {
+    console.error(
+      `[youtube-upload:error] source=${trace.source} path=${trace.requestPath} requestId=${trace.requestId} userId=${trace.userId} rowId=${trace.rowId} workflowId=${trace.workflowId} elapsedMs=${Date.now() - startedAt} message=YouTube upload failed: no video ID returned.`
+    );
     throw new Error("YouTube upload failed: no video ID returned.");
   }
 
+  console.info(
+    `[youtube-upload:done] source=${trace.source} path=${trace.requestPath} requestId=${trace.requestId} userId=${trace.userId} rowId=${trace.rowId} workflowId=${trace.workflowId} elapsedMs=${Date.now() - startedAt} videoId=${videoId}`
+  );
   return `https://www.youtube.com/watch?v=${videoId}`;
 }

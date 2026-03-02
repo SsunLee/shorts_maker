@@ -505,7 +505,13 @@ async function processOneRow(args: {
       description,
       tags,
       videoUrl,
-      privacyStatus: args.privacyStatus
+      privacyStatus: args.privacyStatus,
+      trace: {
+        source: "automation-runner",
+        userId: args.userId,
+        rowId: row.id,
+        workflowId: workflow.id
+      }
     });
     await upsertRow({
       id: workflow.id,

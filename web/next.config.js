@@ -15,10 +15,12 @@ const distNamespace =
   "";
 
 const resolvedDistDir = sanitizeNamespace(distNamespace);
+const isProduction = process.env.NODE_ENV === "production";
 
 const nextConfig = {
   reactStrictMode: true,
-  ...(resolvedDistDir ? { distDir: `.next-${resolvedDistDir}` } : {})
+  // Keep per-port dist only in local dev; production (Vercel/Cloud) uses default .next.
+  ...(!isProduction && resolvedDistDir ? { distDir: `.next-${resolvedDistDir}` } : {})
 };
 
 module.exports = nextConfig;

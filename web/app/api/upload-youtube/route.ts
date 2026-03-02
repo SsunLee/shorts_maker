@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getRow, upsertRow } from "@/lib/repository";
 import { getWorkflow } from "@/lib/workflow-store";
 import { uploadVideoToYoutube } from "@/lib/youtube-service";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -18,6 +19,10 @@ const schema = z.object({
 /** Upload a completed video to YouTube using OAuth credentials. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
     const payload = schema.parse(body);
     const row = payload.id ? await getRow(payload.id) : undefined;
@@ -44,12 +49,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       });
     }
 
+    const requestId =
+      request.headers.get("x-vercel-id") ||
+      request.headers.get("x-request-id") ||
+      crypto.randomUUID();
+    const referer = request.headers.get("referer") || "";
+
     const youtubeUrl = await uploadVideoToYoutube({
       title,
       description: payload.description,
       tags: payload.tags ?? row?.tags,
       videoUrl,
-      privacyStatus: payload.privacyStatus
+      privacyStatus: payload.privacyStatus,
+      trace: {
+        source: "api.upload-youtube",
+        requestPath: request.nextUrl.pathname,
+        requestId,
+        userId,
+        rowId: row?.id || payload.id,
+        workflowId: workflow?.id || payload.id,
+        referer
+      }
     });
 
     if (row?.id) {

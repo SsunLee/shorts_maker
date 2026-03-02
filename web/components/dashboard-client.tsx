@@ -93,6 +93,9 @@ const ACTIVE_TEMPLATE_VALUE = "__active__";
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
   const raw = await response.text();
+  if (!raw.trim()) {
+    return {} as T;
+  }
   try {
     return JSON.parse(raw) as T;
   } catch {
@@ -264,9 +267,9 @@ export function DashboardClient(): React.JSX.Element {
 
   async function refreshAutomation(): Promise<void> {
     const response = await fetch("/api/automation", { cache: "no-store" });
-    const data = (await response.json()) as AutomationResponse;
+    const data = await readJsonResponse<AutomationResponse>(response);
     if (!response.ok) {
-      throw new Error(data.error || "Failed to load automation status.");
+      throw new Error(data.error || `Failed to load automation status (HTTP ${response.status}).`);
     }
     setAutomation(data.state);
   }
@@ -293,9 +296,9 @@ export function DashboardClient(): React.JSX.Element {
 
   const refreshSchedule = useCallback(async (): Promise<void> => {
     const response = await fetch("/api/automation/schedule", { cache: "no-store" });
-    const data = (await response.json()) as AutomationScheduleResponse;
+    const data = await readJsonResponse<AutomationScheduleResponse>(response);
     if (!response.ok) {
-      throw new Error(data.error || "Failed to load automation schedule.");
+      throw new Error(data.error || `Failed to load automation schedule (HTTP ${response.status}).`);
     }
     setSchedule(data.schedule);
     if (!scheduleDraftDirtyRef.current) {
@@ -305,9 +308,9 @@ export function DashboardClient(): React.JSX.Element {
 
   const refreshLatestWorkflowTemplateInfo = useCallback(async (): Promise<void> => {
     const response = await fetch("/api/workflows", { cache: "no-store" });
-    const data = (await response.json()) as WorkflowListResponse;
+    const data = await readJsonResponse<WorkflowListResponse>(response);
     if (!response.ok) {
-      throw new Error(data.error || "Failed to load workflows.");
+      throw new Error(data.error || `Failed to load workflows (HTTP ${response.status}).`);
     }
     const workflows = data.workflows || [];
     const latest = workflows.find(
@@ -327,9 +330,9 @@ export function DashboardClient(): React.JSX.Element {
 
   async function refresh(): Promise<void> {
     const response = await fetch("/api/rows", { cache: "no-store" });
-    const data = (await response.json()) as RowsResponse;
+    const data = await readJsonResponse<RowsResponse>(response);
     if (!response.ok) {
-      throw new Error("Failed to load rows.");
+      throw new Error(`Failed to load rows (HTTP ${response.status}).`);
     }
     setRows(data.rows);
   }
@@ -452,9 +455,9 @@ export function DashboardClient(): React.JSX.Element {
           privacyStatus: schedulePrivacyStatus
         })
       });
-      const data = (await response.json()) as AutomationScheduleResponse;
+      const data = await readJsonResponse<AutomationScheduleResponse>(response);
       if (!response.ok) {
-        throw new Error(data.error || "Failed to save schedule.");
+        throw new Error(data.error || `Failed to save schedule (HTTP ${response.status}).`);
       }
       setSchedule(data.schedule);
       hydrateScheduleForm(data.schedule);
@@ -472,9 +475,9 @@ export function DashboardClient(): React.JSX.Element {
       const response = await fetch("/api/automation/schedule", {
         method: "DELETE"
       });
-      const data = (await response.json()) as AutomationScheduleResponse;
+      const data = await readJsonResponse<AutomationScheduleResponse>(response);
       if (!response.ok) {
-        throw new Error(data.error || "Failed to disable schedule.");
+        throw new Error(data.error || `Failed to disable schedule (HTTP ${response.status}).`);
       }
       setSchedule(data.schedule);
       hydrateScheduleForm(data.schedule);
@@ -503,9 +506,9 @@ export function DashboardClient(): React.JSX.Element {
               : Math.max(1, Number.parseInt(automationMaxItems, 10) || 1)
         })
       });
-      const data = (await response.json()) as AutomationResponse;
+      const data = await readJsonResponse<AutomationResponse>(response);
       if (!response.ok) {
-        throw new Error(data.error || "Automation start failed.");
+        throw new Error(data.error || `Automation start failed (HTTP ${response.status}).`);
       }
       setAutomation(data.state);
       await refresh();
@@ -523,9 +526,9 @@ export function DashboardClient(): React.JSX.Element {
       const response = await fetch("/api/automation", {
         method: "DELETE"
       });
-      const data = (await response.json()) as AutomationResponse;
+      const data = await readJsonResponse<AutomationResponse>(response);
       if (!response.ok) {
-        throw new Error(data.error || "Automation stop failed.");
+        throw new Error(data.error || `Automation stop failed (HTTP ${response.status}).`);
       }
       setAutomation(data.state);
     } catch (stopError) {
@@ -574,7 +577,7 @@ export function DashboardClient(): React.JSX.Element {
     });
 
     if (!response.ok) {
-      const data = (await response.json()) as { error?: string };
+      const data = await readJsonResponse<{ error?: string }>(response);
       throw new Error(data.error || "Upload failed.");
     }
 
@@ -595,7 +598,7 @@ export function DashboardClient(): React.JSX.Element {
       const response = await fetch(`/api/rows/${row.id}`, {
         method: "DELETE"
       });
-      const data = (await response.json()) as { error?: string };
+      const data = await readJsonResponse<{ error?: string }>(response);
       if (!response.ok) {
         throw new Error(data.error || "Delete failed.");
       }

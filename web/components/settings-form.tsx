@@ -32,7 +32,7 @@ const emptySettings: AppSettings = {
   gsheetSheetName: "Shorts",
   youtubeClientId: "",
   youtubeClientSecret: "",
-  youtubeRedirectUri: "http://localhost:3000/oauth2callback",
+  youtubeRedirectUri: "",
   youtubeRefreshToken: ""
 };
 
@@ -186,6 +186,12 @@ export function SettingsForm(): React.JSX.Element {
     () => resolveProviderChip(settings, "tts"),
     [settings]
   );
+  const youtubeRedirectPlaceholder = useMemo(() => {
+    if (typeof window === "undefined") {
+      return "https://your-domain.com/oauth2callback";
+    }
+    return `${window.location.origin}/oauth2callback`;
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -194,7 +200,11 @@ export function SettingsForm(): React.JSX.Element {
         return;
       }
       const data = (await response.json()) as AppSettings;
-      setSettings({ ...emptySettings, ...data });
+      const merged = { ...emptySettings, ...data };
+      if (!String(merged.youtubeRedirectUri || "").trim() && typeof window !== "undefined") {
+        merged.youtubeRedirectUri = `${window.location.origin}/oauth2callback`;
+      }
+      setSettings(merged);
     };
     void load();
 
@@ -694,6 +704,7 @@ export function SettingsForm(): React.JSX.Element {
               id="youtubeRedirectUri"
               value={settings.youtubeRedirectUri}
               onChange={(e) => update("youtubeRedirectUri", e.target.value)}
+              placeholder={youtubeRedirectPlaceholder}
             />
           </div>
           <div className="space-y-2">
