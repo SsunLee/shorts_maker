@@ -5,7 +5,7 @@ import { getUserAccessStatus, isSuperAdminEmail } from "@/lib/user-access";
 
 export async function getAuthenticatedUserId(): Promise<string | undefined> {
   const session = await getServerSession(authOptions);
-  const userId = session?.user?.id || session?.user?.email || undefined;
+  const userId = session?.user?.email || session?.user?.id || undefined;
   const normalizedUserId =
     typeof userId === "string" && userId.trim().length > 0 ? userId.trim() : undefined;
   if (!normalizedUserId) {
@@ -25,7 +25,7 @@ export async function getAuthenticatedUserId(): Promise<string | undefined> {
 
 export async function requireAuthenticatedUserId(): Promise<string> {
   const session = await getServerSession(authOptions);
-  const userId = session?.user?.id || session?.user?.email || undefined;
+  const userId = session?.user?.email || session?.user?.id || undefined;
   const normalizedUserId =
     typeof userId === "string" && userId.trim().length > 0 ? userId.trim() : undefined;
   if (!normalizedUserId) {
@@ -46,7 +46,7 @@ export async function requireAuthenticatedUserId(): Promise<string> {
 export async function requireSuperAdminUserId(): Promise<string> {
   const session = await getServerSession(authOptions);
   const email = String(session?.user?.email || "").trim();
-  const userId = String(session?.user?.id || session?.user?.email || "").trim();
+  const userId = String(session?.user?.email || session?.user?.id || "").trim();
 
   if (!userId) {
     redirect("/auth/signin");
