@@ -8,15 +8,10 @@ function createPrismaClient(): PrismaClient | undefined {
   if (!process.env.DATABASE_URL) {
     return undefined;
   }
-  const cached = globalThis.__shortsMakerPrisma__;
-  if (cached) {
-    return cached;
+  if (!globalThis.__shortsMakerPrisma__) {
+    globalThis.__shortsMakerPrisma__ = new PrismaClient();
   }
-  const client = new PrismaClient();
-  if (process.env.NODE_ENV !== "production") {
-    globalThis.__shortsMakerPrisma__ = client;
-  }
-  return client;
+  return globalThis.__shortsMakerPrisma__;
 }
 
 export const prisma = createPrismaClient();

@@ -361,6 +361,9 @@ export function DashboardClient(): React.JSX.Element {
     void load();
 
     const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
       void refresh();
       void refreshAutomation().catch(() => {
         // Keep dashboard polling resilient even if automation endpoint is temporarily unavailable.

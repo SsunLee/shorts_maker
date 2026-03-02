@@ -21,8 +21,8 @@ interface UploadArgs {
   };
 }
 
-async function resolveYoutubeCredentials() {
-  const settings = await getSettings();
+async function resolveYoutubeCredentials(userId?: string) {
+  const settings = await getSettings(userId);
   const clientId = process.env.YOUTUBE_CLIENT_ID || settings.youtubeClientId;
   const clientSecret =
     process.env.YOUTUBE_CLIENT_SECRET || settings.youtubeClientSecret;
@@ -92,7 +92,7 @@ export async function uploadVideoToYoutube(args: UploadArgs): Promise<string> {
     `[youtube-upload:start] source=${trace.source} path=${trace.requestPath} requestId=${trace.requestId} userId=${trace.userId} rowId=${trace.rowId} workflowId=${trace.workflowId} title="${args.title}" privacy=${args.privacyStatus || "private"} videoUrl=${args.videoUrl}`
   );
 
-  const creds = await resolveYoutubeCredentials();
+  const creds = await resolveYoutubeCredentials(trace.userId || undefined);
   const auth = new google.auth.OAuth2(
     creds.clientId,
     creds.clientSecret,

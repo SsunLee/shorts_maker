@@ -51,6 +51,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json(saved);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid payload";
-    return NextResponse.json({ error: message }, { status: 400 });
+    const status = error instanceof z.ZodError ? 400 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }
