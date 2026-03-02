@@ -9,9 +9,10 @@ export interface SheetsContext {
 
 /** Build authenticated Google Sheets client from environment or saved settings. */
 export async function getSheetsContext(
-  overrideSheetName?: string
+  overrideSheetName?: string,
+  userId?: string
 ): Promise<SheetsContext | null> {
-  const settings = await getSettings();
+  const settings = await getSettings(userId);
   const spreadsheetId =
     process.env.GSHEETS_SPREADSHEET_ID || settings.gsheetSpreadsheetId || "";
   const clientEmail =

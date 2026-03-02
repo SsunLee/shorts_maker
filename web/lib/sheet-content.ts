@@ -35,9 +35,10 @@ function findHeaderKey(
  * - narration
  */
 export async function listSheetContentRows(
-  sheetName?: string
+  sheetName?: string,
+  userId?: string
 ): Promise<SheetContentRow[]> {
-  const context = await getSheetsContext(sheetName);
+  const context = await getSheetsContext(sheetName, userId);
   if (!context) {
     throw new Error(
       "Google Sheets is not configured. Set spreadsheet ID, client email, and private key in /settings."

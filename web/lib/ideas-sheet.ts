@@ -76,8 +76,8 @@ function normalizeIdeaId(raw: string | undefined): string {
     .replace(/[^\p{L}\p{N}_-]/gu, "");
 }
 
-async function readSheetMatrix(sheetName?: string): Promise<SheetMatrix> {
-  const context = await getSheetsContext(sheetName);
+async function readSheetMatrix(sheetName?: string, userId?: string): Promise<SheetMatrix> {
+  const context = await getSheetsContext(sheetName, userId);
   if (!context) {
     throw new Error(
       "Google Sheets is not configured. Set spreadsheet ID, client email, and private key in /settings."
@@ -93,12 +93,12 @@ async function readSheetMatrix(sheetName?: string): Promise<SheetMatrix> {
   };
 }
 
-export async function loadIdeasSheetTable(sheetName?: string): Promise<{
+export async function loadIdeasSheetTable(sheetName?: string, userId?: string): Promise<{
   sheetName: string;
   headers: string[];
   rows: Record<string, string>[];
 }> {
-  const matrix = await readSheetMatrix(sheetName);
+  const matrix = await readSheetMatrix(sheetName, userId);
   return {
     sheetName: matrix.sheetName,
     headers: matrix.headers,
@@ -110,8 +110,9 @@ export async function appendIdeaRowsToSheet(args: {
   sheetName?: string;
   idBase?: string;
   items: IdeaDraftRow[];
+  userId?: string;
 }): Promise<{ inserted: number; sheetName: string }> {
-  const context = await getSheetsContext(args.sheetName);
+  const context = await getSheetsContext(args.sheetName, args.userId);
   if (!context) {
     throw new Error(
       "Google Sheets is not configured. Set spreadsheet ID, client email, and private key in /settings."

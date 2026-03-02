@@ -584,7 +584,7 @@ async function runAutomationLoop(args: {
     let processedThisRun = 0;
 
     while (!state.stopRequested) {
-      const rows = await listSheetContentRows(args.sheetName);
+      const rows = await listSheetContentRows(args.sheetName, args.userId);
       state.remaining = rows.length;
       state.totalDiscovered = Math.max(state.totalDiscovered, state.processed + rows.length);
 

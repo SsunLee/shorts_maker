@@ -3,6 +3,7 @@ import { z } from "zod";
 import { generateIdeas } from "@/lib/idea-generator";
 import { loadIdeasSheetTable } from "@/lib/ideas-sheet";
 import { IdeaDraftRow, IdeaLanguage } from "@/lib/types";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -79,9 +80,13 @@ function attachIdeaIds(args: {
 /** Generate idea rows for Google Sheet template. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
     const payload = schema.parse(body);
-    const sheetTable = await loadIdeasSheetTable(payload.sheetName);
+    const sheetTable = await loadIdeasSheetTable(payload.sheetName, userId);
     const existingKeywords = sheetTable.rows
       .map((row) => findRowValue(row, ["keyword"]))
       .filter(Boolean);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { appendIdeaRowsToSheet } from "@/lib/ideas-sheet";
+import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
 
@@ -23,12 +24,17 @@ const schema = z.object({
 /** Apply generated ideas to current sheet as new rows. */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
     const payload = schema.parse(body);
     const result = await appendIdeaRowsToSheet({
       sheetName: payload.sheetName,
       idBase: payload.idBase,
-      items: payload.items
+      items: payload.items,
+      userId
     });
     return NextResponse.json(result);
   } catch (error) {
