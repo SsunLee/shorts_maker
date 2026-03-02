@@ -3,6 +3,7 @@ import path from "path";
 import { NextResponse } from "next/server";
 import { deleteRow } from "@/lib/repository";
 import { deleteWorkflow } from "@/lib/workflow-store";
+import { cleanupJobAssetsFromStorage } from "@/lib/object-storage";
 
 export const runtime = "nodejs";
 
@@ -23,6 +24,7 @@ export async function DELETE(
     const { id } = await context.params;
     const deletedRow = await deleteRow(id);
     await deleteWorkflow(id);
+    await cleanupJobAssetsFromStorage(id);
 
     // Clean web-generated assets.
     await removeDirectoryIfExists(path.join(process.cwd(), "public", "generated", id));

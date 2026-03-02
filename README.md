@@ -232,6 +232,68 @@ Content-row fetch (`/api/sheet-rows`) required columns:
   ```
   Use your Funnel URL as `VIDEO_ENGINE_URL`.
 
+## 5-1) Production 권장: Cloud Run Video Engine + S3 Standard
+
+### A. Video Engine를 Cloud Run으로 배포
+1. `video-engine/` 기준 컨테이너 이미지 빌드/푸시
+2. Cloud Run 서비스 생성 (`min instances=1` 권장)
+3. 서비스 URL 확보 후 Vercel `VIDEO_ENGINE_URL`에 설정
+4. Cloud Run 환경변수 `PUBLIC_BASE_URL`를 Cloud Run 서비스 URL로 설정
+
+### B. 파일 저장소를 S3 Standard로 전환
+`web/.env` 또는 Vercel Environment Variables:
+
+- `S3_REGION`
+- `S3_BUCKET`
+- `S3_PREFIX` (예: `shorts-maker`)
+- `S3_PUBLIC_BASE_URL` (선택, 예: CloudFront 도메인)
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN` (선택)
+
+동작:
+- 이미지/TTS 생성 결과 -> `generated/{jobId}/...` 업로드
+- 최종 렌더 영상 -> `rendered/{jobId}/final.mp4` 업로드
+- Dashboard 삭제 시 S3 prefix도 정리
+
+권장 수명주기(Lifecycle):
+- `generated/` : 1~3일 만료
+- `rendered/` : 7일 만료
+
+### C. S3 Lifecycle 규칙(요청값: 생성 3일 / 최종 7일)
+
+AWS 콘솔에서:
+1. `S3 > 버킷 선택 > Management > Lifecycle rules > Create lifecycle rule`
+2. 규칙 1 생성
+   - Rule name: `expire-generated-3d`
+   - Prefix: `shorts-maker/generated/` (S3_PREFIX를 다르게 쓰면 prefix도 맞춰서 입력)
+   - Expire current versions of objects: `3` days
+3. 규칙 2 생성
+   - Rule name: `expire-rendered-7d`
+   - Prefix: `shorts-maker/rendered/`
+   - Expire current versions of objects: `7` days
+
+정책 예시(JSON, 콘솔에서 자동 생성되는 형태와 동일 목적):
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "expire-generated-3d",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "shorts-maker/generated/" },
+      "Expiration": { "Days": 3 }
+    },
+    {
+      "ID": "expire-rendered-7d",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "shorts-maker/rendered/" },
+      "Expiration": { "Days": 7 }
+    }
+  ]
+}
+```
+
 ## 6) API Summary
 
 - `POST /api/generate-video`

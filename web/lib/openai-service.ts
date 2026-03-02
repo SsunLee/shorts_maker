@@ -1,8 +1,10 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import OpenAI from "openai";
-import { promises as fs } from "fs";
-import path from "path";
 import { resolveApiKeys, resolveModelForTask, resolveProviderForTask } from "@/lib/ai-provider";
+import {
+  storeGeneratedAsset,
+  storeGeneratedAssetFromRemote
+} from "@/lib/object-storage";
 import type { ImageAspectRatio, WorkflowScene } from "@/lib/types";
 import { toGeminiVoiceName, toOpenAiVoiceName } from "@/lib/voice-options";
 
@@ -394,12 +396,6 @@ export async function splitNarrationToScenes(args: {
     imageAspectRatio,
     sceneCount
   });
-}
-
-async function ensureOutputDir(jobId: string): Promise<string> {
-  const dir = path.join(process.cwd(), "public", "generated", jobId);
-  await fs.mkdir(dir, { recursive: true });
-  return dir;
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -828,7 +824,7 @@ async function generateImageWithRetryGemini(args: {
     : new Error(`Image generation failed for prompt ${args.promptIndex + 1}.`);
 }
 
-/** Generate images and store them under `/public/generated/{id}`. */
+/** Generate images and store them under configured storage (local or S3). */
 export async function generateImages(
   jobId: string,
   prompts: string[],
@@ -841,7 +837,6 @@ export async function generateImages(
   const provider = await resolveProviderForTask("image");
   const imageModel = await resolveModelForTask(provider, "image");
   const textModel = await resolveModelForTask(provider, "text");
-  const outputDir = await ensureOutputDir(jobId);
   const urls: string[] = [];
   const timeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 90000);
   const retryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 1);
@@ -866,9 +861,13 @@ export async function generateImages(
       const imageBuffer = Buffer.from(inline.data, "base64");
       const extension = extensionFromMime(inline.mimeType, "png");
       const fileName = `image-${startIndex + index + 1}.${extension}`;
-      const filePath = path.join(outputDir, fileName);
-      await fs.writeFile(filePath, imageBuffer);
-      urls.push(`/generated/${jobId}/${fileName}`);
+      const stored = await storeGeneratedAsset({
+        jobId,
+        fileName,
+        body: imageBuffer,
+        contentType: inline.mimeType || `image/${extension}`
+      });
+      urls.push(stored.publicUrl);
       if (options?.onProgress) {
         await options.onProgress(index + 1, prompts.length);
       }
@@ -895,9 +894,13 @@ export async function generateImages(
     if (imageData?.b64_json) {
       const imageBuffer = Buffer.from(imageData.b64_json, "base64");
       const fileName = `image-${startIndex + index + 1}.png`;
-      const filePath = path.join(outputDir, fileName);
-      await fs.writeFile(filePath, imageBuffer);
-      urls.push(`/generated/${jobId}/${fileName}`);
+      const stored = await storeGeneratedAsset({
+        jobId,
+        fileName,
+        body: imageBuffer,
+        contentType: "image/png"
+      });
+      urls.push(stored.publicUrl);
       if (options?.onProgress) {
         await options.onProgress(index + 1, prompts.length);
       }
@@ -905,7 +908,14 @@ export async function generateImages(
     }
 
     if (imageData?.url) {
-      urls.push(imageData.url);
+      const fileName = `image-${startIndex + index + 1}.png`;
+      const stored = await storeGeneratedAssetFromRemote({
+        jobId,
+        fileName,
+        sourceUrl: imageData.url,
+        contentType: "image/png"
+      });
+      urls.push(stored.publicUrl);
       if (options?.onProgress) {
         await options.onProgress(index + 1, prompts.length);
       }
@@ -1052,7 +1062,6 @@ export async function generateTtsAudio(args: {
   voice: string;
   speed?: number;
 }): Promise<{ localPath: string; publicUrl: string }> {
-  const outputDir = await ensureOutputDir(args.jobId);
   const audio = await synthesizeSpeechAudio({
     voice: args.voice,
     speed: args.speed,
@@ -1060,12 +1069,17 @@ export async function generateTtsAudio(args: {
     preferredMimeType: "audio/mp3"
   });
   const fileName = `tts.${audio.extension}`;
-  const filePath = path.join(outputDir, fileName);
-  await fs.writeFile(filePath, audio.buffer);
+  const stored = await storeGeneratedAsset({
+    jobId: args.jobId,
+    fileName,
+    body: audio.buffer,
+    contentType: audio.mimeType || "audio/mpeg",
+    cacheControl: "public, max-age=31536000, immutable"
+  });
 
   return {
-    localPath: filePath,
-    publicUrl: `/generated/${args.jobId}/${fileName}`
+    localPath: stored.localPath || stored.publicUrl,
+    publicUrl: stored.publicUrl
   };
 }
 

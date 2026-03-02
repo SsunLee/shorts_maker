@@ -145,13 +145,13 @@ function normalizeHexColor(value: string | undefined, fallback: string): string 
 }
 
 function subtitleAssScaleForCanvas(canvasScale: number): number {
-  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.2);
+  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
   const assToOutputScale = 1920 / 288;
   return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
 }
 
 function titleLayerScaleForCanvas(canvasScale: number): number {
-  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.2);
+  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
   return clampNumber(safeCanvasScale * 1.52, 0.24, 0.5, 0.4);
 }
 
@@ -614,7 +614,7 @@ export function DashboardClient(): React.JSX.Element {
     const layout = overlay?.videoLayout === "panel_16_9" ? "panel_16_9" : "fill_9_16";
     const panelTop = clampNumber(Number(overlay?.panelTopPercent), 0, 85, 34);
     const panelWidth = clampNumber(Number(overlay?.panelWidthPercent), 60, 100, 100);
-    const previewWidth = 220;
+    const previewWidth = 320;
     const previewScale = clampNumber(previewWidth / 1080, 0.12, 1, 0.2);
     const titlePreviewRenderScale = titleLayerScaleForCanvas(previewScale);
     const subtitleScale = subtitleAssScaleForCanvas(previewScale);
@@ -633,7 +633,7 @@ export function DashboardClient(): React.JSX.Element {
 
     return (
       <div className="rounded-md border bg-muted/30 p-2">
-        <div className="mx-auto aspect-[9/16] w-full max-w-[220px] overflow-hidden rounded-md border bg-black">
+        <div className="mx-auto aspect-[9/16] w-full max-w-[320px] overflow-hidden rounded-md border bg-black">
           <div className="relative h-full w-full">
             {layout === "panel_16_9" ? (
               <div className="absolute inset-0">

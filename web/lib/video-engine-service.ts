@@ -1,6 +1,7 @@
 import { BuildVideoPayload, RenderOptions } from "@/lib/types";
 import { promises as fs } from "fs";
 import path from "path";
+import { mirrorRenderedVideoToStorage } from "@/lib/object-storage";
 
 export interface BuildVideoResult {
   outputPath: string;
@@ -200,5 +201,10 @@ export async function buildVideoWithEngine(
     throw new Error(`Video engine error (${response.status}): ${message}`);
   }
 
-  return (await response.json()) as BuildVideoResult;
+  const result = (await response.json()) as BuildVideoResult;
+  result.outputUrl = await mirrorRenderedVideoToStorage({
+    jobId: payload.jobId,
+    sourceUrl: result.outputUrl
+  });
+  return result;
 }
