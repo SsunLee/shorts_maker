@@ -29,7 +29,7 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async signIn({ user }) {
-      const userId = String(user.email || user.id || "").trim();
+      const userId = String(user.id || user.email || "").trim();
       if (!userId) {
         return false;
       }

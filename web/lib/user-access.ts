@@ -70,6 +70,10 @@ function mapAccount(row: {
   };
 }
 
+function isEmailLikeId(value: string): boolean {
+  return value.includes("@");
+}
+
 export async function ensureUserAccount(args: {
   userId: string;
   email?: string;
@@ -80,6 +84,41 @@ export async function ensureUserAccount(args: {
   }
 
   try {
+    const normalizedEmail = String(args.email || "").trim().toLowerCase();
+    const shouldMigrateLegacyEmailId =
+      normalizedEmail && normalizedEmail !== args.userId.toLowerCase();
+
+    if (shouldMigrateLegacyEmailId) {
+      const legacy = await prisma.userAccount.findUnique({
+        where: { userId: normalizedEmail }
+      });
+
+      if (legacy) {
+        await prisma.userAccount.upsert({
+          where: { userId: args.userId },
+          update: {
+            email: args.email || legacy.email || null,
+            name: args.name || legacy.name || null,
+            role: legacy.role,
+            isActive: legacy.isActive,
+            expiresAt: legacy.expiresAt
+          },
+          create: {
+            userId: args.userId,
+            email: args.email || legacy.email || null,
+            name: args.name || legacy.name || null,
+            role: legacy.role || (isSuperAdminEmail(args.email) ? "super_admin" : "user"),
+            isActive: legacy.isActive,
+            expiresAt: legacy.expiresAt
+          }
+        });
+        await prisma.userAccount.delete({
+          where: { userId: normalizedEmail }
+        });
+        return;
+      }
+    }
+
     await prisma.userAccount.upsert({
       where: { userId: args.userId },
       update: {
@@ -141,7 +180,33 @@ export async function listUserAccounts(): Promise<UserAccountRecord[]> {
     const rows = await prisma.userAccount.findMany({
       orderBy: { updatedAt: "desc" }
     });
-    return rows.map(mapAccount);
+    const grouped = new Map<string, (typeof rows)[number]>();
+
+    rows.forEach((row) => {
+      const key = String(row.email || row.userId).trim().toLowerCase();
+      const prev = grouped.get(key);
+      if (!prev) {
+        grouped.set(key, row);
+        return;
+      }
+
+      // Prefer stable provider subject ID over legacy email-as-id rows.
+      const prevIsEmailId = isEmailLikeId(prev.userId);
+      const nextIsEmailId = isEmailLikeId(row.userId);
+      if (prevIsEmailId && !nextIsEmailId) {
+        grouped.set(key, row);
+        return;
+      }
+      if (!prevIsEmailId && nextIsEmailId) {
+        return;
+      }
+
+      if (row.updatedAt.getTime() > prev.updatedAt.getTime()) {
+        grouped.set(key, row);
+      }
+    });
+
+    return Array.from(grouped.values()).map(mapAccount);
   } catch (error) {
     if (isMissingTableError(error)) {
       return [];
@@ -196,4 +261,3 @@ export async function updateUserAccess(args: {
     throw error;
   }
 }
-
