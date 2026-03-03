@@ -45,14 +45,10 @@ async function readAllFromDb(userId?: string): Promise<VideoWorkflow[] | undefin
   if (!storageUserId || !prisma) {
     return undefined;
   }
-  try {
-    const row = await prisma.userWorkflowCatalog.findUnique({
-      where: { userId: storageUserId }
-    });
-    return parseWorkflows(row?.data);
-  } catch {
-    return undefined;
-  }
+  const row = await prisma.userWorkflowCatalog.findUnique({
+    where: { userId: storageUserId }
+  });
+  return parseWorkflows(row?.data);
 }
 
 async function writeAllToDb(items: VideoWorkflow[], userId?: string): Promise<boolean> {
@@ -60,16 +56,12 @@ async function writeAllToDb(items: VideoWorkflow[], userId?: string): Promise<bo
   if (!storageUserId || !prisma) {
     return false;
   }
-  try {
-    await prisma.userWorkflowCatalog.upsert({
-      where: { userId: storageUserId },
-      update: { data: items as unknown as Prisma.InputJsonValue },
-      create: { userId: storageUserId, data: items as unknown as Prisma.InputJsonValue }
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  await prisma.userWorkflowCatalog.upsert({
+    where: { userId: storageUserId },
+    update: { data: items as unknown as Prisma.InputJsonValue },
+    create: { userId: storageUserId, data: items as unknown as Prisma.InputJsonValue }
+  });
+  return true;
 }
 
 async function readAllFromFile(): Promise<VideoWorkflow[]> {
@@ -94,19 +86,54 @@ async function writeAllToFile(items: VideoWorkflow[]): Promise<void> {
 }
 
 async function readAll(userId?: string): Promise<VideoWorkflow[]> {
-  const dbRows = await readAllFromDb(userId);
-  if (dbRows) {
-    return dbRows;
+  const canUseFileFallback = !isReadOnlyServerlessRuntime();
+
+  if (prisma && scopedUserId(userId, "automation")) {
+    try {
+      const dbRows = await readAllFromDb(userId);
+      if (dbRows) {
+        return dbRows;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[workflow-store] DB read failed (user=${String(userId || "")}): ${message}`);
+      if (!canUseFileFallback) {
+        throw new Error(`Workflow storage database read failed: ${message}`);
+      }
+    }
   }
-  return readAllFromFile();
+
+  if (canUseFileFallback) {
+    return readAllFromFile();
+  }
+
+  throw new Error("Workflow storage is unavailable in serverless runtime without a database.");
 }
 
 async function writeAll(items: VideoWorkflow[], userId?: string): Promise<void> {
-  const savedToDb = await writeAllToDb(items, userId);
-  if (savedToDb) {
+  const canUseFileFallback = !isReadOnlyServerlessRuntime();
+
+  if (prisma && scopedUserId(userId, "automation")) {
+    try {
+      const savedToDb = await writeAllToDb(items, userId);
+      if (savedToDb) {
+        return;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[workflow-store] DB write failed (user=${String(userId || "")}): ${message}`);
+      if (!canUseFileFallback) {
+        throw new Error(`Workflow storage database write failed: ${message}`);
+      }
+    }
+  }
+
+  if (canUseFileFallback) {
+    await writeAllToFile(items);
     return;
   }
-  await writeAllToFile(items);
+
+  throw new Error("Workflow storage write is unavailable in serverless runtime without a database.");
 }
 
 export async function getWorkflow(id: string, userId?: string): Promise<VideoWorkflow | undefined> {
@@ -145,4 +172,3 @@ export async function deleteWorkflow(id: string, userId?: string): Promise<boole
   await writeAll(next, userId);
   return true;
 }
-

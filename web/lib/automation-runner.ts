@@ -2,10 +2,9 @@ import { listSheetContentRows } from "@/lib/sheet-content";
 import { upsertRow } from "@/lib/repository";
 import {
   runNextWorkflowStage,
-  startStagedWorkflow,
-  updateSceneSplit
+  startStagedWorkflow
 } from "@/lib/staged-workflow";
-import { listWorkflows } from "@/lib/workflow-store";
+import { listWorkflows, upsertWorkflow } from "@/lib/workflow-store";
 import { uploadVideoToYoutube } from "@/lib/youtube-service";
 import {
   getAutomationTemplateEntryById,
@@ -465,9 +464,14 @@ async function processOneRow(args: {
     });
 
     if (rowRenderOptions) {
-      workflow = await updateSceneSplit(workflow.id, {
-        renderOptions: rowRenderOptions
-      }, args.userId);
+      workflow = {
+        ...workflow,
+        renderOptions: rowRenderOptions,
+        status: "idle",
+        error: undefined,
+        updatedAt: new Date().toISOString()
+      };
+      await upsertWorkflow(workflow, args.userId);
       pushLog(args.userId, "info", `[${row.id}] 최근 템플릿(renderOptions) 적용 + 제목/주제 텍스트 치환`);
     }
 

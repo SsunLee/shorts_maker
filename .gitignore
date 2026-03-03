@@ -1,6 +1,7 @@
 # Node / Next.js
 node_modules/
 .next/
+web/.next-*/
 web/.next-dev-*/
 out/
 *.log
