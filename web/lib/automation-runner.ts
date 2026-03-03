@@ -123,6 +123,19 @@ function pushLog(userId: string | undefined, level: "info" | "error", message: s
   state.logs = [...state.logs, entry].slice(-MAX_LOGS);
 }
 
+function logServer(
+  level: "info" | "error",
+  message: string,
+  meta?: Record<string, unknown>
+): void {
+  const payload = meta ? `${message} ${JSON.stringify(meta)}` : message;
+  if (level === "error") {
+    console.error(`[automation-runner] ${payload}`);
+    return;
+  }
+  console.log(`[automation-runner] ${payload}`);
+}
+
 function extractHashTags(text: string | undefined): string[] {
   if (!text) {
     return [];
@@ -450,6 +463,11 @@ async function processOneRow(args: {
   };
 
   try {
+    logServer("info", "row:start", {
+      userId: args.userId || "",
+      rowId: row.id,
+      uploadMode: args.uploadMode
+    });
     pushLog(args.userId, "info", `[${row.id}] 워크플로우 시작`);
     let workflow = await startStagedWorkflow(createPayload, args.userId);
 
@@ -526,10 +544,20 @@ async function processOneRow(args: {
     }, args.userId);
 
     state.uploaded += 1;
+    logServer("info", "row:uploaded", {
+      userId: args.userId || "",
+      rowId: row.id,
+      youtubeUrl
+    });
     pushLog(args.userId, "info", `[${row.id}] 업로드 완료: ${youtubeUrl}`);
     return { fatal: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown automation error";
+    logServer("error", "row:failed", {
+      userId: args.userId || "",
+      rowId: row.id,
+      message
+    });
     state.failed += 1;
     state.lastError = message;
     await upsertRow({
@@ -557,6 +585,14 @@ async function runAutomationLoop(args: {
 }): Promise<void> {
   const state = getStateRef(args.userId);
   try {
+    logServer("info", "run:start", {
+      userId: args.userId || "",
+      sheetName: args.sheetName || "",
+      uploadMode: args.uploadMode,
+      templateMode: args.templateMode,
+      templateId: args.templateId || "",
+      maxItems: args.maxItems || null
+    });
     const defaults = await resolveDefaultsFromLatestWorkflow(
       args.userId,
       args.templateMode,
@@ -599,11 +635,16 @@ async function runAutomationLoop(args: {
       state.totalDiscovered = Math.max(state.totalDiscovered, state.processed + rows.length);
 
       if (rows.length === 0) {
+        logServer("info", "run:completed-no-ready-rows", { userId: args.userId || "" });
         pushLog(args.userId, "info", "준비 상태 row가 없어 자동화를 종료합니다.");
         requestStopInternal(args.userId, "completed");
         return;
       }
       if (maxItems && processedThisRun >= maxItems) {
+        logServer("info", "run:completed-max-items", {
+          userId: args.userId || "",
+          maxItems
+        });
         pushLog(args.userId, "info", `maxItems(${maxItems})에 도달하여 자동화를 종료합니다.`);
         requestStopInternal(args.userId, "completed");
         return;
@@ -629,9 +670,14 @@ async function runAutomationLoop(args: {
     }
 
     pushLog(args.userId, "info", "중지 요청으로 자동화를 종료합니다.");
+    logServer("info", "run:stopped", { userId: args.userId || "" });
     requestStopInternal(args.userId, "requested");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown automation failure";
+    logServer("error", "run:failed", {
+      userId: args.userId || "",
+      message
+    });
     pushLog(args.userId, "error", `자동화 전체 실패: ${message}`);
     requestStopInternal(args.userId, "failed", message);
   }
@@ -682,6 +728,11 @@ export function startAutomationRun(userId: string | undefined, args: StartAutoma
   };
   getStateStore()[key] = nextState;
   pushLog(userId, "info", "자동화 작업을 생성했습니다.");
+  logServer("info", "run:queued", {
+    userId: userId || "",
+    uploadMode: nextState.uploadMode,
+    templateMode: nextState.templateMode
+  });
 
   getPromiseStore()[key] = runAutomationLoop({
     userId,
