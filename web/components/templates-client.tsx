@@ -2287,14 +2287,36 @@ export function TemplatesClient(): React.JSX.Element {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-muted-foreground">레이어 {index + 1}</p>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => removeCustomLayer(layer.id)}
-                    >
-                      삭제
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={layer.fontBold ? "default" : "outline"}
+                        onClick={() =>
+                          updateCustomLayer(layer.id, { fontBold: !layer.fontBold })
+                        }
+                      >
+                        Bold
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={layer.fontItalic ? "default" : "outline"}
+                        onClick={() =>
+                          updateCustomLayer(layer.id, { fontItalic: !layer.fontItalic })
+                        }
+                      >
+                        Italic
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeCustomLayer(layer.id)}
+                      >
+                        삭제
+                      </Button>
+                    </div>
                   </div>
                   <div className="grid gap-2 2xl:grid-cols-[1fr,110px,110px,120px,90px,90px,90px]">
                     <div className="space-y-1">
@@ -2388,32 +2410,7 @@ export function TemplatesClient(): React.JSX.Element {
                       />
                     </div>
                   </div>
-                  <div className="grid gap-2 md:grid-cols-3">
-                    <div className="space-y-1">
-                      <Label>폰트 스타일</Label>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={layer.fontBold ? "default" : "outline"}
-                          onClick={() =>
-                            updateCustomLayer(layer.id, { fontBold: !layer.fontBold })
-                          }
-                        >
-                          Bold
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={layer.fontItalic ? "default" : "outline"}
-                          onClick={() =>
-                            updateCustomLayer(layer.id, { fontItalic: !layer.fontItalic })
-                          }
-                        >
-                          Italic
-                        </Button>
-                      </div>
-                    </div>
+                  <div className="grid gap-2 md:grid-cols-2">
                     <div className="space-y-1">
                       <Label>배경색</Label>
                       <Input

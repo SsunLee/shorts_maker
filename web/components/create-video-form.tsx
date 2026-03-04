@@ -5053,6 +5053,30 @@ export function CreateVideoForm(): React.JSX.Element {
                                     : "추가 텍스트 레이어"}
                                 </p>
                                 <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    variant={item.fontBold ? "default" : "outline"}
+                                    size="sm"
+                                    onClick={() =>
+                                      updateTemplateItem(item.id, {
+                                        fontBold: !item.fontBold
+                                      })
+                                    }
+                                  >
+                                    Bold
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant={item.fontItalic ? "default" : "outline"}
+                                    size="sm"
+                                    onClick={() =>
+                                      updateTemplateItem(item.id, {
+                                        fontItalic: !item.fontItalic
+                                      })
+                                    }
+                                  >
+                                    Italic
+                                  </Button>
                                   {item.id === primaryTitleTemplateId ? (
                                     <Badge variant="muted">고정</Badge>
                                   ) : null}
@@ -5106,35 +5130,6 @@ export function CreateVideoForm(): React.JSX.Element {
                                       </SelectItem>
                                     </SelectContent>
                                   </Select>
-                                </div>
-                                <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">폰트 스타일</Label>
-                                  <div className="flex items-center gap-2">
-                                    <Button
-                                      type="button"
-                                      variant={item.fontBold ? "default" : "outline"}
-                                      size="sm"
-                                      onClick={() =>
-                                        updateTemplateItem(item.id, {
-                                          fontBold: !item.fontBold
-                                        })
-                                      }
-                                    >
-                                      Bold
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant={item.fontItalic ? "default" : "outline"}
-                                      size="sm"
-                                      onClick={() =>
-                                        updateTemplateItem(item.id, {
-                                          fontItalic: !item.fontItalic
-                                        })
-                                      }
-                                    >
-                                      Italic
-                                    </Button>
-                                  </div>
                                 </div>
                                 <div className="space-y-1">
                                   <Label className="text-xs text-muted-foreground">레이어 폭(%)</Label>
