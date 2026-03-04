@@ -1,0 +1,114 @@
+name: Deploy Video Engine to Cloud Run
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "video-engine/**"
+      - ".github/workflows/deploy-video-engine-cloud-run.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-video-engine-cloud-run
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
+      GCP_ARTIFACT_IMAGE: ${{ vars.GCP_ARTIFACT_IMAGE }}
+      GCP_CLOUD_RUN_SERVICE: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GCP_PROJECT_ID:-}" || (echo "Missing GitHub Variable: GCP_PROJECT_ID" && exit 1)
+          test -n "${GCP_REGION:-}" || (echo "Missing GitHub Variable: GCP_REGION" && exit 1)
+          test -n "${GCP_ARTIFACT_REPOSITORY:-}" || (echo "Missing GitHub Variable: GCP_ARTIFACT_REPOSITORY" && exit 1)
+          test -n "${GCP_ARTIFACT_IMAGE:-}" || (echo "Missing GitHub Variable: GCP_ARTIFACT_IMAGE" && exit 1)
+          test -n "${GCP_CLOUD_RUN_SERVICE:-}" || (echo "Missing GitHub Variable: GCP_CLOUD_RUN_SERVICE" && exit 1)
+          test -n "${{ secrets.GCP_SA_KEY }}" || (echo "Missing GitHub Secret: GCP_SA_KEY" && exit 1)
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Ensure Artifact Registry exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gcloud artifacts repositories describe "${GCP_ARTIFACT_REPOSITORY}" \
+            --location="${GCP_REGION}" >/dev/null 2>&1; then
+            gcloud artifacts repositories create "${GCP_ARTIFACT_REPOSITORY}" \
+              --repository-format=docker \
+              --location="${GCP_REGION}" \
+              --description="Shorts Maker video-engine images"
+          fi
+
+      - name: Configure Docker auth
+        shell: bash
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${GCP_ARTIFACT_IMAGE}:${GITHUB_SHA}"
+          LATEST_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_ARTIFACT_REPOSITORY}/${GCP_ARTIFACT_IMAGE}:latest"
+          docker build -t "${IMAGE_URI}" ./video-engine
+          docker push "${IMAGE_URI}"
+          docker tag "${IMAGE_URI}" "${LATEST_URI}"
+          docker push "${LATEST_URI}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "${GCP_CLOUD_RUN_SERVICE}" \
+            --image "${{ steps.image.outputs.image_uri }}" \
+            --region "${GCP_REGION}" \
+            --project "${GCP_PROJECT_ID}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --cpu 1 \
+            --memory 1Gi \
+            --timeout 900 \
+            --min-instances 1
+
+          SERVICE_URL="$(gcloud run services describe "${GCP_CLOUD_RUN_SERVICE}" \
+            --region "${GCP_REGION}" \
+            --project "${GCP_PROJECT_ID}" \
+            --format='value(status.url)')"
+
+          gcloud run services update "${GCP_CLOUD_RUN_SERVICE}" \
+            --region "${GCP_REGION}" \
+            --project "${GCP_PROJECT_ID}" \
+            --update-env-vars "PUBLIC_BASE_URL=${SERVICE_URL}"
+
+          echo "service_url=${SERVICE_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          echo "Deployed image: ${{ steps.image.outputs.image_uri }}"
+          echo "Cloud Run URL: ${{ steps.deploy.outputs.service_url }}"

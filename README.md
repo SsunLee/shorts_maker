@@ -245,6 +245,32 @@ Content-row fetch (`/api/sheet-rows`) required columns:
 3. 서비스 URL 확보 후 Vercel `VIDEO_ENGINE_URL`에 설정
 4. Cloud Run 환경변수 `PUBLIC_BASE_URL`를 Cloud Run 서비스 URL로 설정
 
+### A-1. Git Push 시 Cloud Run 자동 배포 (GitHub Actions)
+이 저장소에는 `video-engine/` 변경이 `main`에 push되면 자동 배포되는 워크플로우가 포함되어 있습니다.
+
+- 파일: `.github/workflows/deploy-video-engine-cloud-run.yml`
+- 트리거:
+  - `main` branch push + `video-engine/**` 변경
+  - 수동 실행 (`workflow_dispatch`)
+
+GitHub Repository Settings > Secrets and variables > Actions 에 아래 값을 추가하세요.
+
+`Variables`:
+- `GCP_PROJECT_ID` (예: `ssunedu-shorts-login`)
+- `GCP_REGION` (예: `asia-northeast3`)
+- `GCP_ARTIFACT_REPOSITORY` (예: `shorts-maker`)
+- `GCP_ARTIFACT_IMAGE` (예: `video-engine`)
+- `GCP_CLOUD_RUN_SERVICE` (예: `shorts-video-engine`)
+
+`Secrets`:
+- `GCP_SA_KEY` (Cloud Run/Artifact Registry 배포 권한을 가진 Service Account JSON 전체 문자열)
+
+필요 권한(서비스 계정):
+- `roles/run.admin`
+- `roles/iam.serviceAccountUser`
+- `roles/artifactregistry.writer`
+- `roles/storage.admin` (Cloud Build 캐시/아티팩트 접근용, 정책에 맞게 최소권한으로 축소 가능)
+
 ### B. 파일 저장소를 S3 Standard로 전환
 `web/.env` 또는 Vercel Environment Variables:
 
