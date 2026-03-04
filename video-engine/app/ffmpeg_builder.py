@@ -248,6 +248,30 @@ def _subtitle_filter_value(
         }
         if font_name.strip().lower() in unsafe_font_names:
             font_name = "Noto Sans Devanagari"
+    elif _contains_hangul(subtitle_text) or _contains_cjk_or_kana(subtitle_text):
+        unsafe_font_names = {
+            "",
+            "arial",
+            "arial black",
+            "malgun gothic",
+            "nanumgothic",
+            "noto sans kr",
+            "segoe ui",
+        }
+        if font_name.strip().lower() in unsafe_font_names:
+            font_name = "Noto Sans CJK KR"
+    elif _contains_arabic(subtitle_text):
+        unsafe_font_names = {
+            "",
+            "arial",
+            "arial black",
+            "malgun gothic",
+            "nanumgothic",
+            "noto sans kr",
+            "segoe ui",
+        }
+        if font_name.strip().lower() in unsafe_font_names:
+            font_name = "Noto Sans Arabic"
     font_size = int(options.get("fontSize") or 16)
     outline = int(options.get("outline") or 2)
     shadow = int(options.get("shadow") or 1)
@@ -455,6 +479,58 @@ def _escape_filter_path(path_text: str) -> str:
     return safe_path
 
 
+def _font_exists(path_text: str) -> bool:
+    if not path_text:
+        return False
+    try:
+        return Path(path_text).exists()
+    except OSError:
+        return False
+
+
+def _first_existing_font(candidates: list[str]) -> str:
+    for candidate in candidates:
+        if _font_exists(candidate):
+            return candidate
+    return ""
+
+
+def _normalize_font_alias(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _contains_hangul(text: str) -> bool:
+    for ch in text:
+        code = ord(ch)
+        if 0x1100 <= code <= 0x11FF or 0x3130 <= code <= 0x318F or 0xAC00 <= code <= 0xD7AF:
+            return True
+    return False
+
+
+def _contains_cjk_or_kana(text: str) -> bool:
+    for ch in text:
+        code = ord(ch)
+        if (
+            0x3400 <= code <= 0x4DBF
+            or 0x4E00 <= code <= 0x9FFF
+            or 0xF900 <= code <= 0xFAFF
+            or 0x3040 <= code <= 0x309F
+            or 0x30A0 <= code <= 0x30FF
+            or 0x31F0 <= code <= 0x31FF
+            or 0x3000 <= code <= 0x303F
+        ):
+            return True
+    return False
+
+
+def _contains_arabic(text: str) -> bool:
+    for ch in text:
+        code = ord(ch)
+        if 0x0600 <= code <= 0x06FF:
+            return True
+    return False
+
+
 def _char_visual_units(char: str) -> float:
     if not char:
         return 0.0
@@ -554,6 +630,90 @@ def _resolve_devanagari_font_file() -> str:
         except OSError:
             continue
     return ""
+
+
+def _resolve_korean_font_file(prefer_bold: bool = False) -> str:
+    windir = os.getenv("WINDIR", "C:/Windows").strip() or "C:/Windows"
+    windows_candidates = [
+        Path(windir) / "Fonts" / "malgunbd.ttf",
+        Path(windir) / "Fonts" / "malgun.ttf",
+        Path(windir) / "Fonts" / "NanumGothicBold.ttf",
+        Path(windir) / "Fonts" / "NanumGothic.ttf",
+    ]
+    linux_candidates = [
+        "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf" if prefer_bold else "",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if prefer_bold else "",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Bold.otf" if prefer_bold else "",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansKR-Bold.ttf" if prefer_bold else "",
+        "/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf",
+    ]
+    candidates = [str(item) for item in windows_candidates] + [item for item in linux_candidates if item]
+    return _first_existing_font(candidates)
+
+
+def _resolve_latin_font_file(prefer_bold: bool = False) -> str:
+    windir = os.getenv("WINDIR", "C:/Windows").strip() or "C:/Windows"
+    windows_candidates = [
+        Path(windir) / "Fonts" / "arialbd.ttf" if prefer_bold else Path(windir) / "Fonts" / "arial.ttf",
+        Path(windir) / "Fonts" / "segoeuib.ttf" if prefer_bold else Path(windir) / "Fonts" / "segoeui.ttf",
+    ]
+    linux_candidates = [
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if prefer_bold else "",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if prefer_bold else "",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    candidates = [str(item) for item in windows_candidates] + [item for item in linux_candidates if item]
+    return _first_existing_font(candidates)
+
+
+def _resolve_arabic_font_file(prefer_bold: bool = False) -> str:
+    linux_candidates = [
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf" if prefer_bold else "",
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+    ]
+    return _first_existing_font([item for item in linux_candidates if item])
+
+
+def _resolve_font_file_for_text(
+    text: str,
+    requested_font_name: str,
+    prefer_bold: bool = False,
+) -> str:
+    alias = _normalize_font_alias(requested_font_name)
+
+    # Explicit user family mapping first.
+    if alias in {"malgungothic", "notosanskr", "pretendard"}:
+        return _resolve_korean_font_file(prefer_bold)
+    if alias in {"nanumgothic"}:
+        nanum = _first_existing_font(
+            [
+                "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf" if prefer_bold else "",
+                "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+            ]
+        )
+        return nanum or _resolve_korean_font_file(prefer_bold)
+    if alias in {"arialblack"}:
+        return _resolve_latin_font_file(True)
+    if alias in {"arial", "segoeui", "notosans"}:
+        return _resolve_latin_font_file(prefer_bold)
+    if alias in {"notosansdevanagari", "nirmalui"}:
+        return _resolve_devanagari_font_file()
+    if alias in {"notosansarabic"}:
+        return _resolve_arabic_font_file(prefer_bold)
+
+    # Script-based fallback next.
+    if _contains_devanagari(text):
+        return _resolve_devanagari_font_file()
+    if _contains_hangul(text) or _contains_cjk_or_kana(text):
+        return _resolve_korean_font_file(prefer_bold)
+    if _contains_arabic(text):
+        return _resolve_arabic_font_file(prefer_bold)
+
+    return _resolve_latin_font_file(prefer_bold)
 
 
 def _wrap_text_by_visual_width(text: str, max_units: float) -> list[str]:
@@ -657,23 +817,15 @@ def _build_title_template_filter(
     font_italic = _safe_bool(template.get("fontItalic"))
     font_file = str(template.get("fontFile") or "").strip()
 
-    # Devanagari text often breaks with Arial. Prefer a Hindi-capable font unless
-    # user explicitly set fontFile.
-    if _contains_devanagari(text) and not font_file:
-        font_file = _resolve_devanagari_font_file()
-        if not font_file:
-            unsafe_font_names = {
-                "",
-                "arial",
-                "arial black",
-                "malgun gothic",
-                "nanumgothic",
-                "noto sans kr",
-                "segoe ui",
-            }
-            if font_name.strip().lower() in unsafe_font_names:
-                # Windows 기본 탑재 + Devanagari 지원
-                font_name = "Nirmala UI"
+    # Prefer deterministic fontfile resolution in server environments.
+    if not font_file:
+        resolved_font_file = _resolve_font_file_for_text(
+            text=text,
+            requested_font_name=font_name,
+            prefer_bold=font_bold,
+        )
+        if resolved_font_file:
+            font_file = resolved_font_file
 
     # Approximate wrapping by template width so preview/editor box and ffmpeg output are closer.
     # Use conservative width + script-aware multiplier to reduce clipping in non-Latin text.
