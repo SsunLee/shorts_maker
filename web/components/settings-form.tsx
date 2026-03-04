@@ -607,7 +607,19 @@ export function SettingsForm(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle>Google Sheets</CardTitle>
+          <CardTitle className="flex items-center justify-between gap-2">
+            <span>Google Sheets</span>
+            <a
+              href="https://www.notion.so/sunbae-profile/Setting-for-Google-Sheets-31955b83c366801180e7cb9cc8a0df3f?source=copy_link"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Google Sheets 설정 가이드 열기"
+              title="Google Sheets 설정 가이드"
+            >
+              <CircleHelp className="h-4 w-4" />
+            </a>
+          </CardTitle>
           <CardDescription>워크플로우 결과를 시트에 저장할 때 사용합니다.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -665,7 +677,19 @@ export function SettingsForm(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle>YouTube API OAuth</CardTitle>
+          <CardTitle className="flex items-center justify-between gap-2">
+            <span>YouTube API OAuth</span>
+            <a
+              href="https://www.notion.so/sunbae-profile/Youtute-token-31555b83c3668065a83ee0a0570ad1e2?source=copy_link"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="YouTube API OAuth 설정 가이드 열기"
+              title="YouTube API OAuth 설정 가이드"
+            >
+              <CircleHelp className="h-4 w-4" />
+            </a>
+          </CardTitle>
           <CardDescription>업로드 기능(`POST /api/upload-youtube`)에 필요합니다.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
