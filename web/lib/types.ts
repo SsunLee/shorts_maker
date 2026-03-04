@@ -113,6 +113,8 @@ export interface TitleTemplateItem {
   width: number;
   fontSize: number;
   color: string;
+  backgroundColor?: string;
+  backgroundOpacity?: number;
   paddingX?: number;
   paddingY?: number;
   shadowX?: number;

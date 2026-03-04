@@ -55,6 +55,8 @@ class TitleTemplate(BaseModel):
     width: float = Field(default=60.0, ge=10.0, le=95.0)
     fontSize: int = Field(default=48, ge=12, le=120)
     color: str = Field(default="#FFFFFF", min_length=4, max_length=16)
+    backgroundColor: str = Field(default="#000000", min_length=4, max_length=16)
+    backgroundOpacity: float = Field(default=0.0, ge=0.0, le=1.0)
     paddingX: int = Field(default=8, ge=0, le=80)
     paddingY: int = Field(default=4, ge=0, le=80)
     shadowX: int = Field(default=2, ge=-20, le=20)

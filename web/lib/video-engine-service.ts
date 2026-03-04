@@ -68,6 +68,8 @@ function normalizeRenderOptionsForEngine(
         width: clampNumber(asFiniteNumber(row.width, 60), 10, 95),
         fontSize: Math.round(clampNumber(asFiniteNumber(row.fontSize, 48), 12, 120)),
         color: asText(row.color, "#FFFFFF"),
+        backgroundColor: asText(row.backgroundColor, "#000000"),
+        backgroundOpacity: clampNumber(asFiniteNumber(row.backgroundOpacity, 0), 0, 1),
         paddingX: Math.round(clampNumber(asFiniteNumber(row.paddingX, 8), 0, 80)),
         paddingY: Math.round(clampNumber(asFiniteNumber(row.paddingY, 4), 0, 80)),
         shadowX: Math.round(clampNumber(asFiniteNumber(row.shadowX, 2), -20, 20)),

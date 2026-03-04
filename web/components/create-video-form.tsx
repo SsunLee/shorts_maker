@@ -877,13 +877,17 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
     width: clampNumber(Number(item.width), 10, 95, 60),
     fontSize: clampNumber(Number(item.fontSize), 12, 120, Number(overlayDefaults.titleFontSize) || 48),
     color: item.color || overlayDefaults.titleColor || "#FFFFFF",
+    backgroundColor: item.backgroundColor || "#000000",
+    backgroundOpacity: clampNumber(Number(item.backgroundOpacity), 0, 1, 0),
     paddingX: clampNumber(Number(item.paddingX), 0, 80, 8),
     paddingY: clampNumber(Number(item.paddingY), 0, 80, 4),
     shadowX: clampNumber(Number(item.shadowX), -20, 20, 2),
     shadowY: clampNumber(Number(item.shadowY), -20, 20, 2),
     shadowColor: item.shadowColor || "#000000",
     shadowOpacity: clampNumber(Number(item.shadowOpacity), 0, 1, 1),
-    fontThickness: clampNumber(Number(item.fontThickness), 0, 8, 0)
+    fontThickness: clampNumber(Number(item.fontThickness), 0, 8, 0),
+    fontBold: Boolean(item.fontBold),
+    fontItalic: Boolean(item.fontItalic)
   }));
   const hasPrimary = normalizedTemplates.some((item) => item.id === primaryTitleTemplateId);
   if (!hasPrimary) {
@@ -896,6 +900,8 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
         width: 70,
         fontSize: overlayDefaults.titleFontSize,
         color: overlayDefaults.titleColor,
+        backgroundColor: "#000000",
+        backgroundOpacity: 0,
         paddingX: 8,
         paddingY: 4,
         shadowX: 2,
@@ -904,6 +910,8 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
         shadowOpacity: 1,
         fontThickness: 0,
         fontName: overlayDefaults.titleFontName,
+        fontBold: Boolean(overlayDefaults.titleFontBold),
+        fontItalic: Boolean(overlayDefaults.titleFontItalic),
         fontFile: overlayDefaults.titleFontFile || undefined
       },
       ...normalizedTemplates
@@ -2533,6 +2541,8 @@ export function CreateVideoForm(): React.JSX.Element {
       width: 60,
       fontSize: 44,
       color: "#FFFFFF",
+      backgroundColor: "#000000",
+      backgroundOpacity: 0,
       paddingX: 8,
       paddingY: 4,
       shadowX: 2,
@@ -2540,6 +2550,8 @@ export function CreateVideoForm(): React.JSX.Element {
       shadowColor: "#000000",
       shadowOpacity: 1,
       fontThickness: 0,
+      fontBold: false,
+      fontItalic: false,
       fontName: renderOptions.overlay.titleFontName,
       fontFile: renderOptions.overlay.titleFontFile || undefined
     };
@@ -4931,8 +4943,14 @@ export function CreateVideoForm(): React.JSX.Element {
                                     item.fontName ||
                                     renderOptions.overlay.titleFontName ||
                                     "Malgun Gothic",
+                                  fontWeight: item.fontBold ? 700 : 400,
+                                  fontStyle: item.fontItalic ? "italic" : "normal",
                                   padding: `${item.paddingY ?? 4}px ${item.paddingX ?? 8}px`,
-                                  backgroundColor: "transparent",
+                                  backgroundColor: hexToRgba(
+                                    item.backgroundColor,
+                                    clampNumber(Number(item.backgroundOpacity), 0, 1, 0),
+                                    "#000000"
+                                  ),
                                   textShadow: [
                                     ...buildTextThicknessShadow(
                                       normalizeHexColor(item.color, "#FFFFFF"),
@@ -5090,6 +5108,35 @@ export function CreateVideoForm(): React.JSX.Element {
                                   </Select>
                                 </div>
                                 <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">폰트 스타일</Label>
+                                  <div className="flex items-center gap-2">
+                                    <Button
+                                      type="button"
+                                      variant={item.fontBold ? "default" : "outline"}
+                                      size="sm"
+                                      onClick={() =>
+                                        updateTemplateItem(item.id, {
+                                          fontBold: !item.fontBold
+                                        })
+                                      }
+                                    >
+                                      Bold
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant={item.fontItalic ? "default" : "outline"}
+                                      size="sm"
+                                      onClick={() =>
+                                        updateTemplateItem(item.id, {
+                                          fontItalic: !item.fontItalic
+                                        })
+                                      }
+                                    >
+                                      Italic
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="space-y-1">
                                   <Label className="text-xs text-muted-foreground">레이어 폭(%)</Label>
                                   <Input
                                     type="number"
@@ -5145,6 +5192,36 @@ export function CreateVideoForm(): React.JSX.Element {
                                     onChange={(event) =>
                                       updateTemplateItem(item.id, {
                                         color: event.target.value.toUpperCase()
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">배경 색상</Label>
+                                  <Input
+                                    type="color"
+                                    className="h-10 p-1"
+                                    value={normalizeHexColor(item.backgroundColor, "#000000")}
+                                    onChange={(event) =>
+                                      updateTemplateItem(item.id, {
+                                        backgroundColor: event.target.value.toUpperCase()
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">배경 투명도(%)</Label>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    value={Math.round(
+                                      clampNumber(Number(item.backgroundOpacity), 0, 1, 0) * 100
+                                    )}
+                                    onChange={(event) =>
+                                      updateTemplateItem(item.id, {
+                                        backgroundOpacity:
+                                          clampNumber(Number(event.target.value), 0, 100, 0) / 100
                                       })
                                     }
                                   />

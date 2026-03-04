@@ -609,6 +609,12 @@ def _build_title_template_filter(
     width_pct = max(10.0, min(95.0, width_pct))
     color_raw = str(template.get("color") or "#FFFFFF").strip()
     color = color_raw if color_raw.startswith("#") else "#FFFFFF"
+    background_color_raw = str(template.get("backgroundColor") or "#000000").strip()
+    background_color = (
+        background_color_raw if background_color_raw.startswith("#") else "#000000"
+    )
+    background_opacity = float(template.get("backgroundOpacity") or 0.0)
+    background_opacity = max(0.0, min(1.0, background_opacity))
     padding_x = int(template.get("paddingX") or 8)
     padding_y = int(template.get("paddingY") or 4)
     padding_x = max(0, min(80, padding_x))
@@ -677,8 +683,14 @@ def _build_title_template_filter(
             font_pattern = f"{font_pattern}:style={' '.join(style_tokens)}"
         font_expr = f"font='{_escape_drawtext_value(font_pattern)}':"
 
-    # Keep text background transparent regardless of editor padding settings.
+    # Optional background box behind title text.
     box_expr = ""
+    if background_opacity > 0:
+        box_border = max(0, min(80, max(padding_x, padding_y)))
+        box_expr = (
+            f"box=1:boxcolor={background_color}@{background_opacity:.2f}:"
+            f"boxborderw={box_border}:"
+        )
 
     line_gap = max(2, int(round(fontsize * 0.18)))
     line_step = fontsize + line_gap

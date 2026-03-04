@@ -83,6 +83,8 @@ const patchSchema = z.object({
                 width: z.number().min(10).max(95),
                 fontSize: z.number().int().min(12).max(120),
                 color: z.string().min(4).max(16),
+                backgroundColor: z.string().min(4).max(16).optional(),
+                backgroundOpacity: z.number().min(0).max(1).optional(),
                 paddingX: z.number().int().min(0).max(80).optional(),
                 paddingY: z.number().int().min(0).max(80).optional(),
                 shadowX: z.number().int().min(-20).max(20).optional(),

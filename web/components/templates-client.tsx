@@ -49,6 +49,10 @@ type CustomTextLayerEditor = {
   fontSize: string;
   fontThickness: string;
   color: string;
+  fontBold: boolean;
+  fontItalic: boolean;
+  backgroundColor: string;
+  backgroundOpacity: string;
 };
 
 type TemplateEditorState = {
@@ -66,6 +70,8 @@ type TemplateEditorState = {
   fontName: string;
   fontBold: boolean;
   fontItalic: boolean;
+  backgroundColor: string;
+  backgroundOpacity: string;
   primaryX: string;
   primaryY: string;
   primaryWidth: string;
@@ -191,6 +197,8 @@ function createInitialEditor(): TemplateEditorState {
     fontName: "Noto Sans KR",
     fontBold: false,
     fontItalic: false,
+    backgroundColor: "#000000",
+    backgroundOpacity: "0",
     primaryX: "50",
     primaryY: "20",
     primaryWidth: "80",
@@ -248,6 +256,15 @@ function normalizeHex(value: string, fallback: string): string {
   return fallback;
 }
 
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = normalizeHex(hex, "#000000");
+  const safeAlpha = clampNumber(Number(alpha), 0, 1, 1);
+  const r = Number.parseInt(normalized.slice(1, 3), 16);
+  const g = Number.parseInt(normalized.slice(3, 5), 16);
+  const b = Number.parseInt(normalized.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+}
+
 function subtitleAssScaleForCanvas(canvasScale: number): number {
   const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
   const assToOutputScale = VIDEO_RENDER_HEIGHT / ASS_DEFAULT_PLAYRES_Y;
@@ -271,6 +288,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
   const fontName = editor.fontName.trim() || "Noto Sans KR";
   const fontBold = Boolean(editor.fontBold);
   const fontItalic = Boolean(editor.fontItalic);
+  const backgroundColor = normalizeHex(editor.backgroundColor, "#000000");
+  const backgroundOpacity = clampNumber(Number(editor.backgroundOpacity), 0, 1, 0);
   const primaryText = normalizeText(editor.primaryText);
   const secondaryText = normalizeText(editor.secondaryText);
   const badgeText = normalizeText(editor.badgeText || "");
@@ -284,6 +303,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       width: clampNumber(Number(editor.primaryWidth), 20, 100, 80),
       fontSize: clampNumber(Number(editor.primaryFontSize), 12, 120, 52),
       color: normalizeHex(editor.primaryColor, "#FFFFFF"),
+      backgroundColor,
+      backgroundOpacity,
       paddingX: 8,
       paddingY: 4,
       shadowX: 2,
@@ -305,6 +326,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
             width: clampNumber(Number(editor.secondaryWidth), 20, 100, 76),
             fontSize: clampNumber(Number(editor.secondaryFontSize), 12, 120, 40),
             color: normalizeHex(editor.secondaryColor, "#FFF200"),
+            backgroundColor,
+            backgroundOpacity,
             paddingX: 8,
             paddingY: 4,
             shadowX: 2,
@@ -329,6 +352,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       width: clampNumber(Number(editor.badgeWidth), 20, 100, 40),
       fontSize: clampNumber(Number(editor.badgeFontSize), 12, 60, 16),
       color: normalizeHex(editor.badgeColor, "#FFFFFF"),
+      backgroundColor,
+      backgroundOpacity,
       paddingX: 4,
       paddingY: 2,
       shadowX: 1,
@@ -353,6 +378,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       fontSize: clampNumber(Number(layer.fontSize), 12, 120, 28),
       fontThickness: clampNumber(Number(layer.fontThickness), 0, 8, 0),
       color: normalizeHex(layer.color, "#FFFFFF"),
+      backgroundColor: normalizeHex(layer.backgroundColor, backgroundColor),
+      backgroundOpacity: clampNumber(Number(layer.backgroundOpacity), 0, 1, backgroundOpacity),
       paddingX: 8,
       paddingY: 4,
       shadowX: 2,
@@ -360,8 +387,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowColor: "#000000",
       shadowOpacity: 1,
       fontName,
-      fontBold,
-      fontItalic
+      fontBold: Boolean(layer.fontBold),
+      fontItalic: Boolean(layer.fontItalic)
     }));
 
   return {
@@ -473,7 +500,11 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
       width: formatPercentString(clampNumber(Number(layer.width), 20, 100, 60)),
       fontSize: String(clampNumber(Number(layer.fontSize), 12, 120, 28)),
       fontThickness: String(clampNumber(Number(layer.fontThickness), 0, 8, 0)),
-      color: normalizeHex(layer.color || "", "#FFFFFF")
+      color: normalizeHex(layer.color || "", "#FFFFFF"),
+      fontBold: Boolean(layer.fontBold),
+      fontItalic: Boolean(layer.fontItalic),
+      backgroundColor: normalizeHex(layer.backgroundColor || "", "#000000"),
+      backgroundOpacity: String(clampNumber(Number(layer.backgroundOpacity), 0, 1, 0))
     }));
 
   return {
@@ -498,6 +529,21 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
       "__primary_title__",
       "fontItalic",
       Boolean(overlay.titleFontItalic)
+    ),
+    backgroundColor: normalizeHex(
+      String((overlay.titleTemplates || []).find((layer) => layer.id === "__primary_title__")?.backgroundColor || ""),
+      "#000000"
+    ),
+    backgroundOpacity: String(
+      clampNumber(
+        Number(
+          (overlay.titleTemplates || []).find((layer) => layer.id === "__primary_title__")
+            ?.backgroundOpacity
+        ),
+        0,
+        1,
+        0
+      )
     ),
     primaryX: extractLayerMetric(item.renderOptions, "__primary_title__", "x", 0, 100, 50),
     primaryY: extractLayerMetric(item.renderOptions, "__primary_title__", "y", 0, 100, 20),
@@ -1048,7 +1094,11 @@ export function TemplatesClient(): React.JSX.Element {
           width: "60",
           fontSize: "28",
           fontThickness: "0",
-          color: "#FFFFFF"
+          color: "#FFFFFF",
+          fontBold: prev.fontBold,
+          fontItalic: prev.fontItalic,
+          backgroundColor: prev.backgroundColor,
+          backgroundOpacity: prev.backgroundOpacity
         }
       ]
     }));
@@ -1612,7 +1662,7 @@ export function TemplatesClient(): React.JSX.Element {
             ) : null}
           </div>
 
-          <div className="grid gap-2 md:grid-cols-3">
+          <div className="grid gap-2 md:grid-cols-4">
             <div className="space-y-1">
               <Label>폰트명</Label>
               <Select
@@ -1657,6 +1707,36 @@ export function TemplatesClient(): React.JSX.Element {
                   Italic
                 </Button>
               </div>
+            </div>
+            <div className="space-y-1">
+              <Label>텍스트 배경색</Label>
+              <Input
+                type="color"
+                value={normalizeHex(editor.backgroundColor, "#000000")}
+                onChange={(event) =>
+                  setEditor((prev) => ({
+                    ...prev,
+                    backgroundColor: event.target.value
+                  }))
+                }
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>배경 투명도(%)</Label>
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={Math.round(clampNumber(Number(editor.backgroundOpacity), 0, 1, 0) * 100)}
+                onChange={(event) =>
+                  setEditor((prev) => ({
+                    ...prev,
+                    backgroundOpacity: String(
+                      clampNumber(Number(event.target.value), 0, 100, 0) / 100
+                    )
+                  }))
+                }
+              />
             </div>
           </div>
           {detectTemplateFontPreset(editor.fontName) === customTemplateFontOption ? (
@@ -2308,6 +2388,63 @@ export function TemplatesClient(): React.JSX.Element {
                       />
                     </div>
                   </div>
+                  <div className="grid gap-2 md:grid-cols-3">
+                    <div className="space-y-1">
+                      <Label>폰트 스타일</Label>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={layer.fontBold ? "default" : "outline"}
+                          onClick={() =>
+                            updateCustomLayer(layer.id, { fontBold: !layer.fontBold })
+                          }
+                        >
+                          Bold
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={layer.fontItalic ? "default" : "outline"}
+                          onClick={() =>
+                            updateCustomLayer(layer.id, { fontItalic: !layer.fontItalic })
+                          }
+                        >
+                          Italic
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>배경색</Label>
+                      <Input
+                        type="color"
+                        value={normalizeHex(layer.backgroundColor, "#000000")}
+                        onFocus={() => setSelectedPreviewLayerId(layer.id)}
+                        onChange={(event) =>
+                          updateCustomLayer(layer.id, { backgroundColor: event.target.value })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>배경 투명도(%)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={Math.round(
+                          clampNumber(Number(layer.backgroundOpacity), 0, 1, 0) * 100
+                        )}
+                        onFocus={() => setSelectedPreviewLayerId(layer.id)}
+                        onChange={(event) =>
+                          updateCustomLayer(layer.id, {
+                            backgroundOpacity: String(
+                              clampNumber(Number(event.target.value), 0, 100, 0) / 100
+                            )
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -2507,7 +2644,12 @@ export function TemplatesClient(): React.JSX.Element {
                         (0.2 * (titlePreviewRenderScale / 0.42))
                       }px`,
                       WebkitTextStrokeColor: "rgba(0,0,0,0.85)",
-                      backgroundColor: isSelected ? "rgba(8,145,178,0.16)" : "rgba(0,0,0,0.15)"
+                      backgroundColor: isSelected
+                        ? "rgba(8,145,178,0.16)"
+                        : hexToRgba(
+                            normalizeHex(item.backgroundColor || "", "#000000"),
+                            clampNumber(Number(item.backgroundOpacity), 0, 1, 0)
+                          )
                     }}
                     onPointerDown={(event) => {
                       beginDrag(
