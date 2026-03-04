@@ -97,7 +97,7 @@ jobs:
             --concurrency 1 \
             --timeout 900 \
             --min-instances 1 \
-            --max-instances 3
+            --max-instances 1
 
           SERVICE_URL="$(gcloud run services describe "${GCP_CLOUD_RUN_SERVICE}" \
             --region "${GCP_REGION}" \

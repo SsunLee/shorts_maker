@@ -22,6 +22,12 @@ interface S3Config {
 
 let cachedClient: S3Client | undefined;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function normalizePrefix(raw: string | undefined): string {
   return String(raw || "")
     .trim()
@@ -196,9 +202,26 @@ export async function mirrorRenderedVideoToStorage(args: {
     return sourceUrl;
   }
 
-  const response = await fetch(sourceUrl);
-  if (!response.ok) {
-    throw new Error(`Unable to download rendered video from ${sourceUrl}`);
+  const retryableStatuses = new Set([404, 408, 425, 429, 500, 502, 503, 504]);
+  let response: Response | undefined;
+  let lastStatus: number | undefined;
+  const maxAttempts = 8;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    response = await fetch(sourceUrl, { cache: "no-store" });
+    if (response.ok) {
+      break;
+    }
+    lastStatus = response.status;
+    if (!retryableStatuses.has(response.status) || attempt === maxAttempts) {
+      break;
+    }
+    await sleep(Math.min(2500, attempt * 350));
+  }
+  if (!response || !response.ok) {
+    throw new Error(
+      `Unable to download rendered video from ${sourceUrl}` +
+        (lastStatus ? ` (HTTP ${lastStatus})` : "")
+    );
   }
   const body = Buffer.from(await response.arrayBuffer());
   const client = getS3Client(config);
@@ -268,4 +291,3 @@ export async function cleanupJobAssetsFromStorage(jobId: string): Promise<void> 
     deleteByPrefix(config, `rendered/${jobId}-final`)
   ]);
 }
-
