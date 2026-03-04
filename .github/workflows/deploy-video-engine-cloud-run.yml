@@ -30,6 +30,8 @@ jobs:
 
       - name: Validate required configuration
         shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
           set -euo pipefail
           test -n "${GCP_PROJECT_ID:-}" || (echo "Missing GitHub Variable: GCP_PROJECT_ID" && exit 1)
@@ -37,7 +39,7 @@ jobs:
           test -n "${GCP_ARTIFACT_REPOSITORY:-}" || (echo "Missing GitHub Variable: GCP_ARTIFACT_REPOSITORY" && exit 1)
           test -n "${GCP_ARTIFACT_IMAGE:-}" || (echo "Missing GitHub Variable: GCP_ARTIFACT_IMAGE" && exit 1)
           test -n "${GCP_CLOUD_RUN_SERVICE:-}" || (echo "Missing GitHub Variable: GCP_CLOUD_RUN_SERVICE" && exit 1)
-          test -n "${{ secrets.GCP_SA_KEY }}" || (echo "Missing GitHub Secret: GCP_SA_KEY" && exit 1)
+          test -n "${GCP_SA_KEY:-}" || (echo "Missing GitHub Secret: GCP_SA_KEY" && exit 1)
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
