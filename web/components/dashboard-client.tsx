@@ -235,6 +235,7 @@ export function DashboardClient(): React.JSX.Element {
   const [schedulePrivacyStatus, setSchedulePrivacyStatus] = useState<
     "private" | "public" | "unlisted"
   >("private");
+  const pollTickRef = useRef(0);
 
   const activeTemplate = useMemo(
     () => automationTemplates.find((item) => item.id === activeAutomationTemplateId),
@@ -360,27 +361,43 @@ export function DashboardClient(): React.JSX.Element {
     };
     void load();
 
+    const isAutomationActive = automation?.phase === "running" || automation?.phase === "stopping";
+    const pollMs = isAutomationActive ? 8000 : 45000;
     const interval = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
+      pollTickRef.current += 1;
       void refresh();
       void refreshAutomation().catch(() => {
         // Keep dashboard polling resilient even if automation endpoint is temporarily unavailable.
       });
-      void refreshSchedule().catch(() => {
-        // Keep dashboard polling resilient even if schedule endpoint is temporarily unavailable.
-      });
-      void refreshLatestWorkflowTemplateInfo().catch(() => {
-        // Keep dashboard polling resilient even if workflow endpoint is temporarily unavailable.
-      });
-    }, 4000);
+
+      // Schedule/workflow metadata are expensive and change less often.
+      // Poll these only every 3 ticks while automation is active, else every 2 ticks.
+      const shouldRefreshMeta = isAutomationActive
+        ? pollTickRef.current % 3 === 0
+        : pollTickRef.current % 2 === 0;
+      if (shouldRefreshMeta) {
+        void refreshSchedule().catch(() => {
+          // Keep dashboard polling resilient even if schedule endpoint is temporarily unavailable.
+        });
+        void refreshLatestWorkflowTemplateInfo().catch(() => {
+          // Keep dashboard polling resilient even if workflow endpoint is temporarily unavailable.
+        });
+      }
+    }, pollMs);
 
     return () => {
       mounted = false;
       clearInterval(interval);
     };
-  }, [refreshAutomationTemplates, refreshLatestWorkflowTemplateInfo, refreshSchedule]);
+  }, [
+    refreshAutomationTemplates,
+    refreshLatestWorkflowTemplateInfo,
+    refreshSchedule,
+    automation?.phase
+  ]);
 
   async function setActiveTemplate(templateId: string): Promise<void> {
     setAutomationTemplateBusy(true);
