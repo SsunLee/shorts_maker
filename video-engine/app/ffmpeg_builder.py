@@ -231,6 +231,23 @@ def _subtitle_filter_value(
         .replace("'", "")
         .replace(",", "")
     )
+    subtitle_text = ""
+    try:
+        subtitle_text = subtitle_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        subtitle_text = ""
+    if _contains_devanagari(subtitle_text):
+        unsafe_font_names = {
+            "",
+            "arial",
+            "arial black",
+            "malgun gothic",
+            "nanumgothic",
+            "noto sans kr",
+            "segoe ui",
+        }
+        if font_name.strip().lower() in unsafe_font_names:
+            font_name = "Noto Sans Devanagari"
     font_size = int(options.get("fontSize") or 16)
     outline = int(options.get("outline") or 2)
     shadow = int(options.get("shadow") or 1)
