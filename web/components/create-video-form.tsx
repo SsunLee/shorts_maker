@@ -1663,7 +1663,7 @@ export function CreateVideoForm(): React.JSX.Element {
       return;
     }
     void refreshResumableWorkflows();
-  }, [workflow?.id, workflow?.updatedAt, workflow?.stage, workflow?.status, refreshResumableWorkflows]);
+  }, [workflow?.id, workflow?.stage, refreshResumableWorkflows]);
 
   useEffect(() => {
     setTtsDurationSec(undefined);
@@ -1680,6 +1680,9 @@ export function CreateVideoForm(): React.JSX.Element {
       return;
     }
     const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
       void fetchWorkflowSnapshot(workflow.id);
     }, 2500);
     return () => clearInterval(interval);
