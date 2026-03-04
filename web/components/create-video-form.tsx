@@ -1013,6 +1013,11 @@ function toDisplayMediaUrl(raw?: string, cacheTag?: string): string | undefined 
   }
 }
 
+function workflowApiPath(workflowId: string, suffix = ""): string {
+  const id = encodeURIComponent(String(workflowId || "").trim());
+  return `/api/workflow/${id}${suffix}`;
+}
+
 export function CreateVideoForm(): React.JSX.Element {
   const [ttsProviderSettings, setTtsProviderSettings] = useState<
     Pick<AppSettings, "aiMode" | "aiTtsProvider" | "openaiApiKey" | "geminiApiKey">
@@ -1436,7 +1441,7 @@ export function CreateVideoForm(): React.JSX.Element {
     setResumingWorkflow(true);
     setResumeError(undefined);
     try {
-      const response = await fetch(`/api/workflow/${id}`, { cache: "no-store" });
+      const response = await fetch(workflowApiPath(id), { cache: "no-store" });
       const data = (await response.json()) as VideoWorkflow | { error?: string };
       if (!response.ok || !isWorkflowPayload(data)) {
         throw new Error(("error" in data && data.error) || "Failed to resume workflow.");
@@ -1466,7 +1471,7 @@ export function CreateVideoForm(): React.JSX.Element {
 
   const fetchWorkflowSnapshot = useCallback(
     async (workflowId: string): Promise<void> => {
-      const response = await fetch(`/api/workflow/${workflowId}`, { cache: "no-store" });
+      const response = await fetch(workflowApiPath(workflowId), { cache: "no-store" });
       if (!response.ok) {
         return;
       }
@@ -1571,7 +1576,7 @@ export function CreateVideoForm(): React.JSX.Element {
         if (!workflowId) {
           return;
         }
-        const response = await fetch(`/api/workflow/${workflowId}`, { cache: "no-store" });
+        const response = await fetch(workflowApiPath(workflowId), { cache: "no-store" });
         if (!response.ok) {
           localStorage.removeItem(CREATE_WORKFLOW_ID_KEY);
           return;
@@ -2929,7 +2934,7 @@ export function CreateVideoForm(): React.JSX.Element {
     setSavingSceneSplit(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/workflow/${workflow.id}`, {
+      const response = await fetch(workflowApiPath(workflow.id), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2961,7 +2966,7 @@ export function CreateVideoForm(): React.JSX.Element {
     setError(undefined);
     try {
       const response = await fetch(
-        `/api/workflow/${workflow.id}/scenes/${sceneIndex}/regenerate`,
+        workflowApiPath(workflow.id, `/scenes/${sceneIndex}/regenerate`),
         {
           method: "POST"
         }
@@ -3013,7 +3018,7 @@ export function CreateVideoForm(): React.JSX.Element {
         patchPayload.scenes = workflow.scenes;
       }
 
-      const response = await fetch(`/api/workflow/${workflow.id}`, {
+      const response = await fetch(workflowApiPath(workflow.id), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patchPayload)
@@ -3075,7 +3080,7 @@ export function CreateVideoForm(): React.JSX.Element {
           patchPayload.scenes = currentWorkflow.scenes;
         }
 
-        const patchResponse = await fetch(`/api/workflow/${currentWorkflow.id}`, {
+        const patchResponse = await fetch(workflowApiPath(currentWorkflow.id), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(patchPayload)
@@ -3096,7 +3101,7 @@ export function CreateVideoForm(): React.JSX.Element {
           error: undefined
         });
 
-        const response = await fetch(`/api/workflow/${currentWorkflow.id}/next`, {
+        const response = await fetch(workflowApiPath(currentWorkflow.id, "/next"), {
           method: "POST"
         });
         const data = (await response.json()) as VideoWorkflow | { error?: string };

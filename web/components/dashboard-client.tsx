@@ -615,7 +615,7 @@ export function DashboardClient(): React.JSX.Element {
     setDeletingId(row.id);
     setError(undefined);
     try {
-      const response = await fetch(`/api/rows/${row.id}`, {
+      const response = await fetch(`/api/rows/${encodeURIComponent(row.id)}`, {
         method: "DELETE"
       });
       const data = await readJsonResponse<{ error?: string }>(response);
