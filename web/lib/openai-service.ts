@@ -14,8 +14,8 @@ type GeminiInlineData = {
 };
 
 /** Create an OpenAI client from env/settings and throw if no key exists. */
-export async function getOpenAiClient(): Promise<OpenAI> {
-  const keys = await resolveApiKeys();
+export async function getOpenAiClient(userId?: string): Promise<OpenAI> {
+  const keys = await resolveApiKeys(userId);
   const apiKey = keys.openaiKey;
   if (!apiKey) {
     throw new Error(
@@ -26,8 +26,8 @@ export async function getOpenAiClient(): Promise<OpenAI> {
 }
 
 /** Create a Gemini client from env/settings and throw if no key exists. */
-async function getGeminiClient(): Promise<GoogleGenAI> {
-  const keys = await resolveApiKeys();
+async function getGeminiClient(userId?: string): Promise<GoogleGenAI> {
+  const keys = await resolveApiKeys(userId);
   const apiKey = keys.geminiKey;
   if (!apiKey) {
     throw new Error(
@@ -192,12 +192,12 @@ export async function generateNarration(args: {
   title: string;
   topic?: string;
   targetLengthSec: number;
-}): Promise<string> {
-  const provider = await resolveProviderForTask("text");
-  const textModel = await resolveModelForTask(provider, "text");
+} , userId?: string): Promise<string> {
+  const provider = await resolveProviderForTask("text", userId);
+  const textModel = await resolveModelForTask(provider, "text", userId);
 
   if (provider === "gemini") {
-    const client = await getGeminiClient();
+    const client = await getGeminiClient(userId);
     const response = await runGeminiWithRetry({
       label: "Narration generation",
       task: () =>
@@ -223,7 +223,7 @@ export async function generateNarration(args: {
     });
   }
 
-  const client = await getOpenAiClient();
+  const client = await getOpenAiClient(userId);
   const response = await client.responses.create({
     model: textModel,
     input: [
@@ -258,18 +258,18 @@ export async function generateImagePrompts(args: {
   imageStyle: string;
   imageAspectRatio?: ImageAspectRatio;
   sceneCount?: number;
-}): Promise<string[]> {
+}, userId?: string): Promise<string[]> {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
   const compositionGuide =
     imageAspectRatio === "16:9"
       ? "Use cinematic landscape 16:9 composition with strong horizontal framing."
       : "Use vertical storytelling composition optimized for 9:16 mobile shorts.";
-  const provider = await resolveProviderForTask("text");
-  const textModel = await resolveModelForTask(provider, "text");
+  const provider = await resolveProviderForTask("text", userId);
+  const textModel = await resolveModelForTask(provider, "text", userId);
 
   if (provider === "gemini") {
-    const client = await getGeminiClient();
+    const client = await getGeminiClient(userId);
     const response = await runGeminiWithRetry({
       label: "Image prompt generation",
       task: () =>
@@ -291,7 +291,7 @@ export async function generateImagePrompts(args: {
     return prompts;
   }
 
-  const client = await getOpenAiClient();
+  const client = await getOpenAiClient(userId);
   const response = await client.responses.create({
     model: textModel,
     input: [
@@ -324,18 +324,18 @@ export async function splitNarrationToScenes(args: {
   imageStyle: string;
   imageAspectRatio?: ImageAspectRatio;
   sceneCount?: number;
-}): Promise<WorkflowScene[]> {
+}, userId?: string): Promise<WorkflowScene[]> {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
   const compositionGuide =
     imageAspectRatio === "16:9"
       ? "All image prompts must explicitly request landscape 16:9 composition."
       : "All image prompts must explicitly request vertical 9:16 composition.";
-  const provider = await resolveProviderForTask("text");
-  const textModel = await resolveModelForTask(provider, "text");
+  const provider = await resolveProviderForTask("text", userId);
+  const textModel = await resolveModelForTask(provider, "text", userId);
 
   if (provider === "gemini") {
-    const client = await getGeminiClient();
+    const client = await getGeminiClient(userId);
     const response = await runGeminiWithRetry({
       label: "Scene split generation",
       task: () =>
@@ -364,7 +364,7 @@ export async function splitNarrationToScenes(args: {
     });
   }
 
-  const client = await getOpenAiClient();
+  const client = await getOpenAiClient(userId);
   const response = await client.responses.create({
     model: textModel,
     input: [
@@ -832,11 +832,12 @@ export async function generateImages(
     startIndex?: number;
     imageAspectRatio?: ImageAspectRatio;
     onProgress?: (completed: number, total: number) => Promise<void> | void;
-  }
+  },
+  userId?: string
 ): Promise<string[]> {
-  const provider = await resolveProviderForTask("image");
-  const imageModel = await resolveModelForTask(provider, "image");
-  const textModel = await resolveModelForTask(provider, "text");
+  const provider = await resolveProviderForTask("image", userId);
+  const imageModel = await resolveModelForTask(provider, "image", userId);
+  const textModel = await resolveModelForTask(provider, "text", userId);
   const urls: string[] = [];
   const timeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 90000);
   const retryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 1);
@@ -844,7 +845,7 @@ export async function generateImages(
   const imageAspectRatio = options?.imageAspectRatio === "16:9" ? "16:9" : "9:16";
 
   if (provider === "gemini") {
-    const client = await getGeminiClient();
+    const client = await getGeminiClient(userId);
 
     for (let index = 0; index < prompts.length; index += 1) {
       const inline = await generateImageWithRetryGemini({
@@ -876,7 +877,7 @@ export async function generateImages(
     return urls;
   }
 
-  const client = await getOpenAiClient();
+  const client = await getOpenAiClient(userId);
 
   for (let index = 0; index < prompts.length; index += 1) {
     const result = await generateImageWithRetryOpenAi({
@@ -939,13 +940,14 @@ async function synthesizeSpeechAudio(args: {
   speed?: number;
   input: string;
   preferredMimeType?: string;
+  userId?: string;
 }): Promise<SynthesizedAudio> {
-  const provider = await resolveProviderForTask("tts");
-  const ttsModel = await resolveModelForTask(provider, "tts");
+  const provider = await resolveProviderForTask("tts", args.userId);
+  const ttsModel = await resolveModelForTask(provider, "tts", args.userId);
   const speed = Math.max(0.5, Math.min(2, Number(args.speed) || 1));
 
   if (provider === "gemini") {
-    const client = await getGeminiClient();
+    const client = await getGeminiClient(args.userId);
 
     const prompt =
       `Read this script naturally at about ${speed.toFixed(2)}x speed. ` +
@@ -1025,7 +1027,7 @@ async function synthesizeSpeechAudio(args: {
     };
   }
 
-  const client = await getOpenAiClient();
+  const client = await getOpenAiClient(args.userId);
   const speech = await client.audio.speech.create({
     model: ttsModel,
     voice: toOpenAiVoiceName(args.voice),
@@ -1046,12 +1048,13 @@ export async function synthesizeSpeech(args: {
   speed?: number;
   input: string;
   preferredMimeType?: string;
-}): Promise<SynthesizedAudio> {
+}, userId?: string): Promise<SynthesizedAudio> {
   return synthesizeSpeechAudio({
     voice: args.voice,
     speed: args.speed,
     input: args.input,
-    preferredMimeType: args.preferredMimeType || "audio/wav"
+    preferredMimeType: args.preferredMimeType || "audio/wav",
+    userId
   });
 }
 
@@ -1061,12 +1064,13 @@ export async function generateTtsAudio(args: {
   narration: string;
   voice: string;
   speed?: number;
-}): Promise<{ localPath: string; publicUrl: string }> {
+}, userId?: string): Promise<{ localPath: string; publicUrl: string }> {
   const audio = await synthesizeSpeechAudio({
     voice: args.voice,
     speed: args.speed,
     input: args.narration,
-    preferredMimeType: "audio/mp3"
+    preferredMimeType: "audio/mp3",
+    userId
   });
   const fileName = `tts.${audio.extension}`;
   const stored = await storeGeneratedAsset({
@@ -1088,12 +1092,13 @@ export async function synthesizeSpeechMp3(args: {
   voice: string;
   speed?: number;
   input: string;
-}): Promise<Buffer> {
+}, userId?: string): Promise<Buffer> {
   const audio = await synthesizeSpeechAudio({
     voice: args.voice,
     speed: args.speed,
     input: args.input,
-    preferredMimeType: "audio/mp3"
+    preferredMimeType: "audio/mp3",
+    userId
   });
   return Buffer.from(audio.buffer);
 }

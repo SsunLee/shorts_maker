@@ -23,7 +23,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
         title: payload.title,
         topic: payload.topic,
         targetLengthSec: payload.videoLengthSec
-      }));
+      }, userId));
 
     const imagePrompts = await generateImagePrompts({
       title: payload.title,
@@ -31,7 +31,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       imageStyle: payload.imageStyle,
       imageAspectRatio: payload.imageAspectRatio,
       sceneCount: payload.sceneCount
-    });
+    }, userId);
 
     await upsertRow({
       id,
@@ -51,7 +51,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
           progress
         }, userId);
       }
-    });
+    }, userId);
 
     await upsertRow({
       id,
@@ -63,7 +63,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       narration,
       voice: payload.voice,
       speed: payload.voiceSpeed
-    });
+    }, userId);
 
     await upsertRow({
       id,

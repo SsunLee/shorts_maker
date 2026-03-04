@@ -314,7 +314,7 @@ export async function startStagedWorkflow(
         title: normalizedInput.title,
         topic: normalizedInput.topic,
         targetLengthSec: normalizedInput.videoLengthSec
-      }));
+      }, userId));
 
     const scenes = await splitNarrationToScenes({
       title: normalizedInput.title,
@@ -322,7 +322,7 @@ export async function startStagedWorkflow(
       imageStyle: normalizedInput.imageStyle,
       imageAspectRatio: normalizedInput.imageAspectRatio,
       sceneCount: Math.max(MIN_SCENES, Math.min(MAX_SCENES, normalizedInput.sceneCount ?? 5))
-    });
+    }, userId);
     validateScenes(scenes);
 
     const workflow = withTimestamps({
@@ -475,7 +475,7 @@ export async function regenerateWorkflowSceneImage(
   const [nextImageUrl] = await generateImages(workflow.id, [targetScene.imagePrompt], {
     startIndex: targetIndex - 1,
     imageAspectRatio: workflow.input.imageAspectRatio === "16:9" ? "16:9" : "9:16"
-  });
+  }, userId);
 
   const scenes = workflow.scenes.map((scene) =>
     scene.index === targetIndex
@@ -568,7 +568,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
             }, userId);
           }
         }
-      );
+      , userId);
 
       await upsertRow({ id, status: "generating_tts" }, userId);
       const tts = await generateTtsAudio({
@@ -576,7 +576,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         narration: workflow.narration,
         voice: workflow.input.voice,
         speed: workflow.input.voiceSpeed
-      });
+      }, userId);
 
       const scenes = workflow.scenes.map((scene, index) => ({
         ...scene,
