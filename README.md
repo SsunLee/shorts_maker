@@ -4,6 +4,14 @@ Full-stack short-video generator with:
 - `web/`: Next.js 15 + React + TypeScript + TailwindCSS + shadcn/ui
 - `video-engine/`: FastAPI + FFmpeg render service
 
+## Work Prompt
+
+재사용 가능한 작업 프롬프트(15년차 시니어 개발자 모드):
+
+- `docs/codex-senior-work-prompt.md`
+
+새 세션 시작 시 해당 파일의 프롬프트 블록을 그대로 붙여넣어 동일한 작업 톤/품질로 진행할 수 있습니다.
+
 ## 1) Folder Structure
 
 ```text

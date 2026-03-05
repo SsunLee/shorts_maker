@@ -35,6 +35,7 @@ const links = [
 export function AppNav(): React.JSX.Element {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [isCompactViewport, setIsCompactViewport] = useState(false);
   const [theme, setTheme] = useState<AppTheme>("light");
   const [accountLabel, setAccountLabel] = useState("계정");
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
@@ -42,13 +43,26 @@ export function AppNav(): React.JSX.Element {
   useEffect(() => {
     try {
       const savedCollapsed = window.localStorage.getItem("shorts-maker:nav-collapsed");
-      setCollapsed(savedCollapsed === "1");
+      if (savedCollapsed === null) {
+        setCollapsed(window.innerWidth <= 900);
+      } else {
+        setCollapsed(savedCollapsed === "1");
+      }
     } catch {
       setCollapsed(false);
     }
     const initialTheme = getStoredTheme();
     setTheme(initialTheme);
     applyTheme(initialTheme);
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const applyCompact = () => setIsCompactViewport(media.matches);
+    applyCompact();
+    const listener = () => applyCompact();
+    media.addEventListener("change", listener);
+    return () => media.removeEventListener("change", listener);
   }, []);
 
   useEffect(() => {
@@ -91,7 +105,11 @@ export function AppNav(): React.JSX.Element {
     };
   }, []);
 
-  const navWidthClass = useMemo(() => (collapsed ? "w-[78px]" : "w-[248px]"), [collapsed]);
+  const collapsedEffective = collapsed || isCompactViewport;
+  const navWidthClass = useMemo(
+    () => (collapsedEffective ? "w-[78px]" : "w-[248px]"),
+    [collapsedEffective]
+  );
   const hideForAuthRoute = pathname.startsWith("/auth");
   const visibleLinks = useMemo(() => {
     if (!isSuperAdmin) {
@@ -134,14 +152,14 @@ export function AppNav(): React.JSX.Element {
           href="/create"
           className={cn(
             "inline-flex h-11 items-center rounded-md px-1.5 text-sm font-semibold text-foreground",
-            collapsed ? "w-11 justify-center" : "w-auto"
+            collapsedEffective ? "w-11 justify-center" : "w-auto"
           )}
           title="Shorts Maker"
         >
           <span className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border/80 bg-background/80 p-1 shadow-sm">
             <Image src="/favicon_ssun.png" alt="ssunEdu" fill sizes="36px" className="object-contain" />
           </span>
-          {collapsed ? null : <span className="ml-2.5 text-xl leading-none">Shorts Maker</span>}
+          {collapsedEffective ? null : <span className="ml-2.5 text-xl leading-none">Shorts Maker</span>}
         </Link>
         <Button
           type="button"
@@ -165,12 +183,12 @@ export function AppNav(): React.JSX.Element {
               pathname === href
                 ? "bg-primary text-primary-foreground"
                 : "text-foreground hover:bg-accent hover:text-accent-foreground",
-              collapsed ? "justify-center px-2" : ""
+              collapsedEffective ? "justify-center px-2" : ""
             )}
             title={label}
           >
             <Icon className="h-4 w-4 shrink-0" />
-            {collapsed ? null : <span>{label}</span>}
+            {collapsedEffective ? null : <span>{label}</span>}
           </Link>
         ))}
       </nav>
@@ -180,11 +198,11 @@ export function AppNav(): React.JSX.Element {
           <div
             className={cn(
               "rounded-md border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground",
-              collapsed ? "flex items-center justify-center px-0" : ""
+              collapsedEffective ? "flex items-center justify-center px-0" : ""
             )}
             title={`${accountLabel} (로그인됨)`}
           >
-            {collapsed ? (
+            {collapsedEffective ? (
               <UserRound className="h-4 w-4 text-emerald-400" />
             ) : (
               <span className="truncate">{accountLabel} (로그인됨)</span>
@@ -195,22 +213,22 @@ export function AppNav(): React.JSX.Element {
             variant="outline"
             size="sm"
             onClick={toggleTheme}
-            className={cn("w-full", collapsed ? "px-0" : "")}
+            className={cn("w-full", collapsedEffective ? "px-0" : "")}
             title={theme === "dark" ? "Light Mode" : "Dark Mode"}
           >
             {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            {collapsed ? null : <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>}
+            {collapsedEffective ? null : <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>}
           </Button>
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={onLogout}
-            className={cn("w-full", collapsed ? "px-0" : "")}
+            className={cn("w-full", collapsedEffective ? "px-0" : "")}
             title="로그아웃"
           >
             <LogOut className="h-4 w-4" />
-            {collapsed ? null : <span>로그아웃</span>}
+            {collapsedEffective ? null : <span>로그아웃</span>}
           </Button>
         </div>
       </div>

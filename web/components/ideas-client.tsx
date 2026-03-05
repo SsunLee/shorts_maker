@@ -444,14 +444,14 @@ export function IdeasClient(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle>생성 미리보기</CardTitle>
-              <CardDescription>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <CardTitle className="truncate">생성 미리보기</CardTitle>
+              <CardDescription className="break-words">
                 생성된 주제를 시트 템플릿 구조로 먼저 확인한 뒤 반영하세요.
               </CardDescription>
             </div>
-            <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+            <div className="inline-flex w-fit items-center gap-2 rounded-md border px-3 py-2">
               <span className="text-xs text-muted-foreground">줄바꿈</span>
               <Switch checked={wrapPreviewCells} onCheckedChange={setWrapPreviewCells} />
               <span className="text-xs">{wrapPreviewCells ? "있음" : "없음"}</span>
@@ -524,10 +524,10 @@ export function IdeasClient(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle>Google Sheet 테이블 뷰</CardTitle>
-              <CardDescription>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <CardTitle className="truncate">Google Sheet 테이블 뷰</CardTitle>
+              <CardDescription className="break-words">
                 현재 시트의 실제 헤더/행 구조를 그대로 표시합니다.
               </CardDescription>
             </div>
@@ -628,7 +628,7 @@ export function IdeasClient(): React.JSX.Element {
                     </div>
                   </details>
                 </div>
-                <div className="flex items-end">
+                <div className="flex items-end md:justify-end">
                   <div className="flex items-center gap-2 rounded-md border px-3 py-2">
                     <span className="text-xs text-muted-foreground">줄바꿈</span>
                     <Switch checked={wrapSheetCells} onCheckedChange={setWrapSheetCells} />
