@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { VideoList } from "@/components/video-list";
 import { AutomationRunState, AutomationScheduleState, VideoRow } from "@/lib/types";
+import { wrapTemplateTextLikeEngine } from "@/lib/template-text-wrap";
 
 interface RowsResponse {
   rows: VideoRow[];
@@ -678,10 +679,15 @@ export function DashboardClient(): React.JSX.Element {
               <div className="absolute inset-0 bg-[linear-gradient(175deg,#253446_0%,#3b5a77_38%,#bd8455_100%)]" />
             )}
             {templates.slice(0, 6).map((item) => {
-              const text = materializeSnapshotText({
+              const baseText = materializeSnapshotText({
                 text: item.text || "",
                 sourceTitle: template.sourceTitle,
                 sourceTopic: template.sourceTopic
+              });
+              const text = wrapTemplateTextLikeEngine({
+                text: baseText,
+                widthPercent: clampNumber(Number(item.width), 20, 100, 70),
+                fontSize: clampNumber(Number(item.fontSize), 12, 120, 28)
               });
               return (
               <div
@@ -698,8 +704,9 @@ export function DashboardClient(): React.JSX.Element {
                   fontFamily: item.fontName || "Noto Sans KR",
                   fontWeight: item.fontBold ? 700 : 400,
                   fontStyle: item.fontItalic ? "italic" : "normal",
-                  overflowWrap: "anywhere",
-                  wordBreak: "break-word",
+                  whiteSpace: "pre-line",
+                  overflowWrap: "normal",
+                  wordBreak: "normal",
                   textShadow: "0 1px 2px rgba(0,0,0,0.75)",
                   WebkitTextStrokeWidth: `${
                     clampNumber(Number(item.fontThickness), 0, 8, 0) *

@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageStyleSnapshot } from "@/components/image-style-snapshot";
 import { AppSettings, RenderOptions } from "@/lib/types";
+import { wrapTemplateTextLikeEngine } from "@/lib/template-text-wrap";
 import {
   ALL_VOICE_OPTIONS,
   filterVoiceOptions,
@@ -2606,10 +2607,15 @@ export function TemplatesClient(): React.JSX.Element {
               )}
 
               {previewTemplates.map((item) => {
-                const text = materializePreviewText({
+                const baseText = materializePreviewText({
                   text: item.text || "",
                   sourceTitle: editor.sourceTitle,
                   sourceTopic: editor.sourceTopic
+                });
+                const text = wrapTemplateTextLikeEngine({
+                  text: baseText,
+                  widthPercent: clampNumber(Number(item.width), 20, 100, 70),
+                  fontSize: clampNumber(Number(item.fontSize), 12, 120, 28)
                 });
                 const hint = dynamicHint({
                   text: item.text || "",
@@ -2632,8 +2638,9 @@ export function TemplatesClient(): React.JSX.Element {
                       fontFamily: item.fontName || editor.fontName || "Noto Sans KR",
                       fontWeight: item.fontBold ? 700 : 400,
                       fontStyle: item.fontItalic ? "italic" : "normal",
-                      overflowWrap: "anywhere",
-                      wordBreak: "break-word",
+                      whiteSpace: "pre-line",
+                      overflowWrap: "normal",
+                      wordBreak: "normal",
                       overflow: "hidden",
                       textShadow: "0 1px 2px rgba(0,0,0,0.8)",
                       WebkitTextStrokeWidth: `${

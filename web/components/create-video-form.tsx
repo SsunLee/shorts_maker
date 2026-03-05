@@ -28,12 +28,18 @@ import {
   VideoCanvasLayout,
   VideoWorkflow
 } from "@/lib/types";
+import {
+  normalizeTemplateText as normalizeTemplateTextForRender,
+  wrapTemplateTextLikeEngine
+} from "@/lib/template-text-wrap";
 
 const voiceSpeedOptions = ["0.75", "0.9", "1", "1.1", "1.25", "1.5"];
 const sceneCountOptions = ["3", "4", "5", "6", "8", "10", "12"];
 const CREATE_DRAFT_KEY = "shorts-maker:create-draft:v1";
 const CREATE_WORKFLOW_ID_KEY = "shorts-maker:create-workflow-id:v1";
 const RENDER_TEMPLATE_LIBRARY_KEY = "shorts-maker:render-template-library:v1";
+const LOCAL_TEMPLATE_PREFIX = "local:";
+const SERVER_TEMPLATE_PREFIX = "server:";
 const customStyleOption = "__custom__";
 const imageStylePresets = [
   "Cinematic photo-real",
@@ -580,10 +586,35 @@ function formatTimelineTime(ms: number): string {
 }
 
 function normalizeTemplateText(value: string | undefined): string {
-  return String(value || "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/\\n/g, "\n");
+  return normalizeTemplateTextForRender(value);
+}
+
+function toLocalTemplateOptionValue(id: string): string {
+  return `${LOCAL_TEMPLATE_PREFIX}${id}`;
+}
+
+function toServerTemplateOptionValue(id: string): string {
+  return `${SERVER_TEMPLATE_PREFIX}${id}`;
+}
+
+function parseTemplateOptionValue(value: string | undefined): {
+  source: "local" | "server";
+  id: string;
+} | undefined {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return undefined;
+  }
+  if (raw.startsWith(LOCAL_TEMPLATE_PREFIX)) {
+    const id = raw.slice(LOCAL_TEMPLATE_PREFIX.length).trim();
+    return id ? { source: "local", id } : undefined;
+  }
+  if (raw.startsWith(SERVER_TEMPLATE_PREFIX)) {
+    const id = raw.slice(SERVER_TEMPLATE_PREFIX.length).trim();
+    return id ? { source: "server", id } : undefined;
+  }
+  // Backward compatibility for old local-only stored ids.
+  return { source: "local", id: raw };
 }
 
 function detectSubtitleStylePreset(subtitle: RenderOptions["subtitle"]): string {
@@ -769,6 +800,22 @@ interface RenderTemplatePreset {
   createdAt: string;
   updatedAt: string;
 }
+
+interface AutomationTemplatePreset {
+  id: string;
+  templateName?: string;
+  sourceTitle?: string;
+  sourceTopic?: string;
+  updatedAt: string;
+  renderOptions: RenderOptions;
+}
+
+type SelectedTemplatePreset = {
+  source: "local" | "server";
+  id: string;
+  name: string;
+  renderOptions: RenderOptions;
+};
 
 const defaultRenderOptions: RenderOptions = {
   subtitle: {
@@ -1074,6 +1121,10 @@ export function CreateVideoForm(): React.JSX.Element {
     ensureRenderOptions()
   );
   const [renderTemplatePresets, setRenderTemplatePresets] = useState<RenderTemplatePreset[]>([]);
+  const [automationTemplatePresets, setAutomationTemplatePresets] = useState<
+    AutomationTemplatePreset[]
+  >([]);
+  const [activeAutomationTemplateId, setActiveAutomationTemplateId] = useState<string>("");
   const [newTemplateName, setNewTemplateName] = useState("");
   const [selectedTemplatePresetId, setSelectedTemplatePresetId] = useState<string>("");
   const [regeneratingSceneIndexes, setRegeneratingSceneIndexes] = useState<number[]>([]);
@@ -1442,6 +1493,42 @@ export function CreateVideoForm(): React.JSX.Element {
     }
   }, []);
 
+  const refreshAutomationTemplatePresets = useCallback(async (): Promise<void> => {
+    try {
+      const response = await fetch("/api/automation-template", { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+      const data = (await response.json()) as {
+        templates?: AutomationTemplatePreset[];
+        activeTemplateId?: string;
+      };
+      const templates = data.templates || [];
+      setAutomationTemplatePresets(templates);
+      setActiveAutomationTemplateId(data.activeTemplateId || "");
+      setSelectedTemplatePresetId((prev) => {
+        if (prev) {
+          const parsed = parseTemplateOptionValue(prev);
+          if (parsed?.source === "local") {
+            return prev;
+          }
+          if (
+            parsed?.source === "server" &&
+            templates.some((item) => item.id === parsed.id)
+          ) {
+            return prev;
+          }
+        }
+        if (data.activeTemplateId) {
+          return toServerTemplateOptionValue(data.activeTemplateId);
+        }
+        return prev;
+      });
+    } catch {
+      // Ignore automation template read failures in create view.
+    }
+  }, []);
+
   async function resumeWorkflowById(id: string): Promise<void> {
     if (!id) {
       return;
@@ -1572,7 +1659,9 @@ export function CreateVideoForm(): React.JSX.Element {
                 : new Date().toISOString()
           }));
         setRenderTemplatePresets(safePresets);
-        setSelectedTemplatePresetId(safePresets[0]?.id || "");
+        setSelectedTemplatePresetId(
+          safePresets[0] ? toLocalTemplateOptionValue(safePresets[0].id) : ""
+        );
       }
     } catch {
       // Ignore broken local storage.
@@ -1602,10 +1691,14 @@ export function CreateVideoForm(): React.JSX.Element {
       }
     };
 
-    void Promise.all([restoreWorkflow(), refreshResumableWorkflows()]).finally(() => {
+    void Promise.all([
+      restoreWorkflow(),
+      refreshResumableWorkflows(),
+      refreshAutomationTemplatePresets()
+    ]).finally(() => {
       hydratedRef.current = true;
     });
-  }, [refreshResumableWorkflows]);
+  }, [refreshResumableWorkflows, refreshAutomationTemplatePresets]);
 
   useEffect(() => {
     if (!hydratedRef.current) {
@@ -1875,10 +1968,36 @@ export function CreateVideoForm(): React.JSX.Element {
       setAppliedSheetRowId("");
     }
   }, [appliedSheetRowId, sheetRows]);
-  const selectedRenderTemplatePreset = useMemo(
-    () => renderTemplatePresets.find((item) => item.id === selectedTemplatePresetId),
-    [renderTemplatePresets, selectedTemplatePresetId]
-  );
+  const selectedRenderTemplatePreset = useMemo<SelectedTemplatePreset | undefined>(() => {
+    const parsed = parseTemplateOptionValue(selectedTemplatePresetId);
+    if (!parsed) {
+      return undefined;
+    }
+
+    if (parsed.source === "server") {
+      const serverTemplate = automationTemplatePresets.find((item) => item.id === parsed.id);
+      if (!serverTemplate) {
+        return undefined;
+      }
+      return {
+        source: "server",
+        id: serverTemplate.id,
+        name: serverTemplate.templateName || "서버 템플릿",
+        renderOptions: ensureRenderOptions(serverTemplate.renderOptions)
+      };
+    }
+
+    const localTemplate = renderTemplatePresets.find((item) => item.id === parsed.id);
+    if (!localTemplate) {
+      return undefined;
+    }
+    return {
+      source: "local",
+      id: localTemplate.id,
+      name: localTemplate.name,
+      renderOptions: ensureRenderOptions(localTemplate.renderOptions)
+    };
+  }, [automationTemplatePresets, renderTemplatePresets, selectedTemplatePresetId]);
   const subtitleStylePresetId = useMemo(
     () => detectSubtitleStylePreset(renderOptions.subtitle),
     [renderOptions.subtitle]
@@ -2040,7 +2159,7 @@ export function CreateVideoForm(): React.JSX.Element {
     };
     const next = [preset, ...renderTemplatePresets].slice(0, 30);
     persistRenderTemplatePresets(next);
-    setSelectedTemplatePresetId(preset.id);
+    setSelectedTemplatePresetId(toLocalTemplateOptionValue(preset.id));
     setNewTemplateName("");
   }, [newTemplateName, renderOptions, renderTemplatePresets, persistRenderTemplatePresets]);
 
@@ -2051,22 +2170,34 @@ export function CreateVideoForm(): React.JSX.Element {
     const nextRenderOptions = ensureRenderOptions(selectedRenderTemplatePreset.renderOptions);
     setRenderOptions(nextRenderOptions);
     try {
-      const response = await fetch("/api/automation-template", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          renderOptions: nextRenderOptions,
-          sourceTitle: title || selectedRenderTemplatePreset.name,
-          sourceTopic: topic || undefined,
-          templateName: selectedRenderTemplatePreset.name
-        })
-      });
+      const response =
+        selectedRenderTemplatePreset.source === "server"
+          ? await fetch("/api/automation-template", {
+              method: "PATCH",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                templateId: selectedRenderTemplatePreset.id
+              })
+            })
+          : await fetch("/api/automation-template", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                renderOptions: nextRenderOptions,
+                sourceTitle: title || selectedRenderTemplatePreset.name,
+                sourceTopic: topic || undefined,
+                templateName: selectedRenderTemplatePreset.name
+              })
+            });
       if (!response.ok) {
         const data = (await response.json()) as { error?: string };
         throw new Error(data.error || "Failed to persist automation template.");
       }
+      await refreshAutomationTemplatePresets();
     } catch (persistError) {
       setError(
         persistError instanceof Error
@@ -2074,20 +2205,51 @@ export function CreateVideoForm(): React.JSX.Element {
           : "템플릿은 적용되었지만 자동화 기본 템플릿 저장에 실패했습니다."
       );
     }
-  }, [selectedRenderTemplatePreset, title, topic]);
+  }, [selectedRenderTemplatePreset, title, topic, refreshAutomationTemplatePresets]);
 
-  const deleteSelectedRenderTemplate = useCallback((): void => {
+  const deleteSelectedRenderTemplate = useCallback(async (): Promise<void> => {
     if (!selectedRenderTemplatePreset) {
       return;
     }
+    if (selectedRenderTemplatePreset.source === "server") {
+      try {
+        const response = await fetch("/api/automation-template", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ templateId: selectedRenderTemplatePreset.id })
+        });
+        if (!response.ok) {
+          const data = (await response.json()) as { error?: string };
+          throw new Error(data.error || "Failed to delete server template.");
+        }
+        await refreshAutomationTemplatePresets();
+      } catch (deleteError) {
+        setError(
+          deleteError instanceof Error
+            ? `서버 템플릿 삭제에 실패했습니다: ${deleteError.message}`
+            : "서버 템플릿 삭제에 실패했습니다."
+        );
+      }
+      return;
+    }
+
     const next = renderTemplatePresets.filter(
       (item) => item.id !== selectedRenderTemplatePreset.id
     );
     persistRenderTemplatePresets(next);
-    setSelectedTemplatePresetId((current) =>
-      current === selectedRenderTemplatePreset.id ? "" : current
-    );
-  }, [selectedRenderTemplatePreset, renderTemplatePresets, persistRenderTemplatePresets]);
+    setSelectedTemplatePresetId((current) => {
+      const parsed = parseTemplateOptionValue(current);
+      if (!parsed || parsed.source !== "local") {
+        return current;
+      }
+      return parsed.id === selectedRenderTemplatePreset.id ? "" : current;
+    });
+  }, [
+    selectedRenderTemplatePreset,
+    renderTemplatePresets,
+    persistRenderTemplatePresets,
+    refreshAutomationTemplatePresets
+  ]);
 
   const applySubtitleStylePreset = useCallback((presetId: string): void => {
     if (presetId === customSubtitleStyleOption) {
@@ -4549,10 +4711,15 @@ export function CreateVideoForm(): React.JSX.Element {
                                 )}
                                 <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/55 to-transparent" />
                                 {previewTitleTemplates.map((item) => {
-                                  const text =
+                                  const rawText =
                                     item.id === primaryTitleTemplateId
                                       ? normalizeTemplateText(item.text).trim() || defaultPrimaryTemplateText
                                       : normalizeTemplateText(item.text);
+                                  const text = wrapTemplateTextLikeEngine({
+                                    text: rawText,
+                                    widthPercent: clampNumber(Number(item.width), 10, 95, 60),
+                                    fontSize: clampNumber(Number(item.fontSize), 12, 120, 44)
+                                  });
                                   const titleColor = normalizeHexColor(item.color, "#FFFFFF");
                                   const titleTextShadow = [
                                     ...buildTextThicknessShadow(
@@ -4583,8 +4750,9 @@ export function CreateVideoForm(): React.JSX.Element {
                                         padding: `${item.paddingY ?? 4}px ${item.paddingX ?? 8}px`,
                                         textShadow: titleTextShadow || undefined,
                                         lineHeight: 1.2,
-                                        whiteSpace: "pre-wrap",
-                                        wordBreak: "break-word"
+                                        whiteSpace: "pre-line",
+                                        overflowWrap: "normal",
+                                        wordBreak: "normal"
                                       }}
                                     >
                                       {text}
@@ -4863,9 +5031,21 @@ export function CreateVideoForm(): React.JSX.Element {
                               <SelectValue placeholder="저장된 템플릿 선택" />
                             </SelectTrigger>
                             <SelectContent>
+                              {automationTemplatePresets.map((preset) => (
+                                <SelectItem
+                                  key={`server-${preset.id}`}
+                                  value={toServerTemplateOptionValue(preset.id)}
+                                >
+                                  [서버] {preset.templateName || "이름 없는 템플릿"}
+                                  {preset.id === activeAutomationTemplateId ? " (활성)" : ""}
+                                </SelectItem>
+                              ))}
                               {renderTemplatePresets.map((preset) => (
-                                <SelectItem key={preset.id} value={preset.id}>
-                                  {preset.name}
+                                <SelectItem
+                                  key={`local-${preset.id}`}
+                                  value={toLocalTemplateOptionValue(preset.id)}
+                                >
+                                  [로컬] {preset.name}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -4894,7 +5074,7 @@ export function CreateVideoForm(): React.JSX.Element {
                             variant="ghost"
                             size="sm"
                             disabled={!selectedRenderTemplatePreset}
-                            onClick={deleteSelectedRenderTemplate}
+                            onClick={() => void deleteSelectedRenderTemplate()}
                           >
                             삭제
                           </Button>
@@ -4926,6 +5106,17 @@ export function CreateVideoForm(): React.JSX.Element {
                               </div>
                             ) : null}
                             {(renderOptions.overlay.titleTemplates || []).map((item) => (
+                              (() => {
+                                const rawText =
+                                  item.id === primaryTitleTemplateId
+                                    ? normalizeTemplateText(item.text).trim() || defaultPrimaryTemplateText
+                                    : normalizeTemplateText(item.text);
+                                const wrappedText = wrapTemplateTextLikeEngine({
+                                  text: rawText,
+                                  widthPercent: clampNumber(Number(item.width), 10, 95, 60),
+                                  fontSize: clampNumber(Number(item.fontSize), 12, 120, 44)
+                                });
+                                return (
                               <div
                                 key={item.id}
                                 onPointerDown={(event) =>
@@ -4967,8 +5158,9 @@ export function CreateVideoForm(): React.JSX.Element {
                                   ].join(", "),
                                   userSelect: "none",
                                   textAlign: "center",
-                                  whiteSpace: "pre-wrap",
-                                  wordBreak: "break-word",
+                                  whiteSpace: "pre-line",
+                                  overflowWrap: "normal",
+                                  wordBreak: "normal",
                                   lineHeight: 1.2
                                 }}
                               >
@@ -4981,9 +5173,7 @@ export function CreateVideoForm(): React.JSX.Element {
                                 >
                                   MV
                                 </div>
-                                {item.id === primaryTitleTemplateId
-                                  ? normalizeTemplateText(item.text).trim() || defaultPrimaryTemplateText
-                                  : normalizeTemplateText(item.text)}
+                                {wrappedText}
                                 <div
                                   className="absolute -bottom-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full border border-white/80 bg-primary text-[10px] text-white cursor-nwse-resize"
                                   onPointerDown={(event) =>
@@ -4994,6 +5184,8 @@ export function CreateVideoForm(): React.JSX.Element {
                                   SZ
                                 </div>
                               </div>
+                                );
+                              })()
                             ))}
                             <div
                               onPointerDown={startSubtitlePreviewDrag}
