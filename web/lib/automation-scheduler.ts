@@ -5,7 +5,8 @@ import {
 } from "@/lib/automation-schedule-store";
 import {
   getAutomationState,
-  startAutomationRun
+  startAutomationRun,
+  waitForAutomationRunCompletion
 } from "@/lib/automation-runner";
 import {
   AutomationScheduleConfig,
@@ -341,7 +342,7 @@ function isScheduleDue(state: AutomationScheduleState, now = new Date()): boolea
 
 export async function runAutomationScheduleTick(
   userId?: string,
-  options?: { force?: boolean }
+  options?: { force?: boolean; waitForCompletion?: boolean }
 ): Promise<AutomationScheduleState> {
   const state = await getStateInternal(userId);
   if (!state.config.enabled) {
@@ -373,8 +374,19 @@ export async function runAutomationScheduleTick(
         templateId: state.config.templateId,
         maxItems: state.config.itemsPerRun
       });
-      lastResult = "started";
-      lastError = undefined;
+      if (options?.waitForCompletion) {
+        const finalState = await waitForAutomationRunCompletion(userId);
+        if (finalState.phase === "failed") {
+          lastResult = "failed";
+          lastError = finalState.lastError || "자동화 실행이 실패했습니다.";
+        } else {
+          lastResult = "started";
+          lastError = undefined;
+        }
+      } else {
+        lastResult = "started";
+        lastError = undefined;
+      }
     }
   } catch (error) {
     lastResult = "failed";
@@ -396,7 +408,7 @@ export async function runAutomationScheduleTick(
 }
 
 export async function runDueAutomationSchedules(
-  options?: { force?: boolean; userIds?: string[] }
+  options?: { force?: boolean; userIds?: string[]; waitForCompletion?: boolean }
 ): Promise<{
   scanned: number;
   attempted: number;
@@ -414,7 +426,10 @@ export async function runDueAutomationSchedules(
   let skippedRunning = 0;
   let failed = 0;
   for (const userId of userIds) {
-    const state = await runAutomationScheduleTick(userId, { force: options?.force });
+    const state = await runAutomationScheduleTick(userId, {
+      force: options?.force,
+      waitForCompletion: options?.waitForCompletion
+    });
     const ranNow = state.lastRunAt ? Date.now() - Date.parse(state.lastRunAt) < 60_000 : false;
     if (!ranNow && !options?.force) {
       continue;

@@ -751,3 +751,15 @@ export function startAutomationRun(userId: string | undefined, args: StartAutoma
 
   return snapshotState(userId);
 }
+
+export async function waitForAutomationRunCompletion(
+  userId?: string
+): Promise<AutomationRunState> {
+  const key = getUserKey(userId);
+  const running = getPromiseStore()[key];
+  if (!running) {
+    return snapshotState(userId);
+  }
+  await running;
+  return snapshotState(userId);
+}

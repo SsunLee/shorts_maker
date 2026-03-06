@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { runDueAutomationSchedules } from "@/lib/automation-scheduler";
 
 export const runtime = "nodejs";
+// Keep cron invocation alive while the due automation run finishes.
+export const maxDuration = 300;
 
 function isAuthorizedCronRequest(request: NextRequest): boolean {
   const secret = String(process.env.CRON_SECRET || "").trim();
@@ -36,7 +38,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   const force = request.nextUrl.searchParams.get("force") === "1";
-  const result = await runDueAutomationSchedules({ force });
+  const result = await runDueAutomationSchedules({
+    force,
+    waitForCompletion: true
+  });
   console.log("[cron.automation] result", result);
   return NextResponse.json({
     ok: true,
