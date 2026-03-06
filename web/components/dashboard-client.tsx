@@ -552,6 +552,19 @@ export function DashboardClient(): React.JSX.Element {
   async function startAutomation(): Promise<void> {
     setAutomationBusy(true);
     setAutomationError(undefined);
+    setAutomation((prev) => ({
+      ...(prev || {
+        stopRequested: false,
+        totalDiscovered: 0,
+        processed: 0,
+        uploaded: 0,
+        failed: 0,
+        remaining: 0,
+        logs: []
+      }),
+      phase: "running",
+      startedAt: new Date().toISOString()
+    }));
     try {
       const response = await fetch("/api/automation", {
         method: "POST",
@@ -572,9 +585,12 @@ export function DashboardClient(): React.JSX.Element {
         throw new Error(data.error || `Automation start failed (HTTP ${response.status}).`);
       }
       setAutomation(data.state);
-      await refresh();
+      await Promise.all([refresh(), refreshAutomation(), refreshSchedule()]);
     } catch (startError) {
       setAutomationError(startError instanceof Error ? startError.message : "Unknown error");
+      await refreshAutomation().catch(() => {
+        // Keep UI stable even if status refresh fails immediately after start error.
+      });
     } finally {
       setAutomationBusy(false);
     }

@@ -3,12 +3,14 @@ import { z } from "zod";
 import {
   getAutomationState,
   requestAutomationStop,
-  startAutomationRun
+  startAutomationRun,
+  waitForAutomationRunCompletion
 } from "@/lib/automation-runner";
 import { ensureAutomationSchedulerStarted } from "@/lib/automation-scheduler";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const startSchema = z.object({
   sheetName: z.string().optional(),
@@ -39,6 +41,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body = await request.json().catch(() => ({}));
     const payload = startSchema.parse(body || {});
     const state = startAutomationRun(userId, payload);
+
+    // Serverless runtimes cannot safely keep background loops alive after response is sent.
+    // Wait for completion inside the same invocation to avoid "first click no-op" behavior.
+    const isServerless = process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+    if (isServerless) {
+      const completed = await waitForAutomationRunCompletion(userId);
+      return NextResponse.json({ state: completed }, { status: 200 });
+    }
+
     return NextResponse.json({ state }, { status: 202 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to start automation";
