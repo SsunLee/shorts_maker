@@ -12,6 +12,13 @@ type StorageResult = {
   localPath?: string;
 };
 
+export interface S3StoredAsset {
+  key: string;
+  publicUrl: string;
+  size: number;
+  lastModified?: string;
+}
+
 interface S3Config {
   enabled: boolean;
   bucket?: string;
@@ -271,6 +278,88 @@ async function deleteByPrefix(config: S3Config, relativePrefix: string): Promise
 
     continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
   } while (continuationToken);
+}
+
+async function listByPrefix(config: S3Config, relativePrefix: string): Promise<S3StoredAsset[]> {
+  if (!config.enabled || !config.bucket) {
+    return [];
+  }
+  const keyPrefix = joinKey(config, relativePrefix).replace(/\/+$/, "") + "/";
+  const client = getS3Client(config);
+  const items: S3StoredAsset[] = [];
+
+  let continuationToken: string | undefined;
+  do {
+    const listed = await client.send(
+      new ListObjectsV2Command({
+        Bucket: config.bucket,
+        Prefix: keyPrefix,
+        ContinuationToken: continuationToken
+      })
+    );
+
+    (listed.Contents || []).forEach((entry) => {
+      const key = String(entry.Key || "").trim();
+      if (!key) {
+        return;
+      }
+      items.push({
+        key,
+        publicUrl: toPublicUrl(config, key),
+        size: Number(entry.Size || 0),
+        lastModified: entry.LastModified ? entry.LastModified.toISOString() : undefined
+      });
+    });
+
+    continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return items;
+}
+
+export async function listJobAssetsFromStorage(jobId: string): Promise<{
+  enabled: boolean;
+  bucket?: string;
+  assets: S3StoredAsset[];
+  totalSizeBytes: number;
+}> {
+  const normalizedJobId = String(jobId || "").trim();
+  if (!normalizedJobId) {
+    return {
+      enabled: false,
+      assets: [],
+      totalSizeBytes: 0
+    };
+  }
+
+  const config = getS3Config();
+  if (!config.enabled) {
+    return {
+      enabled: false,
+      assets: [],
+      totalSizeBytes: 0
+    };
+  }
+
+  const grouped = await Promise.all([
+    listByPrefix(config, `generated/${normalizedJobId}`),
+    listByPrefix(config, `generated/${normalizedJobId}-preview`),
+    listByPrefix(config, `generated/${normalizedJobId}-final`),
+    listByPrefix(config, `rendered/${normalizedJobId}`),
+    listByPrefix(config, `rendered/${normalizedJobId}-preview`),
+    listByPrefix(config, `rendered/${normalizedJobId}-final`)
+  ]);
+  const dedup = new Map<string, S3StoredAsset>();
+  grouped.flat().forEach((item) => dedup.set(item.key, item));
+  const assets = Array.from(dedup.values()).sort((a, b) => a.key.localeCompare(b.key));
+  const totalSizeBytes = assets.reduce((sum, item) => sum + item.size, 0);
+
+  return {
+    enabled: true,
+    bucket: config.bucket,
+    assets,
+    totalSizeBytes
+  };
 }
 
 export async function cleanupJobAssetsFromStorage(jobId: string): Promise<void> {

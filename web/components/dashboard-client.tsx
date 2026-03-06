@@ -24,6 +24,20 @@ interface AutomationScheduleResponse {
   error?: string;
 }
 
+interface StorageAssetsResponse {
+  id: string;
+  enabled: boolean;
+  bucket?: string;
+  totalSizeBytes?: number;
+  assets?: Array<{
+    key: string;
+    publicUrl: string;
+    size: number;
+    lastModified?: string;
+  }>;
+  error?: string;
+}
+
 interface AutomationTemplateItem {
   id: string;
   templateName?: string;
@@ -659,6 +673,60 @@ export function DashboardClient(): React.JSX.Element {
     }
 
     await refresh();
+  }
+
+  async function inspectStorage(row: VideoRow): Promise<void> {
+    try {
+      const response = await fetch(`/api/storage/assets?id=${encodeURIComponent(row.id)}`, {
+        cache: "no-store"
+      });
+      const data = await readJsonResponse<StorageAssetsResponse>(response);
+      if (!response.ok) {
+        throw new Error(data.error || "S3 자산 조회에 실패했습니다.");
+      }
+      if (!data.enabled) {
+        window.alert("S3 스토리지가 활성화되어 있지 않습니다.");
+        return;
+      }
+      const assetCount = data.assets?.length || 0;
+      const totalMb = ((data.totalSizeBytes || 0) / (1024 * 1024)).toFixed(2);
+      const samples = (data.assets || [])
+        .slice(0, 5)
+        .map((item) => `- ${item.key}`)
+        .join("\n");
+      window.alert(
+        [
+          `Bucket: ${data.bucket || "-"}`,
+          `Objects: ${assetCount}`,
+          `Total size: ${totalMb} MB`,
+          samples ? `\n샘플 키(최대 5개):\n${samples}` : ""
+        ].join("\n")
+      );
+    } catch (storageError) {
+      setError(storageError instanceof Error ? storageError.message : "S3 조회 실패");
+    }
+  }
+
+  async function cleanupStorage(row: VideoRow): Promise<void> {
+    try {
+      const confirmed = window.confirm(
+        `이 row(${row.id}) 관련 S3 파일을 정리할까요?\n` +
+          `generated/rendered 하위 prefix가 삭제됩니다.`
+      );
+      if (!confirmed) {
+        return;
+      }
+      const response = await fetch(`/api/storage/assets?id=${encodeURIComponent(row.id)}`, {
+        method: "DELETE"
+      });
+      const data = await readJsonResponse<{ ok?: boolean; error?: string }>(response);
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "S3 정리에 실패했습니다.");
+      }
+      window.alert(`S3 정리 완료: ${row.id}`);
+    } catch (storageError) {
+      setError(storageError instanceof Error ? storageError.message : "S3 정리 실패");
+    }
   }
 
   async function remove(row: VideoRow): Promise<void> {
@@ -1354,7 +1422,14 @@ export function DashboardClient(): React.JSX.Element {
       {deletingId ? (
         <p className="text-sm text-muted-foreground">Deleting selected item...</p>
       ) : null}
-      <VideoList rows={rows} onRegenerate={regenerate} onDelete={remove} onUpload={upload} />
+      <VideoList
+        rows={rows}
+        onRegenerate={regenerate}
+        onDelete={remove}
+        onUpload={upload}
+        onInspectStorage={inspectStorage}
+        onCleanupStorage={cleanupStorage}
+      />
     </div>
   );
 }

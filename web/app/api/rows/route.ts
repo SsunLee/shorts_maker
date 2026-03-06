@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listRows } from "@/lib/repository";
 import { listWorkflows } from "@/lib/workflow-store";
+import { progressFromStatus } from "@/lib/status";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
@@ -15,19 +16,40 @@ export async function GET(): Promise<NextResponse> {
   const workflows = await listWorkflows(userId);
   const workflowById = new Map(workflows.map((item) => [item.id, item]));
   const hydratedRows = rows.map((row) => {
-    if (row.videoUrl) {
-      return row;
-    }
     const workflow = workflowById.get(row.id);
     const fallbackVideoUrl =
       workflow?.finalVideoUrl || workflow?.previewVideoUrl;
-    if (!fallbackVideoUrl) {
-      return row;
+
+    let next = row;
+
+    if (!next.videoUrl && fallbackVideoUrl) {
+      next = {
+        ...next,
+        videoUrl: fallbackVideoUrl
+      };
     }
-    return {
-      ...row,
-      videoUrl: fallbackVideoUrl
-    };
+
+    // Reconcile stale dashboard status when workflow is already finalized.
+    if (next.youtubeUrl && next.status !== "uploaded") {
+      next = {
+        ...next,
+        status: "uploaded",
+        progress: progressFromStatus("uploaded")
+      };
+    } else if (
+      workflow?.stage === "final_ready" &&
+      next.status !== "uploaded" &&
+      next.status !== "uploading" &&
+      next.status !== "failed"
+    ) {
+      next = {
+        ...next,
+        status: "ready",
+        progress: progressFromStatus("ready")
+      };
+    }
+
+    return next;
   });
   return NextResponse.json({ rows: hydratedRows });
 }

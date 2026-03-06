@@ -40,6 +40,8 @@ interface VideoCardProps {
   row: VideoRow;
   onRegenerate: (row: VideoRow) => Promise<void>;
   onDelete: (row: VideoRow) => Promise<void>;
+  onInspectStorage: (row: VideoRow) => Promise<void>;
+  onCleanupStorage: (row: VideoRow) => Promise<void>;
   onUpload: (
     row: VideoRow,
     payload: {
@@ -55,6 +57,8 @@ export function VideoCard({
   row,
   onRegenerate,
   onDelete,
+  onInspectStorage,
+  onCleanupStorage,
   onUpload
 }: VideoCardProps): React.JSX.Element {
   const normalizedTitle = row.title.replace(/\s+/g, " ").trim();
@@ -108,6 +112,12 @@ export function VideoCard({
         <Button variant="outline" size="sm" onClick={() => onRegenerate(row)}>
           <RotateCcw className="h-4 w-4" />
           Regenerate
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => onInspectStorage(row)}>
+          S3 확인
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => onCleanupStorage(row)}>
+          S3 정리
         </Button>
         <UploadModal
           title={row.title}

@@ -7,6 +7,8 @@ interface VideoListProps {
   rows: VideoRow[];
   onRegenerate: (row: VideoRow) => Promise<void>;
   onDelete: (row: VideoRow) => Promise<void>;
+  onInspectStorage: (row: VideoRow) => Promise<void>;
+  onCleanupStorage: (row: VideoRow) => Promise<void>;
   onUpload: (
     row: VideoRow,
     payload: {
@@ -22,6 +24,8 @@ export function VideoList({
   rows,
   onRegenerate,
   onDelete,
+  onInspectStorage,
+  onCleanupStorage,
   onUpload
 }: VideoListProps): React.JSX.Element {
   if (rows.length === 0) {
@@ -40,6 +44,8 @@ export function VideoList({
           row={row}
           onRegenerate={onRegenerate}
           onDelete={onDelete}
+          onInspectStorage={onInspectStorage}
+          onCleanupStorage={onCleanupStorage}
           onUpload={onUpload}
         />
       ))}
