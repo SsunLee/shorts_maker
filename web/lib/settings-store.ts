@@ -5,12 +5,63 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { scopedUserId } from "@/lib/user-storage-namespace";
 
+const SETTINGS_DB_RETRY_MAX = 3;
+const SETTINGS_DB_RETRY_DELAYS_MS = [200, 600];
+
 function isReadOnlyServerlessRuntime(): boolean {
   return (
     process.env.VERCEL === "1" ||
     Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
     process.env.NEXT_RUNTIME === "edge"
   );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isRetryablePrismaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message) {
+    return false;
+  }
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("can't reach database server") ||
+    normalized.includes("timed out fetching a new connection from the connection pool") ||
+    normalized.includes("connection pool timeout") ||
+    normalized.includes("server has closed the connection") ||
+    normalized.includes("connection reset by peer")
+  );
+}
+
+async function withSettingsDbRetry<T>(
+  label: string,
+  run: () => Promise<T>
+): Promise<T> {
+  let attempt = 0;
+  let lastError: unknown;
+  while (attempt < SETTINGS_DB_RETRY_MAX) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      attempt += 1;
+      if (!isRetryablePrismaError(error) || attempt >= SETTINGS_DB_RETRY_MAX) {
+        break;
+      }
+      const waitMs = SETTINGS_DB_RETRY_DELAYS_MS[Math.min(attempt - 1, SETTINGS_DB_RETRY_DELAYS_MS.length - 1)];
+      console.warn(
+        `[settings-store] ${label} transient DB error, retrying (${attempt}/${SETTINGS_DB_RETRY_MAX}) in ${waitMs}ms: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      await sleep(waitMs);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function sanitizeNamespace(value: string): string {
@@ -90,9 +141,12 @@ export async function getSettings(userId?: string): Promise<AppSettings> {
   const storageUserId = scopedUserId(userId, "settings");
 
   if (storageUserId && prisma) {
-    const row = await prisma.userSettings.findUnique({
-      where: { userId: storageUserId }
-    });
+    const db = prisma;
+    const row = await withSettingsDbRetry("getSettings.findUnique", () =>
+      db.userSettings.findUnique({
+        where: { userId: storageUserId }
+      })
+    );
     const parsed = row?.data;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return {
@@ -119,11 +173,14 @@ export async function getSettings(userId?: string): Promise<AppSettings> {
 export async function saveSettings(settings: AppSettings, userId?: string): Promise<AppSettings> {
   const storageUserId = scopedUserId(userId, "settings");
   if (storageUserId && prisma) {
-    await prisma.userSettings.upsert({
-      where: { userId: storageUserId },
-      update: { data: settings as unknown as Prisma.InputJsonValue },
-      create: { userId: storageUserId, data: settings as unknown as Prisma.InputJsonValue }
-    });
+    const db = prisma;
+    await withSettingsDbRetry("saveSettings.upsert", () =>
+      db.userSettings.upsert({
+        where: { userId: storageUserId },
+        update: { data: settings as unknown as Prisma.InputJsonValue },
+        create: { userId: storageUserId, data: settings as unknown as Prisma.InputJsonValue }
+      })
+    );
     return settings;
   }
 
