@@ -15,6 +15,7 @@ const schema = z.object({
   cadence: z.enum(["interval_hours", "daily"]).optional(),
   intervalHours: z.number().int().min(1).max(168).optional(),
   dailyTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  timeZone: z.string().min(1).max(100).optional(),
   itemsPerRun: z.number().int().min(1).max(20).optional(),
   sheetName: z.string().optional(),
   uploadMode: z.enum(["youtube", "pre_upload"]).optional(),

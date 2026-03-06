@@ -226,6 +226,7 @@ export function DashboardClient(): React.JSX.Element {
   const [scheduleCadence, setScheduleCadence] = useState<"interval_hours" | "daily">("daily");
   const [scheduleIntervalHours, setScheduleIntervalHours] = useState("24");
   const [scheduleDailyTime, setScheduleDailyTime] = useState("09:00");
+  const [scheduleTimeZone, setScheduleTimeZone] = useState("UTC");
   const [scheduleItemsPerRun, setScheduleItemsPerRun] = useState("1");
   const [scheduleSheetName, setScheduleSheetName] = useState("");
   const [scheduleUploadMode, setScheduleUploadMode] = useState<"youtube" | "pre_upload">("youtube");
@@ -254,6 +255,7 @@ export function DashboardClient(): React.JSX.Element {
     setScheduleCadence(next.config.cadence);
     setScheduleIntervalHours(String(next.config.intervalHours));
     setScheduleDailyTime(next.config.dailyTime);
+    setScheduleTimeZone(String(next.config.timeZone || "UTC"));
     setScheduleItemsPerRun(String(next.config.itemsPerRun));
     setScheduleSheetName(next.config.sheetName || "");
     setScheduleUploadMode(next.config.uploadMode);
@@ -266,6 +268,17 @@ export function DashboardClient(): React.JSX.Element {
   useEffect(() => {
     scheduleDraftDirtyRef.current = scheduleDraftDirty;
   }, [scheduleDraftDirty]);
+
+  useEffect(() => {
+    try {
+      const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (browserTz && browserTz.trim()) {
+        setScheduleTimeZone(browserTz.trim());
+      }
+    } catch {
+      setScheduleTimeZone("UTC");
+    }
+  }, []);
 
   async function refreshAutomation(): Promise<void> {
     const response = await fetch("/api/automation", { cache: "no-store" });
@@ -452,28 +465,55 @@ export function DashboardClient(): React.JSX.Element {
     }
   }
 
-  async function saveSchedule(): Promise<void> {
+  async function saveSchedule(
+    overrides?: Partial<{
+      enabled: boolean;
+      cadence: "interval_hours" | "daily";
+      intervalHours: string;
+      dailyTime: string;
+      timeZone: string;
+      itemsPerRun: string;
+      sheetName: string;
+      uploadMode: "youtube" | "pre_upload";
+      templateMode: "applied_template" | "latest_workflow" | "none";
+      templateId: string;
+      privacyStatus: "private" | "public" | "unlisted";
+    }>
+  ): Promise<void> {
     setScheduleBusy(true);
     setScheduleError(undefined);
     try {
+      const enabled = overrides?.enabled ?? scheduleEnabled;
+      const cadence = overrides?.cadence ?? scheduleCadence;
+      const intervalHours = overrides?.intervalHours ?? scheduleIntervalHours;
+      const dailyTime = overrides?.dailyTime ?? scheduleDailyTime;
+      const timeZone = overrides?.timeZone ?? scheduleTimeZone;
+      const itemsPerRun = overrides?.itemsPerRun ?? scheduleItemsPerRun;
+      const sheetName = overrides?.sheetName ?? scheduleSheetName;
+      const uploadMode = overrides?.uploadMode ?? scheduleUploadMode;
+      const templateMode = overrides?.templateMode ?? scheduleTemplateMode;
+      const templateId = overrides?.templateId ?? scheduleTemplateId;
+      const privacyStatus = overrides?.privacyStatus ?? schedulePrivacyStatus;
+
       const response = await fetch("/api/automation/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          enabled: scheduleEnabled,
-          cadence: scheduleCadence,
-          intervalHours: Number.parseInt(scheduleIntervalHours, 10) || 24,
-          dailyTime: scheduleDailyTime || "09:00",
-          itemsPerRun: Number.parseInt(scheduleItemsPerRun, 10) || 1,
-          sheetName: scheduleSheetName.trim() || undefined,
-          uploadMode: scheduleUploadMode,
-          templateMode: scheduleTemplateMode,
+          enabled,
+          cadence,
+          intervalHours: Number.parseInt(intervalHours, 10) || 24,
+          dailyTime: dailyTime || "09:00",
+          timeZone: timeZone || "UTC",
+          itemsPerRun: Number.parseInt(itemsPerRun, 10) || 1,
+          sheetName: sheetName.trim() || undefined,
+          uploadMode,
+          templateMode,
           templateId:
-            scheduleTemplateMode === "applied_template" &&
-            scheduleTemplateId !== ACTIVE_TEMPLATE_VALUE
-              ? scheduleTemplateId
+            templateMode === "applied_template" &&
+            templateId !== ACTIVE_TEMPLATE_VALUE
+              ? templateId
               : undefined,
-          privacyStatus: schedulePrivacyStatus
+          privacyStatus
         })
       });
       const data = await readJsonResponse<AutomationScheduleResponse>(response);
@@ -1064,6 +1104,7 @@ export function DashboardClient(): React.JSX.Element {
             onCheckedChange={(checked) => {
               setScheduleEnabled(checked);
               setScheduleDraftDirty(true);
+              void saveSchedule({ enabled: checked });
             }}
           />
         </div>
@@ -1119,6 +1160,7 @@ export function DashboardClient(): React.JSX.Element {
               }}
               disabled={scheduleCadence !== "daily"}
             />
+            <p className="text-[11px] text-muted-foreground">기준 시간대: {scheduleTimeZone}</p>
           </div>
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">회차당 처리 개수</p>
@@ -1271,6 +1313,9 @@ export function DashboardClient(): React.JSX.Element {
             스케줄 비활성화
           </Button>
         </div>
+        {scheduleDraftDirty ? (
+          <p className="text-xs text-amber-500">저장되지 않은 스케줄 변경 사항이 있습니다.</p>
+        ) : null}
         {schedule ? (
           <div className="grid gap-2 text-xs sm:grid-cols-4">
             <div className="rounded-md border p-2">

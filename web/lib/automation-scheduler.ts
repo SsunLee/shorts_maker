@@ -17,6 +17,7 @@ const DEFAULT_CONFIG: AutomationScheduleConfig = {
   cadence: "daily",
   intervalHours: 24,
   dailyTime: "09:00",
+  timeZone: "UTC",
   itemsPerRun: 1,
   uploadMode: "youtube",
   privacyStatus: "private",
@@ -89,6 +90,91 @@ function normalizeDailyTime(raw: string | undefined): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+function normalizeTimeZone(raw: string | undefined): string {
+  const value = String(raw || "").trim();
+  if (!value) {
+    return DEFAULT_CONFIG.timeZone || "UTC";
+  }
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone || "UTC";
+  } catch {
+    return DEFAULT_CONFIG.timeZone || "UTC";
+  }
+}
+
+function getZonedParts(date: Date, timeZone: string): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+  const parts = formatter.formatToParts(date);
+  const pick = (type: string): number =>
+    Number.parseInt(parts.find((item) => item.type === type)?.value || "0", 10);
+  return {
+    year: pick("year"),
+    month: pick("month"),
+    day: pick("day"),
+    hour: pick("hour"),
+    minute: pick("minute"),
+    second: pick("second")
+  };
+}
+
+function zonedDateTimeToUtc(args: {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second?: number;
+  timeZone: string;
+}): Date {
+  let guess = new Date(
+    Date.UTC(args.year, args.month - 1, args.day, args.hour, args.minute, args.second || 0, 0)
+  );
+  // Iterative refinement for timezone offset and DST transitions.
+  for (let i = 0; i < 3; i += 1) {
+    const actual = getZonedParts(guess, args.timeZone);
+    const desiredAsUtc = Date.UTC(
+      args.year,
+      args.month - 1,
+      args.day,
+      args.hour,
+      args.minute,
+      args.second || 0,
+      0
+    );
+    const actualAsUtc = Date.UTC(
+      actual.year,
+      actual.month - 1,
+      actual.day,
+      actual.hour,
+      actual.minute,
+      actual.second,
+      0
+    );
+    const deltaMs = desiredAsUtc - actualAsUtc;
+    if (Math.abs(deltaMs) < 1000) {
+      break;
+    }
+    guess = new Date(guess.getTime() + deltaMs);
+  }
+  return guess;
+}
+
 function normalizeConfig(input?: Partial<AutomationScheduleConfig>): AutomationScheduleConfig {
   const templateMode =
     input?.templateMode === "none" || input?.templateMode === "latest_workflow"
@@ -104,6 +190,7 @@ function normalizeConfig(input?: Partial<AutomationScheduleConfig>): AutomationS
       DEFAULT_CONFIG.intervalHours
     ),
     dailyTime: normalizeDailyTime(input?.dailyTime),
+    timeZone: normalizeTimeZone(input?.timeZone),
     itemsPerRun: clampInt(Number(input?.itemsPerRun), 1, 20, DEFAULT_CONFIG.itemsPerRun),
     sheetName: input?.sheetName?.trim() || undefined,
     uploadMode: input?.uploadMode === "pre_upload" ? "pre_upload" : "youtube",
@@ -148,12 +235,33 @@ function computeNextRunAt(config: AutomationScheduleConfig, from = new Date()): 
   const [hour, minute] = normalizeDailyTime(config.dailyTime)
     .split(":")
     .map((item) => Number.parseInt(item, 10));
-  const candidate = new Date(from);
-  candidate.setHours(hour, minute, 0, 0);
-  if (candidate.getTime() <= from.getTime()) {
-    candidate.setDate(candidate.getDate() + 1);
+  const timeZone = normalizeTimeZone(config.timeZone);
+  const nowLocal = getZonedParts(from, timeZone);
+  const todayCandidate = zonedDateTimeToUtc({
+    year: nowLocal.year,
+    month: nowLocal.month,
+    day: nowLocal.day,
+    hour,
+    minute,
+    second: 0,
+    timeZone
+  });
+  if (todayCandidate.getTime() > from.getTime()) {
+    return todayCandidate;
   }
-  return candidate;
+  const nextDayUtcAnchor = new Date(
+    Date.UTC(nowLocal.year, nowLocal.month - 1, nowLocal.day, 12, 0, 0, 0) + 24 * 60 * 60 * 1000
+  );
+  const nextDayLocal = getZonedParts(nextDayUtcAnchor, timeZone);
+  return zonedDateTimeToUtc({
+    year: nextDayLocal.year,
+    month: nextDayLocal.month,
+    day: nextDayLocal.day,
+    hour,
+    minute,
+    second: 0,
+    timeZone
+  });
 }
 
 async function persistState(

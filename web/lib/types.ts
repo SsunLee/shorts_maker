@@ -262,6 +262,7 @@ export interface AutomationScheduleConfig {
   cadence: AutomationScheduleCadence;
   intervalHours: number;
   dailyTime: string;
+  timeZone?: string;
   itemsPerRun: number;
   sheetName?: string;
   uploadMode: "youtube" | "pre_upload";
