@@ -760,15 +760,15 @@ export function DashboardClient(): React.JSX.Element {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between rounded-xl border bg-card p-4">
-        <h1 className="text-xl font-semibold">Generated Videos</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
+        <h1 className="min-w-0 break-words text-xl font-semibold">Generated Videos</h1>
         <Button variant="outline" onClick={() => void refresh()}>
           Refresh
         </Button>
       </div>
       <div className="space-y-3 rounded-xl border bg-card p-4">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-base font-semibold">자동화 실행</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="min-w-0 break-words text-base font-semibold">자동화 실행</h2>
           <span className="rounded-full border px-2 py-0.5 text-xs">
             {phaseLabel(automation?.phase)}
           </span>
@@ -916,9 +916,9 @@ export function DashboardClient(): React.JSX.Element {
         ) : null}
         {automationError ? <p className="text-sm text-destructive">{automationError}</p> : null}
         <div className="space-y-2 rounded-md border p-3">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-medium">자동화 템플릿 선택/미리보기</p>
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="min-w-0 break-words text-sm font-medium">자동화 템플릿 선택/미리보기</p>
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
@@ -1045,8 +1045,8 @@ export function DashboardClient(): React.JSX.Element {
         ) : null}
       </div>
       <div className="space-y-3 rounded-xl border bg-card p-4">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-base font-semibold">자동화 스케줄</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="min-w-0 break-words text-base font-semibold">자동화 스케줄</h2>
           <span className="rounded-full border px-2 py-0.5 text-xs">
             {schedule?.config.enabled ? "활성" : "비활성"}
           </span>
@@ -1054,10 +1054,10 @@ export function DashboardClient(): React.JSX.Element {
         <p className="text-xs text-muted-foreground">
           예: 하루에 1개씩, 하루에 2개씩, 혹은 N시간마다 N개를 직렬로 자동 업로드합니다.
         </p>
-        <div className="flex items-center justify-between rounded-md border p-3">
-          <div>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3">
+          <div className="min-w-0">
             <p className="text-sm font-medium">스케줄 활성화</p>
-            <p className="text-xs text-muted-foreground">활성화 시 서버 시간 기준으로 자동 실행됩니다.</p>
+            <p className="break-words text-xs text-muted-foreground">활성화 시 서버 시간 기준으로 자동 실행됩니다.</p>
           </div>
           <Switch
             checked={scheduleEnabled}

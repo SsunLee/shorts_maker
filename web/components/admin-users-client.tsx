@@ -128,7 +128,7 @@ export function AdminUsersClient(): React.JSX.Element {
 
   return (
     <div className="space-y-3 rounded-xl border bg-card p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">총 {users.length}명</p>
         <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
           새로고침
@@ -179,7 +179,7 @@ export function AdminUsersClient(): React.JSX.Element {
                   />
                 </td>
                 <td className="px-3 py-2">
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button
                       type="button"
                       size="sm"
@@ -215,4 +215,3 @@ export function AdminUsersClient(): React.JSX.Element {
     </div>
   );
 }
-

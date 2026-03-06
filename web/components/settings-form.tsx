@@ -280,7 +280,7 @@ export function SettingsForm(): React.JSX.Element {
             다크 모드에서는 정보 텍스트에 <span className="text-info">#34d399</span> 포인트 색상을 사용합니다.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex items-center justify-between">
+        <CardContent className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm text-muted-foreground">Dark Mode / Light Mode</p>
           <Switch checked={theme === "dark"} onCheckedChange={onThemeToggle} />
         </CardContent>
@@ -607,7 +607,7 @@ export function SettingsForm(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between gap-2">
+          <CardTitle className="flex flex-wrap items-center justify-between gap-2">
             <span>Google Sheets</span>
             <a
               href="https://www.notion.so/sunbae-profile/Setting-for-Google-Sheets-31955b83c366801180e7cb9cc8a0df3f?source=copy_link"
@@ -677,7 +677,7 @@ export function SettingsForm(): React.JSX.Element {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between gap-2">
+          <CardTitle className="flex flex-wrap items-center justify-between gap-2">
             <span>YouTube API OAuth</span>
             <a
               href="https://www.notion.so/sunbae-profile/Youtute-token-31555b83c3668065a83ee0a0570ad1e2?source=copy_link"

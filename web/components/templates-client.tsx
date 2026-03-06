@@ -1511,8 +1511,8 @@ export function TemplatesClient(): React.JSX.Element {
               Create 화면 없이도 자동화 템플릿을 생성/수정/선택할 수 있습니다.
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="hidden items-center gap-2 md:flex">
               <span className="text-xs text-muted-foreground">좌/우 너비</span>
               <Button
                 type="button"
@@ -1532,7 +1532,7 @@ export function TemplatesClient(): React.JSX.Element {
                 onChange={(event) =>
                   setPreviewPaneWidth(clampNumber(Number(event.target.value), 280, 560, 360))
                 }
-                className="h-2 w-40 border-0 px-0"
+                className="h-2 w-28 border-0 px-0 lg:w-40"
               />
               <Button
                 type="button"
