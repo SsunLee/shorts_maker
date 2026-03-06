@@ -226,7 +226,7 @@ export function DashboardClient(): React.JSX.Element {
   const [scheduleCadence, setScheduleCadence] = useState<"interval_hours" | "daily">("daily");
   const [scheduleIntervalHours, setScheduleIntervalHours] = useState("24");
   const [scheduleDailyTime, setScheduleDailyTime] = useState("09:00");
-  const [scheduleTimeZone, setScheduleTimeZone] = useState("UTC");
+  const [scheduleTimeZone, setScheduleTimeZone] = useState("Asia/Seoul");
   const [scheduleItemsPerRun, setScheduleItemsPerRun] = useState("1");
   const [scheduleSheetName, setScheduleSheetName] = useState("");
   const [scheduleUploadMode, setScheduleUploadMode] = useState<"youtube" | "pre_upload">("youtube");
@@ -255,7 +255,7 @@ export function DashboardClient(): React.JSX.Element {
     setScheduleCadence(next.config.cadence);
     setScheduleIntervalHours(String(next.config.intervalHours));
     setScheduleDailyTime(next.config.dailyTime);
-    setScheduleTimeZone(String(next.config.timeZone || "UTC"));
+    setScheduleTimeZone("Asia/Seoul");
     setScheduleItemsPerRun(String(next.config.itemsPerRun));
     setScheduleSheetName(next.config.sheetName || "");
     setScheduleUploadMode(next.config.uploadMode);
@@ -273,10 +273,10 @@ export function DashboardClient(): React.JSX.Element {
     try {
       const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       if (browserTz && browserTz.trim()) {
-        setScheduleTimeZone(browserTz.trim());
+        setScheduleTimeZone("Asia/Seoul");
       }
     } catch {
-      setScheduleTimeZone("UTC");
+      setScheduleTimeZone("Asia/Seoul");
     }
   }, []);
 
@@ -503,7 +503,7 @@ export function DashboardClient(): React.JSX.Element {
           cadence,
           intervalHours: Number.parseInt(intervalHours, 10) || 24,
           dailyTime: dailyTime || "09:00",
-          timeZone: timeZone || "UTC",
+          timeZone: timeZone || "Asia/Seoul",
           itemsPerRun: Number.parseInt(itemsPerRun, 10) || 1,
           sheetName: sheetName.trim() || undefined,
           uploadMode,
@@ -1160,7 +1160,7 @@ export function DashboardClient(): React.JSX.Element {
               }}
               disabled={scheduleCadence !== "daily"}
             />
-            <p className="text-[11px] text-muted-foreground">기준 시간대: {scheduleTimeZone}</p>
+            <p className="text-[11px] text-muted-foreground">기준 시간대: KST (Asia/Seoul)</p>
           </div>
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">회차당 처리 개수</p>

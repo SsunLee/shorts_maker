@@ -17,7 +17,7 @@ const DEFAULT_CONFIG: AutomationScheduleConfig = {
   cadence: "daily",
   intervalHours: 24,
   dailyTime: "09:00",
-  timeZone: "UTC",
+  timeZone: "Asia/Seoul",
   itemsPerRun: 1,
   uploadMode: "youtube",
   privacyStatus: "private",
@@ -92,13 +92,16 @@ function normalizeDailyTime(raw: string | undefined): string {
 
 function normalizeTimeZone(raw: string | undefined): string {
   const value = String(raw || "").trim();
-  if (!value) {
-    return DEFAULT_CONFIG.timeZone || "UTC";
+  if (!value || value.toUpperCase() === "UTC") {
+    return DEFAULT_CONFIG.timeZone || "Asia/Seoul";
   }
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone || "UTC";
+    return (
+      new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone ||
+      "Asia/Seoul"
+    );
   } catch {
-    return DEFAULT_CONFIG.timeZone || "UTC";
+    return DEFAULT_CONFIG.timeZone || "Asia/Seoul";
   }
 }
 
