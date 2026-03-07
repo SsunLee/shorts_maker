@@ -117,7 +117,8 @@ function readSettingsFromEnv(): AppSettings {
     youtubeClientId: process.env.YOUTUBE_CLIENT_ID || undefined,
     youtubeClientSecret: process.env.YOUTUBE_CLIENT_SECRET || undefined,
     youtubeRedirectUri: process.env.YOUTUBE_REDIRECT_URI || undefined,
-    youtubeRefreshToken: process.env.YOUTUBE_REFRESH_TOKEN || undefined
+    youtubeRefreshToken: process.env.YOUTUBE_REFRESH_TOKEN || undefined,
+    youtubeChannelName: process.env.YOUTUBE_CHANNEL_NAME || undefined
   };
 }
 

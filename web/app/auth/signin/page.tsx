@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
+import { AccessCodeSignInForm } from "@/components/access-code-signin-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { GoogleSignInButton } from "@/components/google-signin-button";
 import { authOptions } from "@/lib/auth";
@@ -17,7 +18,7 @@ export default async function SignInPage(): Promise<React.JSX.Element> {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>로그인</CardTitle>
-          <CardDescription>Google 계정으로 로그인 후 작업을 시작하세요.</CardDescription>
+          <CardDescription>Google 계정 또는 발급받은 접속 코드로 로그인하세요.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {hasGoogleOAuth ? (
@@ -27,6 +28,8 @@ export default async function SignInPage(): Promise<React.JSX.Element> {
               GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 환경변수가 설정되지 않았습니다.
             </p>
           )}
+          <div className="h-px bg-border" />
+          <AccessCodeSignInForm />
         </CardContent>
       </Card>
     </div>

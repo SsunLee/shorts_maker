@@ -1,3 +1,4 @@
+import { createHash, randomBytes, randomUUID } from "crypto";
 import { prisma } from "@/lib/prisma";
 
 export interface UserAccessStatus {
@@ -12,8 +13,15 @@ export interface UserAccountRecord {
   role: string;
   isActive: boolean;
   expiresAt?: string;
+  accessCodeHint?: string;
+  accessCodeIssuedAt?: string;
+  accessCodeLastUsedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+function isDbSuperAdminRole(role: string | null | undefined): boolean {
+  return String(role || "").trim().toLowerCase() === "super_admin";
 }
 
 function parseEmailAllowList(raw: string | undefined): Set<string> {
@@ -33,6 +41,51 @@ export function isSuperAdminEmail(email: string | undefined): boolean {
   const direct = parseEmailAllowList(process.env.SUPER_ADMIN_EMAILS);
   const clientVisible = parseEmailAllowList(process.env.NEXT_PUBLIC_SUPER_ADMIN_EMAILS);
   return direct.has(value) || clientVisible.has(value);
+}
+
+export async function isSuperAdminUser(args: {
+  userId?: string;
+  email?: string;
+}): Promise<boolean> {
+  if (isSuperAdminEmail(args.email)) {
+    return true;
+  }
+
+  if (!prisma) {
+    return false;
+  }
+
+  const normalizedUserId = String(args.userId || "").trim();
+  const normalizedEmail = String(args.email || "").trim().toLowerCase();
+
+  try {
+    if (normalizedUserId) {
+      const direct = await prisma.userAccount.findUnique({
+        where: { userId: normalizedUserId },
+        select: { role: true }
+      });
+      if (direct?.role === "super_admin") {
+        return true;
+      }
+    }
+
+    if (normalizedEmail) {
+      const byEmail = await prisma.userAccount.findFirst({
+        where: { email: normalizedEmail },
+        select: { role: true }
+      });
+      if (byEmail?.role === "super_admin") {
+        return true;
+      }
+    }
+
+    return false;
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function isMissingTableError(error: unknown): boolean {
@@ -55,6 +108,11 @@ function mapAccount(row: {
   role: string;
   isActive: boolean;
   expiresAt: Date | null;
+  accessCode?: {
+    codeHint: string;
+    createdAt: Date;
+    lastUsedAt: Date | null;
+  } | null;
   createdAt: Date;
   updatedAt: Date;
 }): UserAccountRecord {
@@ -65,6 +123,9 @@ function mapAccount(row: {
     role: row.role,
     isActive: row.isActive,
     expiresAt: toIso(row.expiresAt),
+    accessCodeHint: row.accessCode?.codeHint || undefined,
+    accessCodeIssuedAt: toIso(row.accessCode?.createdAt),
+    accessCodeLastUsedAt: toIso(row.accessCode?.lastUsedAt),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   };
@@ -72,6 +133,54 @@ function mapAccount(row: {
 
 function isEmailLikeId(value: string): boolean {
   return value.includes("@");
+}
+
+const ACCESS_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function normalizeAccessCode(value: string): string {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function hashAccessCode(value: string): string {
+  return createHash("sha256")
+    .update(`shorts-maker:${normalizeAccessCode(value)}`)
+    .digest("hex");
+}
+
+function createAccessCode(length = 7): string {
+  const bytes = randomBytes(length * 2);
+  let code = "";
+  for (const byte of bytes) {
+    code += ACCESS_CODE_CHARS[byte % ACCESS_CODE_CHARS.length];
+    if (code.length >= length) {
+      return code;
+    }
+  }
+  return code.padEnd(length, "A");
+}
+
+function toAccessCodeHint(value: string): string {
+  const normalized = normalizeAccessCode(value);
+  if (normalized.length <= 4) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 2)}***${normalized.slice(-2)}`;
+}
+
+function parseExpiresAtInput(value: string | null | undefined): Date | null | undefined {
+  if (value === null || value === "") {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error("expiresAt must be a valid ISO datetime.");
+  }
+  return parsed;
 }
 
 export async function ensureUserAccount(args: {
@@ -178,6 +287,9 @@ export async function listUserAccounts(): Promise<UserAccountRecord[]> {
   }
   try {
     const rows = await prisma.userAccount.findMany({
+      include: {
+        accessCode: true
+      },
       orderBy: { updatedAt: "desc" }
     });
     const grouped = new Map<string, (typeof rows)[number]>();
@@ -219,6 +331,8 @@ export async function updateUserAccess(args: {
   userId: string;
   isActive?: boolean;
   expiresAt?: string | null;
+  role?: string;
+  actorUserId?: string;
 }): Promise<UserAccountRecord> {
   if (!prisma) {
     throw new Error("DATABASE_URL is required for admin user management.");
@@ -228,35 +342,288 @@ export async function updateUserAccess(args: {
     throw new Error("userId is required.");
   }
 
-  let parsedExpiresAt: Date | null | undefined;
-  if (args.expiresAt === null || args.expiresAt === "") {
-    parsedExpiresAt = null;
-  } else if (typeof args.expiresAt === "string") {
-    const value = new Date(args.expiresAt);
-    if (!Number.isFinite(value.getTime())) {
-      throw new Error("expiresAt must be a valid ISO datetime.");
-    }
-    parsedExpiresAt = value;
-  }
+  const parsedExpiresAt = parseExpiresAtInput(args.expiresAt);
+  const normalizedRole =
+    typeof args.role === "string" && args.role.trim().length > 0 ? args.role.trim() : undefined;
 
   try {
-    const row = await prisma.userAccount.upsert({
+    const existing = await prisma.userAccount.findUnique({
+      where: { userId },
+      select: { role: true, isActive: true }
+    });
+    const currentRole = existing?.role || "user";
+
+    if (args.actorUserId && args.actorUserId === userId) {
+      if (typeof args.isActive === "boolean" && !args.isActive) {
+        throw new Error("현재 로그인한 관리자 계정은 비활성화할 수 없습니다.");
+      }
+      if (normalizedRole && !isDbSuperAdminRole(normalizedRole)) {
+        throw new Error("현재 로그인한 관리자 계정의 super_admin 권한은 해제할 수 없습니다.");
+      }
+    }
+
+    const roleWillChange =
+      normalizedRole !== undefined && normalizedRole.trim().toLowerCase() !== currentRole.toLowerCase();
+    if (isDbSuperAdminRole(currentRole) && roleWillChange && !isDbSuperAdminRole(normalizedRole)) {
+      const superAdminCount = await prisma.userAccount.count({
+        where: { role: "super_admin" }
+      });
+      if (superAdminCount <= 1) {
+        throw new Error("마지막 super_admin 권한은 해제할 수 없습니다.");
+      }
+    }
+
+    await prisma.userAccount.upsert({
       where: { userId },
       update: {
         isActive: typeof args.isActive === "boolean" ? args.isActive : undefined,
-        expiresAt: parsedExpiresAt
+        expiresAt: parsedExpiresAt,
+        role: normalizedRole
       },
       create: {
         userId,
         isActive: typeof args.isActive === "boolean" ? args.isActive : true,
         expiresAt: parsedExpiresAt ?? null,
-        role: "user"
+        role: normalizedRole || "user"
       }
     });
+    const row = await prisma.userAccount.findUnique({
+      where: { userId },
+      include: {
+        accessCode: true
+      }
+    });
+    if (!row) {
+      throw new Error("사용자 계정을 찾지 못했습니다.");
+    }
     return mapAccount(row);
   } catch (error) {
     if (isMissingTableError(error)) {
       throw new Error("Run `npx prisma db push` first (UserAccount table is missing).");
+    }
+    throw error;
+  }
+}
+
+export async function deleteUserAccount(args: {
+  userId: string;
+  actorUserId?: string;
+}): Promise<void> {
+  if (!prisma) {
+    throw new Error("DATABASE_URL is required for admin user management.");
+  }
+
+  const userId = String(args.userId || "").trim();
+  if (!userId) {
+    throw new Error("userId is required.");
+  }
+  if (args.actorUserId && args.actorUserId === userId) {
+    throw new Error("현재 로그인한 관리자 계정은 삭제할 수 없습니다.");
+  }
+
+  try {
+    const existing = await prisma.userAccount.findUnique({
+      where: { userId },
+      select: { role: true }
+    });
+    if (existing && isDbSuperAdminRole(existing.role)) {
+      const superAdminCount = await prisma.userAccount.count({
+        where: { role: "super_admin" }
+      });
+      if (superAdminCount <= 1) {
+        throw new Error("마지막 super_admin 계정은 삭제할 수 없습니다.");
+      }
+    }
+
+    await prisma.$transaction([
+      prisma.userAccessCode.deleteMany({ where: { userId } }),
+      prisma.userSettings.deleteMany({ where: { userId } }),
+      prisma.userAutomationTemplateCatalog.deleteMany({ where: { userId } }),
+      prisma.userAutomationScheduleState.deleteMany({ where: { userId } }),
+      prisma.userWorkflowCatalog.deleteMany({ where: { userId } }),
+      prisma.userAccount.deleteMany({ where: { userId } })
+    ]);
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      throw new Error("Run `npx prisma db push` first (required user tables are missing).");
+    }
+    throw error;
+  }
+}
+
+async function generateUniqueAccessCode(): Promise<string> {
+  if (!prisma) {
+    throw new Error("DATABASE_URL is required for access code management.");
+  }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = createAccessCode();
+    const existing = await prisma.userAccessCode.findUnique({
+      where: { codeHash: hashAccessCode(candidate) },
+      select: { userId: true }
+    });
+    if (!existing) {
+      return candidate;
+    }
+  }
+  throw new Error("고유한 접속 코드를 생성하지 못했습니다. 다시 시도해 주세요.");
+}
+
+export async function issueUserAccessCode(args: {
+  userId: string;
+  createdByUserId?: string;
+  expiresAt?: string | null;
+}): Promise<{ user: UserAccountRecord; accessCode: string }> {
+  if (!prisma) {
+    throw new Error("DATABASE_URL is required for access code management.");
+  }
+  const userId = String(args.userId || "").trim();
+  if (!userId) {
+    throw new Error("userId is required.");
+  }
+
+  try {
+    const account = await prisma.userAccount.findUnique({
+      where: { userId },
+      include: {
+        accessCode: true
+      }
+    });
+    if (!account) {
+      throw new Error("사용자 계정을 먼저 생성해야 합니다.");
+    }
+
+    const accessCode = await generateUniqueAccessCode();
+    const parsedExpiresAt = parseExpiresAtInput(args.expiresAt);
+    const nextExpiresAt =
+      parsedExpiresAt !== undefined
+        ? parsedExpiresAt
+        : account.accessCode?.expiresAt || account.expiresAt || null;
+
+    await prisma.userAccessCode.upsert({
+      where: { userId },
+      update: {
+        codeHash: hashAccessCode(accessCode),
+        codeHint: toAccessCodeHint(accessCode),
+        createdByUserId: args.createdByUserId || null,
+        isActive: true,
+        expiresAt: nextExpiresAt,
+        lastUsedAt: null
+      },
+      create: {
+        userId,
+        codeHash: hashAccessCode(accessCode),
+        codeHint: toAccessCodeHint(accessCode),
+        createdByUserId: args.createdByUserId || null,
+        isActive: true,
+        expiresAt: nextExpiresAt
+      }
+    });
+
+    const nextAccount = await prisma.userAccount.findUnique({
+      where: { userId },
+      include: {
+        accessCode: true
+      }
+    });
+    if (!nextAccount) {
+      throw new Error("사용자 계정을 다시 불러오지 못했습니다.");
+    }
+
+    return {
+      user: mapAccount(nextAccount),
+      accessCode
+    };
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      throw new Error("Run `npx prisma db push` first (UserAccessCode table is missing).");
+    }
+    throw error;
+  }
+}
+
+export async function createCodeAccessUser(args: {
+  name?: string;
+  expiresAt?: string | null;
+  createdByUserId?: string;
+}): Promise<{ user: UserAccountRecord; accessCode: string }> {
+  if (!prisma) {
+    throw new Error("DATABASE_URL is required for admin user management.");
+  }
+
+  const parsedExpiresAt = parseExpiresAtInput(args.expiresAt);
+  const trimmedName = String(args.name || "").trim();
+  const userId = `code_${randomUUID().replace(/-/g, "")}`;
+
+  try {
+    await prisma.userAccount.create({
+      data: {
+        userId,
+        name: trimmedName || null,
+        role: "user",
+        isActive: true,
+        expiresAt: parsedExpiresAt ?? null
+      }
+    });
+    return issueUserAccessCode({
+      userId,
+      createdByUserId: args.createdByUserId,
+      expiresAt: args.expiresAt
+    });
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      throw new Error("Run `npx prisma db push` first (UserAccount/UserAccessCode table is missing).");
+    }
+    throw error;
+  }
+}
+
+export async function authenticateWithAccessCode(code: string): Promise<{
+  userId: string;
+  name?: string;
+  email?: string;
+} | null> {
+  if (!prisma) {
+    return null;
+  }
+
+  const normalizedCode = normalizeAccessCode(code);
+  if (!normalizedCode) {
+    return null;
+  }
+
+  try {
+    const row = await prisma.userAccessCode.findUnique({
+      where: { codeHash: hashAccessCode(normalizedCode) },
+      include: {
+        account: true
+      }
+    });
+    if (!row || !row.isActive) {
+      return null;
+    }
+    if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) {
+      return null;
+    }
+    if (!row.account || !row.account.isActive) {
+      return null;
+    }
+    if (row.account.expiresAt && row.account.expiresAt.getTime() <= Date.now()) {
+      return null;
+    }
+
+    await prisma.userAccessCode.update({
+      where: { userId: row.userId },
+      data: { lastUsedAt: new Date() }
+    });
+
+    return {
+      userId: row.account.userId,
+      name: row.account.name || undefined,
+      email: row.account.email || undefined
+    };
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return null;
     }
     throw error;
   }

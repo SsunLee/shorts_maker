@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
-import { getUserAccessStatus, isSuperAdminEmail } from "@/lib/user-access";
+import { getUserAccessStatus, isSuperAdminUser } from "@/lib/user-access";
 
 export async function getAuthenticatedUserId(): Promise<string | undefined> {
   const session = await getServerSession(authOptions);
@@ -51,7 +51,8 @@ export async function requireSuperAdminUserId(): Promise<string> {
   if (!userId) {
     redirect("/auth/signin");
   }
-  if (!isSuperAdminEmail(email)) {
+  const allowed = await isSuperAdminUser({ userId, email });
+  if (!allowed) {
     redirect("/dashboard");
   }
   return userId;

@@ -1,6 +1,7 @@
 import type { NextAuthOptions } from "next-auth";
+import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
-import { ensureUserAccount, getUserAccessStatus } from "@/lib/user-access";
+import { authenticateWithAccessCode, ensureUserAccount, getUserAccessStatus } from "@/lib/user-access";
 
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -18,6 +19,34 @@ if (googleClientId && googleClientSecret) {
     })
   );
 }
+
+providers.push(
+  CredentialsProvider({
+    id: "access-code",
+    name: "접속 코드",
+    credentials: {
+      code: {
+        label: "접속 코드",
+        type: "text"
+      }
+    },
+    async authorize(credentials) {
+      const code = String(credentials?.code || "").trim();
+      if (!code) {
+        return null;
+      }
+      const user = await authenticateWithAccessCode(code);
+      if (!user) {
+        return null;
+      }
+      return {
+        id: user.userId,
+        name: user.name || "코드 사용자",
+        email: user.email || undefined
+      };
+    }
+  })
+);
 
 export const authOptions: NextAuthOptions = {
   providers,

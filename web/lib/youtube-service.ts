@@ -3,6 +3,7 @@ import os from "os";
 import path from "path";
 import { google } from "googleapis";
 import { getSettings } from "@/lib/settings-store";
+import type { AppSettings } from "@/lib/types";
 
 interface UploadArgs {
   title: string;
@@ -23,6 +24,10 @@ interface UploadArgs {
 
 async function resolveYoutubeCredentials(userId?: string) {
   const settings = await getSettings(userId);
+  return resolveYoutubeCredentialsFromSettings(settings);
+}
+
+function resolveYoutubeCredentialsFromSettings(settings: Partial<AppSettings>) {
   const clientId = settings.youtubeClientId || process.env.YOUTUBE_CLIENT_ID;
   const clientSecret =
     settings.youtubeClientSecret || process.env.YOUTUBE_CLIENT_SECRET;
@@ -51,6 +56,58 @@ async function resolveYoutubeCredentials(userId?: string) {
   }
 
   return { clientId, clientSecret, redirectUri, refreshToken };
+}
+
+function createYoutubeClientFromCreds(creds: {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  refreshToken: string;
+}) {
+  const auth = new google.auth.OAuth2(
+    creds.clientId,
+    creds.clientSecret,
+    creds.redirectUri
+  );
+  auth.setCredentials({ refresh_token: creds.refreshToken });
+
+  return google.youtube({
+    version: "v3",
+    auth
+  });
+}
+
+export interface YoutubeChannelProfile {
+  channelId: string;
+  title: string;
+  customUrl?: string;
+}
+
+export async function fetchYoutubeChannelProfile(args?: {
+  userId?: string;
+  settings?: Partial<AppSettings>;
+}): Promise<YoutubeChannelProfile> {
+  const creds = args?.settings
+    ? resolveYoutubeCredentialsFromSettings(args.settings)
+    : await resolveYoutubeCredentials(args?.userId);
+
+  const youtube = createYoutubeClientFromCreds(creds);
+  const response = await youtube.channels.list({
+    part: ["snippet"],
+    mine: true,
+    maxResults: 1
+  });
+
+  const item = response.data.items?.[0];
+  if (!item?.id || !item.snippet?.title) {
+    throw new Error("연결된 YouTube 채널을 찾지 못했습니다.");
+  }
+
+  return {
+    channelId: item.id,
+    title: item.snippet.title,
+    customUrl: item.snippet.customUrl || undefined
+  };
 }
 
 async function downloadRemoteVideo(videoUrl: string): Promise<string> {
@@ -93,17 +150,7 @@ export async function uploadVideoToYoutube(args: UploadArgs): Promise<string> {
   );
 
   const creds = await resolveYoutubeCredentials(trace.userId || undefined);
-  const auth = new google.auth.OAuth2(
-    creds.clientId,
-    creds.clientSecret,
-    creds.redirectUri
-  );
-  auth.setCredentials({ refresh_token: creds.refreshToken });
-
-  const youtube = google.youtube({
-    version: "v3",
-    auth
-  });
+  const youtube = createYoutubeClientFromCreds(creds);
 
   const uploadPath = await resolveUploadPath(args.videoUrl);
   let response;

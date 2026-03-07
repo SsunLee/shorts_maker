@@ -225,6 +225,8 @@ export function DashboardClient(): React.JSX.Element {
   const [activeAutomationTemplateId, setActiveAutomationTemplateId] = useState<string>();
   const [automationTemplateBusy, setAutomationTemplateBusy] = useState(false);
   const [showAutomationTemplateSnapshot, setShowAutomationTemplateSnapshot] = useState(true);
+  const [showAutomationRunSection, setShowAutomationRunSection] = useState(true);
+  const [showAutomationScheduleSection, setShowAutomationScheduleSection] = useState(true);
   const [latestWorkflowTemplateInfo, setLatestWorkflowTemplateInfo] = useState<{
     workflowId: string;
     title: string;
@@ -882,6 +884,8 @@ export function DashboardClient(): React.JSX.Element {
     );
   }
 
+  const recentAutomationLogs = automation?.logs?.slice(-10).reverse() || [];
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
@@ -890,13 +894,64 @@ export function DashboardClient(): React.JSX.Element {
           Refresh
         </Button>
       </div>
+      <div className="sticky top-4 z-20 space-y-3 rounded-xl border bg-card/95 p-4 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/85">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="min-w-0 break-words text-base font-semibold">로그</h2>
+            <p className="text-xs text-muted-foreground">
+              최근 자동화 로그를 상단에서 바로 확인합니다.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border px-2 py-0.5 text-xs">
+              {phaseLabel(automation?.phase)}
+            </span>
+            <span className="rounded-full border px-2 py-0.5 text-xs">
+              최근 {recentAutomationLogs.length}건
+            </span>
+          </div>
+        </div>
+        {automation?.lastError ? (
+          <p className="text-xs text-destructive">최근 오류: {automation.lastError}</p>
+        ) : null}
+        {recentAutomationLogs.length ? (
+          <div className="max-h-40 space-y-1 overflow-auto rounded-md border bg-muted/30 p-2 text-xs">
+            {recentAutomationLogs.map((log) => (
+              <p key={`${log.at}:${log.message}`} className={log.level === "error" ? "text-destructive" : ""}>
+                [{new Date(log.at).toLocaleTimeString()}] {log.message}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+            표시할 자동화 로그가 없습니다.
+          </div>
+        )}
+      </div>
       <div className="space-y-3 rounded-xl border bg-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="min-w-0 break-words text-base font-semibold">자동화 실행</h2>
-          <span className="rounded-full border px-2 py-0.5 text-xs">
-            {phaseLabel(automation?.phase)}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="min-w-0 break-words text-base font-semibold">자동화 실행</h2>
+            <span className="rounded-full border px-2 py-0.5 text-xs">
+              {phaseLabel(automation?.phase)}
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowAutomationRunSection((prev) => !prev)}
+          >
+            {showAutomationRunSection ? (
+              <ChevronUp className="mr-1 h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="mr-1 h-3.5 w-3.5" />
+            )}
+            {showAutomationRunSection ? "접기" : "펼치기"}
+          </Button>
         </div>
+        {showAutomationRunSection ? (
+          <>
         <p className="text-xs text-muted-foreground">
           준비 상태 row를 순서대로 처리합니다. 기본 모드는 YouTube 업로드 포함이며, 아래 선택한 템플릿 모드
           기준으로 렌더 옵션을 적용합니다.
@@ -1152,29 +1207,35 @@ export function DashboardClient(): React.JSX.Element {
             <p className="text-xs text-destructive">{automationTemplateError}</p>
           ) : null}
         </div>
-        {automation?.lastError ? (
-          <p className="text-xs text-destructive">최근 오류: {automation.lastError}</p>
-        ) : null}
-        {automation?.logs?.length ? (
-          <div className="max-h-40 space-y-1 overflow-auto rounded-md border bg-muted/30 p-2 text-xs">
-            {automation.logs
-              .slice(-10)
-              .reverse()
-              .map((log) => (
-                <p key={`${log.at}:${log.message}`} className={log.level === "error" ? "text-destructive" : ""}>
-                  [{new Date(log.at).toLocaleTimeString()}] {log.message}
-                </p>
-              ))}
-          </div>
-        ) : null}
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">자동화 실행 섹션이 접혀 있습니다.</p>
+        )}
       </div>
       <div className="space-y-3 rounded-xl border bg-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="min-w-0 break-words text-base font-semibold">자동화 스케줄</h2>
-          <span className="rounded-full border px-2 py-0.5 text-xs">
-            {schedule?.config.enabled ? "활성" : "비활성"}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="min-w-0 break-words text-base font-semibold">자동화 스케줄</h2>
+            <span className="rounded-full border px-2 py-0.5 text-xs">
+              {schedule?.config.enabled ? "활성" : "비활성"}
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowAutomationScheduleSection((prev) => !prev)}
+          >
+            {showAutomationScheduleSection ? (
+              <ChevronUp className="mr-1 h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="mr-1 h-3.5 w-3.5" />
+            )}
+            {showAutomationScheduleSection ? "접기" : "펼치기"}
+          </Button>
         </div>
+        {showAutomationScheduleSection ? (
+          <>
         <p className="text-xs text-muted-foreground">
           예: 하루에 1개씩, 하루에 2개씩, 혹은 N시간마다 N개를 직렬로 자동 업로드합니다.
         </p>
@@ -1416,6 +1477,10 @@ export function DashboardClient(): React.JSX.Element {
         ) : null}
         {schedule?.lastError ? <p className="text-xs text-destructive">{schedule.lastError}</p> : null}
         {scheduleError ? <p className="text-sm text-destructive">{scheduleError}</p> : null}
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">자동화 스케줄 섹션이 접혀 있습니다.</p>
+        )}
       </div>
       {loading ? <p className="text-sm text-muted-foreground">Loading...</p> : null}
       {error ? <p className="text-sm text-destructive">{error}</p> : null}

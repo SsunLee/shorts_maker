@@ -740,10 +740,13 @@ export function TemplatesClient(): React.JSX.Element {
   const [selectedPreviewLayerId, setSelectedPreviewLayerId] = useState<string | null>(null);
   const [previewCanvasWidth, setPreviewCanvasWidth] = useState(0);
   const [previewPaneWidth, setPreviewPaneWidth] = useState(360);
+  const [previewFollowOffset, setPreviewFollowOffset] = useState(0);
   const [templateSelectOpen, setTemplateSelectOpen] = useState(true);
   const [templateNameOpen, setTemplateNameOpen] = useState(true);
   const [voiceSectionOpen, setVoiceSectionOpen] = useState(true);
   const previewCanvasRef = useRef<HTMLDivElement | null>(null);
+  const templateLayoutRef = useRef<HTMLDivElement | null>(null);
+  const previewFollowRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSaveRequestSeqRef = useRef(0);
@@ -839,6 +842,67 @@ export function TemplatesClient(): React.JSX.Element {
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const media = window.matchMedia("(min-width: 1024px)");
+    let rafId = 0;
+
+    const updateFollowOffset = (): void => {
+      const layoutNode = templateLayoutRef.current;
+      const previewNode = previewFollowRef.current;
+      if (!layoutNode || !previewNode || !media.matches) {
+        setPreviewFollowOffset(0);
+        return;
+      }
+
+      const layoutRect = layoutNode.getBoundingClientRect();
+      const previewHeight = previewNode.offsetHeight;
+      const topOffset = 16;
+      const maxOffset = Math.max(0, layoutNode.scrollHeight - previewHeight);
+      const desiredOffset = topOffset - layoutRect.top;
+      const nextOffset = clampNumber(desiredOffset, 0, maxOffset, 0);
+      setPreviewFollowOffset((prev) => (Math.abs(prev - nextOffset) > 0.5 ? nextOffset : prev));
+    };
+
+    const scheduleUpdate = (): void => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      rafId = window.requestAnimationFrame(updateFollowOffset);
+    };
+
+    scheduleUpdate();
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    media.addEventListener("change", scheduleUpdate);
+
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? undefined
+        : new ResizeObserver(() => scheduleUpdate());
+    if (observer) {
+      if (templateLayoutRef.current) {
+        observer.observe(templateLayoutRef.current);
+      }
+      if (previewFollowRef.current) {
+        observer.observe(previewFollowRef.current);
+      }
+    }
+
+    return () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      window.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+      media.removeEventListener("change", scheduleUpdate);
+      observer?.disconnect();
+    };
+  }, [previewPaneWidth]);
 
   const builtRenderOptions = useMemo(() => buildRenderOptionsFromEditor(editor), [editor]);
   const availableVoiceOptions = useMemo(() => {
@@ -1555,7 +1619,8 @@ export function TemplatesClient(): React.JSX.Element {
       </div>
 
       <div
-        className="grid gap-4 lg:[grid-template-columns:minmax(280px,var(--tpl-preview-width))_minmax(0,1fr)]"
+        ref={templateLayoutRef}
+        className="grid gap-4 lg:items-start lg:[grid-template-columns:minmax(280px,var(--tpl-preview-width))_minmax(0,1fr)]"
         style={templateLayoutStyle}
       >
         <div
@@ -2550,7 +2615,14 @@ export function TemplatesClient(): React.JSX.Element {
           {loading ? <p className="text-sm text-muted-foreground">Loading...</p> : null}
         </div>
 
-        <div className="order-1 min-w-0 space-y-3 overflow-hidden break-words rounded-xl border bg-card p-4 lg:order-1">
+        <div className="order-1 min-w-0 self-start lg:order-1">
+          <div
+            ref={previewFollowRef}
+            className="h-fit space-y-3 overflow-hidden break-words rounded-xl border bg-card p-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out"
+            style={{
+              transform: previewFollowOffset > 0 ? `translateY(${previewFollowOffset}px)` : undefined
+            }}
+          >
           <div className="flex items-center gap-2">
             <Eye className="h-4 w-4" />
             <h2 className="text-base font-semibold">템플릿 미리보기</h2>
@@ -2761,6 +2833,7 @@ export function TemplatesClient(): React.JSX.Element {
                 수정모드에서 배경에 초록 힌트가 보이면, 해당 부분이 실제 생성 시점에 동적으로 변경될 예정입니다.
               </p>
             </div>
+          </div>
           </div>
         </div>
       </div>

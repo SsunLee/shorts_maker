@@ -58,6 +58,29 @@ function safeParseIdeaRows(raw: string): IdeaDraftRow[] {
   }
 }
 
+function safeParseKeywordList(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(stripJsonFence(raw));
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    return parsed
+      .map((item) => normalizeField(item))
+      .filter((item) => item.length > 0)
+      .filter((item) => {
+        const key = normalizeKeywordKey(item);
+        if (!key || seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+  } catch {
+    return [];
+  }
+}
+
 function formatExcludedKeywords(values: string[]): string {
   if (values.length === 0) {
     return "";
@@ -234,6 +257,35 @@ function buildPrompt(
   );
 }
 
+function buildRelatedKeywordPrompt(
+  topic: string,
+  excludedKeywords: string[],
+  language: IdeaLanguage,
+  limit: number
+): string {
+  const excludedText = formatExcludedKeywords(excludedKeywords);
+  const duplicateRule = excludedText
+    ? `- Avoid these keywords because they already exist or were just generated: ${excludedText}\n`
+    : "- Avoid repeating the exact input topic or existing sheet keywords.\n";
+
+  return (
+    `You are a short-video trend strategist for topic "${topic}".\n\n` +
+    "Return a JSON array of related keyword strings only.\n\n" +
+    "[Output Format]\n" +
+    '- Output must be a JSON array only: ["keyword1", "keyword2"]\n' +
+    `- Array length must be exactly ${limit}\n` +
+    "- Every item must be a short string keyword, not a sentence\n\n" +
+    "[Rules]\n" +
+    `- Suggest ${limit} adjacent or faster-growing subtopic keywords related to "${topic}"\n` +
+    "- Prioritize topics that feel more current, clickable, and specific for short-form videos\n" +
+    "- Do not output the exact same phrase as the input topic\n" +
+    duplicateRule +
+    "- Keep each keyword under 20 characters when possible\n" +
+    `- Language: ${resolveLanguageInstruction(language)}\n` +
+    "- Output JSON only, no markdown, no explanation"
+  );
+}
+
 function enforceRules(args: {
   rows: IdeaDraftRow[];
   count: number;
@@ -304,6 +356,64 @@ async function requestIdeaRows(
   return safeParseIdeaRows(response.output_text || "");
 }
 
+async function requestRelatedKeywords(
+  provider: Provider,
+  prompt: string,
+  userId?: string
+): Promise<string[]> {
+  const keys = await resolveApiKeys(userId);
+  const textModel = await resolveModelForTask(provider, "text", userId);
+
+  if (provider === "gemini") {
+    const client = new GoogleGenAI({ apiKey: keys.geminiKey });
+    const response = await runGeminiWithRetry(() =>
+      client.models.generateContent({
+        model: textModel,
+        contents: prompt
+      })
+    );
+    return safeParseKeywordList(response.text || "");
+  }
+
+  const client = new OpenAI({ apiKey: keys.openaiKey });
+  const response = await client.responses.create({
+    model: textModel,
+    input: [
+      {
+        role: "system",
+        content:
+          "You output only a strict JSON array of strings. Do not include markdown fences or extra text."
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ]
+  });
+  return safeParseKeywordList(response.output_text || "");
+}
+
+function fallbackRelatedKeywords(args: {
+  topic: string;
+  blockedKeywords: Set<string>;
+  candidateKeywords?: string[];
+  limit: number;
+}): string[] {
+  const topicKey = normalizeKeywordKey(args.topic);
+  const seen = new Set<string>();
+  return (args.candidateKeywords || [])
+    .map((value) => normalizeField(value))
+    .filter((value) => {
+      const key = normalizeKeywordKey(value);
+      if (!key || key === topicKey || args.blockedKeywords.has(key) || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, args.limit);
+}
+
 export async function generateIdeas(args: {
   topic: string;
   count: number;
@@ -363,4 +473,62 @@ export async function generateIdeas(args: {
     );
   }
   return collected;
+}
+
+export async function generateRelatedIdeaKeywords(args: {
+  topic: string;
+  existingKeywords?: string[];
+  candidateKeywords?: string[];
+  language?: IdeaLanguage;
+  limit?: number;
+  userId?: string;
+}): Promise<string[]> {
+  const topic = args.topic.trim();
+  const limit = Math.max(1, Math.min(6, Math.floor(args.limit ?? 4)));
+  const language: IdeaLanguage =
+    args.language === "en" ||
+    args.language === "ja" ||
+    args.language === "es" ||
+    args.language === "hi"
+      ? args.language
+      : "ko";
+
+  if (!topic) {
+    return [];
+  }
+
+  const blockedKeywords = new Set(
+    [topic, ...(args.existingKeywords || [])]
+      .map((value) => normalizeKeywordKey(value))
+      .filter(Boolean)
+  );
+
+  try {
+    const provider = await resolveProvider(args.userId);
+    const prompt = buildRelatedKeywordPrompt(
+      topic,
+      Array.from(blockedKeywords),
+      language,
+      limit
+    );
+    const keywords = await requestRelatedKeywords(provider, prompt, args.userId);
+    const accepted = fallbackRelatedKeywords({
+      topic,
+      blockedKeywords,
+      candidateKeywords: keywords,
+      limit
+    });
+    if (accepted.length > 0) {
+      return accepted;
+    }
+  } catch {
+    // Fall back to generated idea keywords when the keyword-only request fails.
+  }
+
+  return fallbackRelatedKeywords({
+    topic,
+    blockedKeywords,
+    candidateKeywords: args.candidateKeywords,
+    limit
+  });
 }

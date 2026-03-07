@@ -25,7 +25,8 @@ const schema = z.object({
   youtubeClientId: z.string().optional(),
   youtubeClientSecret: z.string().optional(),
   youtubeRedirectUri: z.string().optional(),
-  youtubeRefreshToken: z.string().optional()
+  youtubeRefreshToken: z.string().optional(),
+  youtubeChannelName: z.string().optional()
 });
 
 /** Retrieve saved local integration settings. */

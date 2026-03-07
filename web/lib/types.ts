@@ -69,6 +69,7 @@ export interface AppSettings {
   youtubeClientSecret?: string;
   youtubeRedirectUri?: string;
   youtubeRefreshToken?: string;
+  youtubeChannelName?: string;
 }
 
 export interface BuildVideoPayload {

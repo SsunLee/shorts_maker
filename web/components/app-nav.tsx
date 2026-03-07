@@ -85,6 +85,7 @@ export function AppNav(): React.JSX.Element {
           session?.user?.email?.split("@")[0]?.trim() ||
           session?.user?.name?.trim() ||
           session?.user?.email?.trim() ||
+          session?.user?.id?.trim() ||
           "계정";
         const meResponse = await fetch("/api/me", { cache: "no-store" });
         const meData = (await meResponse.json().catch(() => ({}))) as { isSuperAdmin?: boolean };

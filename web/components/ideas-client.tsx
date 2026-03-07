@@ -22,6 +22,7 @@ interface SheetTableResponse {
 
 interface GenerateIdeasResponse {
   items: IdeaDraftRow[];
+  relatedKeywords?: string[];
   error?: string;
 }
 
@@ -71,6 +72,7 @@ export function IdeasClient(): React.JSX.Element {
   const [sheetHeaders, setSheetHeaders] = useState<string[]>([]);
   const [sheetRows, setSheetRows] = useState<Record<string, string>[]>([]);
   const [generatedRows, setGeneratedRows] = useState<IdeaDraftRow[]>([]);
+  const [relatedKeywords, setRelatedKeywords] = useState<string[]>([]);
   const [spreadsheetId, setSpreadsheetId] = useState("");
   const [statusFilter, setStatusFilter] = useState("준비");
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
@@ -93,20 +95,32 @@ export function IdeasClient(): React.JSX.Element {
   const statusOptions = useMemo(() => {
     const seen = new Set<string>();
     const values: string[] = [];
-    sheetRows.forEach((row) => {
-      const statusValue = getColumnValue(row, "status");
-      if (!statusValue) {
+
+    const pushStatus = (value: string): void => {
+      const normalized = value.trim();
+      if (!normalized) {
         return;
       }
-      const key = statusValue.toLowerCase();
+      const key = normalized.toLowerCase();
       if (seen.has(key)) {
         return;
       }
       seen.add(key);
-      values.push(statusValue);
+      values.push(normalized);
+    };
+
+    // Keep the default filter selectable even when the current sheet has no ready rows.
+    pushStatus("준비");
+    if (statusFilter !== "all") {
+      pushStatus(statusFilter);
+    }
+
+    sheetRows.forEach((row) => {
+      const statusValue = getColumnValue(row, "status");
+      pushStatus(statusValue);
     });
     return values;
-  }, [sheetRows]);
+  }, [sheetRows, statusFilter]);
 
   const keywordOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -147,16 +161,6 @@ export function IdeasClient(): React.JSX.Element {
   const allPreviewRowsSelected =
     allPreviewRowKeys.length > 0 &&
     allPreviewRowKeys.every((key) => selectedPreviewRowKeys.includes(key));
-
-  useEffect(() => {
-    if (statusFilter === "all") {
-      return;
-    }
-    const stillExists = statusOptions.some((value) => value.toLowerCase() === statusFilter.toLowerCase());
-    if (!stillExists) {
-      setStatusFilter("all");
-    }
-  }, [statusFilter, statusOptions]);
 
   useEffect(() => {
     if (selectedKeywords.length === 0) {
@@ -281,9 +285,11 @@ export function IdeasClient(): React.JSX.Element {
       }
       const nextRows = data.items || [];
       setGeneratedRows(nextRows);
+      setRelatedKeywords((data.relatedKeywords || []).slice(0, 4));
       setSelectedPreviewRowKeys(nextRows.map((row, index) => getPreviewRowKey(row, index)));
       setSuccess(`${nextRows.length}개 주제를 생성했습니다. 미리보기에서 체크 후 시트에 반영하세요.`);
     } catch (generateError) {
+      setRelatedKeywords([]);
       setError(generateError instanceof Error ? generateError.message : "Unknown error");
     } finally {
       setGenerating(false);
@@ -436,6 +442,30 @@ export function IdeasClient(): React.JSX.Element {
               {loadingSheet ? "로딩 중..." : "시트 새로고침"}
             </Button>
           </div>
+
+          {relatedKeywords.length > 0 ? (
+            <div className="space-y-2 rounded-lg border border-dashed p-3">
+              <div>
+                <p className="text-sm font-medium">연관 핫 키워드</p>
+                <p className="text-xs text-muted-foreground">
+                  클릭하면 검색 주제 입력창에 바로 채워집니다.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {relatedKeywords.map((keyword) => (
+                  <Button
+                    key={`related-keyword-${keyword}`}
+                    type="button"
+                    variant="outline"
+                    className="h-8 rounded-full px-3"
+                    onClick={() => setTopic(keyword)}
+                  >
+                    {keyword}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
           {success ? <p className="text-sm text-muted-foreground">{success}</p> : null}

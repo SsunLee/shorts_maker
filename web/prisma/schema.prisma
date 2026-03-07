@@ -35,6 +35,7 @@ model UserAccount {
   role      String   @default("user")
   isActive  Boolean  @default(true)
   expiresAt DateTime?
+  accessCode UserAccessCode?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -44,5 +45,18 @@ model UserWorkflowCatalog {
   data      Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model UserAccessCode {
+  userId          String   @unique
+  codeHash        String   @unique
+  codeHint        String
+  createdByUserId String?
+  isActive        Boolean  @default(true)
+  expiresAt       DateTime?
+  lastUsedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  account         UserAccount @relation(fields: [userId], references: [userId], onDelete: Cascade)
 }
 
