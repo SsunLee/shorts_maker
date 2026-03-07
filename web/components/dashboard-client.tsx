@@ -222,7 +222,7 @@ export function DashboardClient(): React.JSX.Element {
   const [automationError, setAutomationError] = useState<string>();
   const [automationTemplateError, setAutomationTemplateError] = useState<string>();
   const [automationTemplates, setAutomationTemplates] = useState<AutomationTemplateItem[]>([]);
-  const [activeAutomationTemplateId, setActiveAutomationTemplateId] = useState<string>();
+  const [activeAutomationTemplateId, setActiveAutomationTemplateId] = useState<string>(ACTIVE_TEMPLATE_VALUE);
   const [automationTemplateBusy, setAutomationTemplateBusy] = useState(false);
   const [showAutomationTemplateSnapshot, setShowAutomationTemplateSnapshot] = useState(true);
   const [showAutomationRunSection, setShowAutomationRunSection] = useState(true);
@@ -313,7 +313,7 @@ export function DashboardClient(): React.JSX.Element {
     }
     const list = data.templates || [];
     setAutomationTemplates(list);
-    setActiveAutomationTemplateId(data.activeTemplateId);
+    setActiveAutomationTemplateId(data.activeTemplateId || ACTIVE_TEMPLATE_VALUE);
     setScheduleTemplateId((prev) => {
       if (prev === ACTIVE_TEMPLATE_VALUE) {
         return prev;
@@ -443,7 +443,7 @@ export function DashboardClient(): React.JSX.Element {
         throw new Error(data.error || "템플릿 선택에 실패했습니다.");
       }
       setAutomationTemplates(data.templates || []);
-      setActiveAutomationTemplateId(data.activeTemplateId);
+      setActiveAutomationTemplateId(data.activeTemplateId || ACTIVE_TEMPLATE_VALUE);
     } catch (templateError) {
       setAutomationTemplateError(
         templateError instanceof Error ? templateError.message : "Unknown error"
@@ -471,7 +471,7 @@ export function DashboardClient(): React.JSX.Element {
         throw new Error(data.error || "템플릿 삭제에 실패했습니다.");
       }
       setAutomationTemplates(data.templates || []);
-      setActiveAutomationTemplateId(data.activeTemplateId);
+      setActiveAutomationTemplateId(data.activeTemplateId || ACTIVE_TEMPLATE_VALUE);
     } catch (templateError) {
       setAutomationTemplateError(
         templateError instanceof Error ? templateError.message : "Unknown error"
@@ -1123,7 +1123,7 @@ export function DashboardClient(): React.JSX.Element {
           </div>
           <div className="grid gap-2 md:grid-cols-[1fr,auto,auto]">
             <Select
-              value={activeAutomationTemplateId}
+              value={activeAutomationTemplateId || ACTIVE_TEMPLATE_VALUE}
               onValueChange={(value) => void setActiveTemplate(value)}
               disabled={automationTemplateBusy || automationTemplates.length === 0}
             >
@@ -1144,7 +1144,11 @@ export function DashboardClient(): React.JSX.Element {
               onClick={() =>
                 activeAutomationTemplateId ? void setActiveTemplate(activeAutomationTemplateId) : undefined
               }
-              disabled={automationTemplateBusy || !activeAutomationTemplateId}
+              disabled={
+                automationTemplateBusy ||
+                !activeAutomationTemplateId ||
+                activeAutomationTemplateId === ACTIVE_TEMPLATE_VALUE
+              }
             >
               템플릿 적용
             </Button>
@@ -1154,7 +1158,11 @@ export function DashboardClient(): React.JSX.Element {
               onClick={() =>
                 activeAutomationTemplateId ? void deleteTemplate(activeAutomationTemplateId) : undefined
               }
-              disabled={automationTemplateBusy || !activeAutomationTemplateId}
+              disabled={
+                automationTemplateBusy ||
+                !activeAutomationTemplateId ||
+                activeAutomationTemplateId === ACTIVE_TEMPLATE_VALUE
+              }
             >
               삭제
             </Button>

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   getAutomationState,
@@ -43,11 +43,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const state = startAutomationRun(userId, payload);
 
     // Serverless runtimes cannot safely keep background loops alive after response is sent.
-    // Wait for completion inside the same invocation to avoid "first click no-op" behavior.
+    // Continue the run after the response so the browser is not blocked until render/upload finishes.
     const isServerless = process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
     if (isServerless) {
-      const completed = await waitForAutomationRunCompletion(userId);
-      return NextResponse.json({ state: completed }, { status: 200 });
+      after(async () => {
+        try {
+          await waitForAutomationRunCompletion(userId);
+        } catch (error) {
+          console.error("[api.automation] background run failed", {
+            userId,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        }
+      });
+      return NextResponse.json({ state }, { status: 202 });
     }
 
     return NextResponse.json({ state }, { status: 202 });

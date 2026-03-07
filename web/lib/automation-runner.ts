@@ -18,6 +18,7 @@ import {
   ImageAspectRatio,
   RenderOptions
 } from "@/lib/types";
+import { appBaseUrl } from "@/lib/utils";
 
 interface AutomationDefaults {
   imageStyle: string;
@@ -144,6 +145,58 @@ function extractHashTags(text: string | undefined): string[] {
   return matches
     .map((item) => item.replace(/^#/, "").trim())
     .filter(Boolean);
+}
+
+function isServerlessRuntime(): boolean {
+  return process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
+
+function resolveInternalApiSecret(): string {
+  return String(
+    process.env.AUTOMATION_INTERNAL_SECRET ||
+      process.env.CRON_SECRET ||
+      process.env.NEXTAUTH_SECRET ||
+      process.env.AUTH_SECRET ||
+      ""
+  ).trim();
+}
+
+async function enqueueDeferredYoutubeUpload(args: {
+  userId?: string;
+  id: string;
+  title: string;
+  description: string;
+  tags: string[];
+  videoUrl: string;
+  privacyStatus: "private" | "public" | "unlisted";
+}): Promise<void> {
+  const secret = resolveInternalApiSecret();
+  if (!secret) {
+    throw new Error("Internal upload secret is missing.");
+  }
+
+  const response = await fetch(new URL("/api/upload-youtube", appBaseUrl()), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${secret}`
+    },
+    body: JSON.stringify({
+      id: args.id,
+      title: args.title,
+      description: args.description,
+      tags: args.tags,
+      videoUrl: args.videoUrl,
+      privacyStatus: args.privacyStatus,
+      userId: args.userId,
+      defer: true
+    })
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new Error(raw.trim() || `Deferred upload enqueue failed with HTTP ${response.status}.`);
+  }
 }
 
 function uniqueTags(values: string[]): string[] {
@@ -522,6 +575,21 @@ async function processOneRow(args: {
       status: "uploading",
       videoUrl
     }, args.userId);
+
+    if (isServerlessRuntime()) {
+      await enqueueDeferredYoutubeUpload({
+        userId: args.userId,
+        id: workflow.id,
+        title: workflow.input.title,
+        description,
+        tags,
+        videoUrl,
+        privacyStatus: args.privacyStatus
+      });
+      pushLog(args.userId, "info", `[${row.id}] 업로드 요청을 백그라운드 큐로 전달했습니다.`);
+      return { fatal: false };
+    }
+
     const youtubeUrl = await uploadVideoToYoutube({
       title: workflow.input.title,
       description,
