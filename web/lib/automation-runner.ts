@@ -394,6 +394,14 @@ async function resolveDefaultsFromLatestWorkflow(
           typeof persistedTemplate.voiceSpeed === "number"
             ? persistedTemplate.voiceSpeed
             : DEFAULTS.voiceSpeed,
+        videoLengthSec:
+          typeof persistedTemplate.videoLengthSec === "number"
+            ? persistedTemplate.videoLengthSec
+            : DEFAULTS.videoLengthSec,
+        sceneCount:
+          typeof persistedTemplate.sceneCount === "number"
+            ? persistedTemplate.sceneCount
+            : DEFAULTS.sceneCount,
         renderOptions: persistedTemplate.renderOptions,
         templateSourceTitle: persistedTemplate.sourceTitle,
         templateSourceTopic: persistedTemplate.sourceTopic
@@ -449,11 +457,17 @@ async function resolveDefaultsFromLatestWorkflow(
           : DEFAULTS.voiceSpeed,
     useSfx: typeof latestAny.input.useSfx === "boolean" ? latestAny.input.useSfx : DEFAULTS.useSfx,
     videoLengthSec:
-      typeof latestAny.input.videoLengthSec === "number"
-        ? latestAny.input.videoLengthSec
-        : DEFAULTS.videoLengthSec,
+      templateMode === "applied_template" && typeof persistedTemplate?.videoLengthSec === "number"
+        ? persistedTemplate.videoLengthSec
+        : typeof latestAny.input.videoLengthSec === "number"
+          ? latestAny.input.videoLengthSec
+          : DEFAULTS.videoLengthSec,
     sceneCount:
-      typeof latestAny.input.sceneCount === "number" ? latestAny.input.sceneCount : DEFAULTS.sceneCount,
+      templateMode === "applied_template" && typeof persistedTemplate?.sceneCount === "number"
+        ? persistedTemplate.sceneCount
+        : typeof latestAny.input.sceneCount === "number"
+          ? latestAny.input.sceneCount
+          : DEFAULTS.sceneCount,
     templateMode,
     templateApplied,
     templateName,

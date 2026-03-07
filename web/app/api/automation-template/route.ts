@@ -20,7 +20,9 @@ const schema = z.object({
   sourceTopic: z.string().optional(),
   templateName: z.string().optional(),
   voice: z.string().min(1).optional(),
-  voiceSpeed: z.number().min(0.5).max(2).optional()
+  voiceSpeed: z.number().min(0.5).max(2).optional(),
+  videoLengthSec: z.number().int().min(10).max(180).optional(),
+  sceneCount: z.number().int().min(3).max(12).optional()
 });
 const selectSchema = z.object({
   templateId: z.string().min(1)
@@ -33,7 +35,9 @@ const updateSchema = z.object({
   sourceTopic: z.string().optional(),
   templateName: z.string().optional(),
   voice: z.string().min(1).optional(),
-  voiceSpeed: z.number().min(0.5).max(2).optional()
+  voiceSpeed: z.number().min(0.5).max(2).optional(),
+  videoLengthSec: z.number().int().min(10).max(180).optional(),
+  sceneCount: z.number().int().min(3).max(12).optional()
 });
 
 /** Get latest automation template snapshot persisted by [템플릿 적용]. */
@@ -68,6 +72,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       templateName: payload.templateName,
       voice: payload.voice,
       voiceSpeed: payload.voiceSpeed,
+      videoLengthSec: payload.videoLengthSec,
+      sceneCount: payload.sceneCount,
       userId
     });
     const catalog = await listAutomationTemplates(userId);
@@ -122,6 +128,8 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       templateName: payload.templateName,
       voice: payload.voice,
       voiceSpeed: payload.voiceSpeed,
+      videoLengthSec: payload.videoLengthSec,
+      sceneCount: payload.sceneCount,
       userId
     });
     const catalog = await listAutomationTemplates(userId);

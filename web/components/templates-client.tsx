@@ -26,6 +26,8 @@ interface AutomationTemplateItem {
   sourceTopic?: string;
   voice?: string;
   voiceSpeed?: number;
+  videoLengthSec?: number;
+  sceneCount?: number;
   updatedAt: string;
   renderOptions: RenderOptions;
 }
@@ -64,6 +66,8 @@ type TemplateEditorState = {
   sourceTopic: string;
   voice: string;
   voiceSpeed: string;
+  videoLengthSec: string;
+  sceneCount: string;
   primaryText: string;
   primaryBold: boolean;
   primaryItalic: boolean;
@@ -120,6 +124,7 @@ const SAMPLE_NARRATION = "고대 이집트 문명 속에서 잊힌 진실이 드
 const SAMPLE_KEYWORD = "클레오파트라";
 const VOICE_PREVIEW_DEFAULT_TEXT = "This is a voice preview for your short-form content.";
 const voiceSpeedOptions = ["0.75", "0.9", "1", "1.1", "1.25", "1.5"];
+const templateSceneCountOptions = ["3", "4", "5", "6", "8", "10", "12"];
 const customStyleOption = "__custom__";
 const imageStylePresets = [
   "Cinematic photo-real",
@@ -201,6 +206,8 @@ function createInitialEditor(): TemplateEditorState {
     sourceTopic: "{{topic}}",
     voice: "alloy",
     voiceSpeed: "1",
+    videoLengthSec: "30",
+    sceneCount: "5",
     primaryText: "{{title}}",
     primaryBold: false,
     primaryItalic: false,
@@ -539,6 +546,8 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
     sourceTopic: item.sourceTopic || "{{topic}}",
     voice: (item.voice || "alloy").trim().toLowerCase() || "alloy",
     voiceSpeed: String(clampNumber(Number(item.voiceSpeed), 0.5, 2, 1)),
+    videoLengthSec: String(clampNumber(Number(item.videoLengthSec), 10, 180, 30)),
+    sceneCount: String(clampNumber(Number(item.sceneCount), 3, 12, 5)),
     primaryText: extractLayerText(item.renderOptions, "__primary_title__", overlay.titleText || ""),
     primaryBold: extractLayerToggle(
       item.renderOptions,
@@ -745,9 +754,13 @@ function buildTemplatePayload(editor: TemplateEditorState, renderOptions: Render
   sourceTopic: string;
   voice: string;
   voiceSpeed: number;
+  videoLengthSec: number;
+  sceneCount: number;
   renderOptions: RenderOptions;
 } {
   const voiceSpeed = clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1);
+  const videoLengthSec = Math.round(clampNumber(Number(editor.videoLengthSec), 10, 180, 30));
+  const sceneCount = Math.round(clampNumber(Number(editor.sceneCount), 3, 12, 5));
   const imageStyle =
     editor.imageStylePreset === customStyleOption
       ? editor.imageStyle.trim()
@@ -759,6 +772,8 @@ function buildTemplatePayload(editor: TemplateEditorState, renderOptions: Render
     sourceTopic: editor.sourceTopic.trim(),
     voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
     voiceSpeed,
+    videoLengthSec,
+    sceneCount,
     renderOptions
   };
 }
@@ -770,6 +785,8 @@ function buildPayloadSignature(payload: {
   sourceTopic: string;
   voice: string;
   voiceSpeed: number;
+  videoLengthSec: number;
+  sceneCount: number;
   renderOptions: RenderOptions;
 }): string {
   return JSON.stringify(payload);
@@ -783,6 +800,8 @@ function buildTemplateSignature(item: AutomationTemplateItem): string {
     sourceTopic: String(item.sourceTopic || "").trim(),
     voice: String(item.voice || "alloy").trim().toLowerCase() || "alloy",
     voiceSpeed: clampNumber(Number(item.voiceSpeed), 0.5, 2, 1),
+    videoLengthSec: Math.round(clampNumber(Number(item.videoLengthSec), 10, 180, 30)),
+    sceneCount: Math.round(clampNumber(Number(item.sceneCount), 3, 12, 5)),
     renderOptions: item.renderOptions
   });
 }
@@ -1363,6 +1382,8 @@ export function TemplatesClient(): React.JSX.Element {
                 sourceTopic: currentPayload.sourceTopic || undefined,
                 voice: currentPayload.voice || undefined,
                 voiceSpeed: currentPayload.voiceSpeed,
+                videoLengthSec: currentPayload.videoLengthSec,
+                sceneCount: currentPayload.sceneCount,
                 renderOptions: currentPayload.renderOptions
               })
             });
@@ -1454,8 +1475,10 @@ export function TemplatesClient(): React.JSX.Element {
           imageStyle: currentPayload.imageStyle || undefined,
           sourceTitle: editor.sourceTitle.trim() || undefined,
           sourceTopic: editor.sourceTopic.trim() || undefined,
-          voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
-          voiceSpeed: clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1),
+          voice: currentPayload.voice || undefined,
+          voiceSpeed: currentPayload.voiceSpeed,
+          videoLengthSec: currentPayload.videoLengthSec,
+          sceneCount: currentPayload.sceneCount,
           renderOptions: builtRenderOptions
         })
       });
@@ -1502,8 +1525,10 @@ export function TemplatesClient(): React.JSX.Element {
           imageStyle: currentPayload.imageStyle || undefined,
           sourceTitle: editor.sourceTitle.trim() || undefined,
           sourceTopic: editor.sourceTopic.trim() || undefined,
-          voice: (editor.voice || "alloy").trim().toLowerCase() || "alloy",
-          voiceSpeed: clampNumber(Number(editor.voiceSpeed), 0.5, 2, 1),
+          voice: currentPayload.voice || undefined,
+          voiceSpeed: currentPayload.voiceSpeed,
+          videoLengthSec: currentPayload.videoLengthSec,
+          sceneCount: currentPayload.sceneCount,
           renderOptions: builtRenderOptions
         })
       });
@@ -2056,6 +2081,56 @@ export function TemplatesClient(): React.JSX.Element {
                 </div>
               </div>
             ) : null}
+          </div>
+
+          <div className="rounded-md border p-3">
+            <div className="space-y-1">
+              <p className="text-sm font-semibold">자동화 생성 기본값</p>
+              <p className="text-xs text-muted-foreground">
+                이 템플릿으로 자동화 실행할 때 기본 분할 장면 수와 영상 길이를 사용합니다.
+              </p>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div className="space-y-1">
+                <Label>영상 길이(초)</Label>
+                <Input
+                  type="number"
+                  min={10}
+                  max={180}
+                  step={1}
+                  value={editor.videoLengthSec}
+                  onChange={(event) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      videoLengthSec: String(event.target.value ?? "")
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>장면 수(이미지 분할)</Label>
+                <Select
+                  value={editor.sceneCount}
+                  onValueChange={(value) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      sceneCount: value
+                    }))
+                  }
+                >
+                  <SelectTrigger className="bg-card dark:bg-zinc-900">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {templateSceneCountOptions.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}장면
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
           </div>
 
           <div className="grid gap-2 md:grid-cols-3">

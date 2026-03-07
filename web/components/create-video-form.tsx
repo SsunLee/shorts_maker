@@ -843,6 +843,8 @@ interface AutomationTemplatePreset {
   templateName?: string;
   sourceTitle?: string;
   sourceTopic?: string;
+  videoLengthSec?: number;
+  sceneCount?: number;
   updatedAt: string;
   renderOptions: RenderOptions;
 }
@@ -852,6 +854,8 @@ type SelectedTemplatePreset = {
   id: string;
   name: string;
   renderOptions: RenderOptions;
+  videoLengthSec?: number;
+  sceneCount?: number;
 };
 
 const defaultRenderOptions: RenderOptions = {
@@ -2104,7 +2108,9 @@ export function CreateVideoForm(): React.JSX.Element {
         source: "server",
         id: serverTemplate.id,
         name: serverTemplate.templateName || "서버 템플릿",
-        renderOptions: ensureRenderOptions(serverTemplate.renderOptions)
+        renderOptions: ensureRenderOptions(serverTemplate.renderOptions),
+        videoLengthSec: serverTemplate.videoLengthSec,
+        sceneCount: serverTemplate.sceneCount
       };
     }
 
@@ -2289,7 +2295,27 @@ export function CreateVideoForm(): React.JSX.Element {
       return;
     }
     const nextRenderOptions = ensureRenderOptions(selectedRenderTemplatePreset.renderOptions);
+    const persistedVideoLengthSec = Math.round(
+      clampNumber(
+        Number(selectedRenderTemplatePreset.videoLengthSec),
+        10,
+        180,
+        clampNumber(Number(videoLengthSec), 10, 180, 30)
+      )
+    );
+    const persistedSceneCount = Math.round(
+      clampNumber(
+        Number(selectedRenderTemplatePreset.sceneCount),
+        3,
+        12,
+        clampNumber(Number(sceneCount), 3, 12, 5)
+      )
+    );
     setRenderOptions(nextRenderOptions);
+    if (selectedRenderTemplatePreset.source === "server") {
+      setVideoLengthSec(String(persistedVideoLengthSec));
+      setSceneCount(String(persistedSceneCount));
+    }
     try {
       const response =
         selectedRenderTemplatePreset.source === "server"
@@ -2311,7 +2337,9 @@ export function CreateVideoForm(): React.JSX.Element {
                 renderOptions: nextRenderOptions,
                 sourceTitle: title || selectedRenderTemplatePreset.name,
                 sourceTopic: topic || undefined,
-                templateName: selectedRenderTemplatePreset.name
+                templateName: selectedRenderTemplatePreset.name,
+                videoLengthSec: persistedVideoLengthSec,
+                sceneCount: persistedSceneCount
               })
             });
       if (!response.ok) {
@@ -2326,7 +2354,7 @@ export function CreateVideoForm(): React.JSX.Element {
           : "템플릿은 적용되었지만 자동화 기본 템플릿 저장에 실패했습니다."
       );
     }
-  }, [selectedRenderTemplatePreset, title, topic, refreshAutomationTemplatePresets]);
+  }, [sceneCount, selectedRenderTemplatePreset, title, topic, videoLengthSec, refreshAutomationTemplatePresets]);
 
   const deleteSelectedRenderTemplate = useCallback(async (): Promise<void> => {
     if (!selectedRenderTemplatePreset) {

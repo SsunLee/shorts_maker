@@ -37,6 +37,8 @@ export interface AutomationTemplateSnapshot {
   templateName?: string;
   voice?: string;
   voiceSpeed?: number;
+  videoLengthSec?: number;
+  sceneCount?: number;
   updatedAt: string;
 }
 
@@ -72,6 +74,8 @@ function normalizeSnapshot(parsed: Partial<AutomationTemplateSnapshot>): Automat
   }
   const rawVoice = typeof parsed.voice === "string" ? parsed.voice.trim().toLowerCase() : "";
   const rawVoiceSpeed = Number(parsed.voiceSpeed);
+  const rawVideoLengthSec = Number(parsed.videoLengthSec);
+  const rawSceneCount = Number(parsed.sceneCount);
   return {
     renderOptions: parsed.renderOptions as RenderOptions,
     imageStyle: typeof parsed.imageStyle === "string" ? parsed.imageStyle : undefined,
@@ -81,6 +85,12 @@ function normalizeSnapshot(parsed: Partial<AutomationTemplateSnapshot>): Automat
     voice: rawVoice || undefined,
     voiceSpeed: Number.isFinite(rawVoiceSpeed)
       ? Math.max(0.5, Math.min(2, rawVoiceSpeed))
+      : undefined,
+    videoLengthSec: Number.isFinite(rawVideoLengthSec)
+      ? Math.max(10, Math.min(180, Math.round(rawVideoLengthSec)))
+      : undefined,
+    sceneCount: Number.isFinite(rawSceneCount)
+      ? Math.max(3, Math.min(12, Math.round(rawSceneCount)))
       : undefined,
     updatedAt:
       typeof parsed.updatedAt === "string" && parsed.updatedAt
@@ -269,6 +279,8 @@ export async function setActiveAutomationTemplate(
     templateName: selected.templateName,
     voice: selected.voice,
     voiceSpeed: selected.voiceSpeed,
+    videoLengthSec: selected.videoLengthSec,
+    sceneCount: selected.sceneCount,
     updatedAt: selected.updatedAt
   };
 }
@@ -295,6 +307,8 @@ export async function updateAutomationTemplate(args: {
   templateName?: string;
   voice?: string;
   voiceSpeed?: number;
+  videoLengthSec?: number;
+  sceneCount?: number;
   userId?: string;
 }): Promise<AutomationTemplateSnapshot> {
   const catalog = await readCatalog(args.userId);
@@ -316,6 +330,14 @@ export async function updateAutomationTemplate(args: {
       Number.isFinite(Number(args.voiceSpeed))
         ? Math.max(0.5, Math.min(2, Number(args.voiceSpeed)))
         : prev.voiceSpeed,
+    videoLengthSec:
+      Number.isFinite(Number(args.videoLengthSec))
+        ? Math.max(10, Math.min(180, Math.round(Number(args.videoLengthSec))))
+        : prev.videoLengthSec,
+    sceneCount:
+      Number.isFinite(Number(args.sceneCount))
+        ? Math.max(3, Math.min(12, Math.round(Number(args.sceneCount))))
+        : prev.sceneCount,
     updatedAt: new Date().toISOString()
   };
 
@@ -334,6 +356,8 @@ export async function updateAutomationTemplate(args: {
     templateName: updated.templateName,
     voice: updated.voice,
     voiceSpeed: updated.voiceSpeed,
+    videoLengthSec: updated.videoLengthSec,
+    sceneCount: updated.sceneCount,
     updatedAt: updated.updatedAt
   };
 }
@@ -359,6 +383,8 @@ export async function getAutomationTemplateSnapshot(
     templateName: active.templateName,
     voice: active.voice,
     voiceSpeed: active.voiceSpeed,
+    videoLengthSec: active.videoLengthSec,
+    sceneCount: active.sceneCount,
     updatedAt: active.updatedAt
   };
 }
@@ -382,6 +408,14 @@ export async function saveAutomationTemplateSnapshot(
       Number.isFinite(Number(value.voiceSpeed))
         ? Math.max(0.5, Math.min(2, Number(value.voiceSpeed)))
         : undefined,
+    videoLengthSec:
+      Number.isFinite(Number(value.videoLengthSec))
+        ? Math.max(10, Math.min(180, Math.round(Number(value.videoLengthSec))))
+        : undefined,
+    sceneCount:
+      Number.isFinite(Number(value.sceneCount))
+        ? Math.max(3, Math.min(12, Math.round(Number(value.sceneCount))))
+        : undefined,
     updatedAt: value.updatedAt || new Date().toISOString()
   };
   const nextTemplates = sortByUpdatedAtDesc([entry, ...catalog.templates]).slice(0, 100);
@@ -398,6 +432,8 @@ export async function saveAutomationTemplateSnapshot(
     templateName: entry.templateName,
     voice: entry.voice,
     voiceSpeed: entry.voiceSpeed,
+    videoLengthSec: entry.videoLengthSec,
+    sceneCount: entry.sceneCount,
     updatedAt: entry.updatedAt
   };
   return snapshot;
