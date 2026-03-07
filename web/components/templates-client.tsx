@@ -292,11 +292,6 @@ function subtitleAssScaleForCanvas(canvasScale: number): number {
   return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
 }
 
-function titleLayerScaleForCanvas(canvasScale: number): number {
-  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
-  return clampNumber(safeCanvasScale * 1.52, 0.24, 0.5, 0.4);
-}
-
 function detectTemplateFontPreset(fontName: string | undefined): string {
   const normalized = String(fontName || "").trim();
   if (!normalized) {
@@ -996,10 +991,7 @@ export function TemplatesClient(): React.JSX.Element {
     () => subtitleAssScaleForCanvas(templatePreviewScale),
     [templatePreviewScale]
   );
-  const titlePreviewRenderScale = useMemo(
-    () => titleLayerScaleForCanvas(templatePreviewScale),
-    [templatePreviewScale]
-  );
+  const titlePreviewRenderScale = templatePreviewScale;
   const subtitlePreviewFontSize = useMemo(
     () =>
       clampNumber(

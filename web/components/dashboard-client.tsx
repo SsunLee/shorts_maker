@@ -168,11 +168,6 @@ function subtitleAssScaleForCanvas(canvasScale: number): number {
   return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
 }
 
-function titleLayerScaleForCanvas(canvasScale: number): number {
-  const safeCanvasScale = clampNumber(canvasScale, 0.1, 1, 0.26);
-  return clampNumber(safeCanvasScale * 1.52, 0.24, 0.5, 0.4);
-}
-
 function materializeSnapshotText(args: {
   text: string;
   sourceTitle?: string;
@@ -766,7 +761,7 @@ export function DashboardClient(): React.JSX.Element {
     const panelWidth = clampNumber(Number(overlay?.panelWidthPercent), 60, 100, 100);
     const previewWidth = 320;
     const previewScale = clampNumber(previewWidth / 1080, 0.12, 1, 0.2);
-    const titlePreviewRenderScale = titleLayerScaleForCanvas(previewScale);
+    const titlePreviewRenderScale = previewScale;
     const subtitleScale = subtitleAssScaleForCanvas(previewScale);
     const subtitleY = clampNumber(Number(subtitle?.subtitleYPercent), 0, 100, 86);
     const subtitleFontSize = clampNumber(

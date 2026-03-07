@@ -2,6 +2,10 @@ import { BuildVideoPayload, RenderOptions } from "@/lib/types";
 import { promises as fs } from "fs";
 import path from "path";
 import { mirrorRenderedVideoToStorage } from "@/lib/object-storage";
+import {
+  resolveVideoEngineBaseUrls,
+  resolveVideoEngineTimeoutMs
+} from "@/lib/video-engine-endpoint-config";
 
 export interface BuildVideoResult {
   outputPath: string;
@@ -254,6 +258,36 @@ function parsePathname(source: string): string | null {
   }
 }
 
+function shouldRetryWithFallback(status: number): boolean {
+  if (status === 408 || status === 429) {
+    return true;
+  }
+  return status >= 500;
+}
+
+async function buildVideoAtEndpoint(args: {
+  baseUrl: string;
+  body: Record<string, unknown>;
+  timeoutMs: number;
+  sharedSecret?: string;
+}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), args.timeoutMs);
+  try {
+    return await fetch(`${args.baseUrl}/build-video`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(args.sharedSecret ? { "X-Video-Engine-Secret": args.sharedSecret } : {})
+      },
+      body: JSON.stringify(args.body),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function toEngineReadableAsset(source: string): Promise<string> {
   const pathname = parsePathname(source);
   if (!pathname || !pathname.startsWith("/generated/")) {
@@ -278,7 +312,9 @@ async function toEngineReadableAsset(source: string): Promise<string> {
 export async function buildVideoWithEngine(
   payload: BuildVideoPayload
 ): Promise<BuildVideoResult> {
-  const baseUrl = process.env.VIDEO_ENGINE_URL || "http://localhost:8000";
+  const baseUrls = resolveVideoEngineBaseUrls();
+  const timeoutMs = resolveVideoEngineTimeoutMs();
+  const sharedSecret = String(process.env.VIDEO_ENGINE_SHARED_SECRET || "").trim() || undefined;
   const imageUrls = await Promise.all(
     payload.imageUrls.map((source) => toEngineReadableAsset(source))
   );
@@ -294,40 +330,69 @@ export async function buildVideoWithEngine(
     sourceTopic: asText(payload.sourceTopic)
   });
 
-  let response: Response;
-  try {
-    response = await fetch(`${baseUrl}/build-video`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        ...payload,
-        jobId: asText(payload.jobId, "job"),
-        subtitlesText: asText(payload.subtitlesText),
-        titleText: asText(payload.titleText),
-        renderOptions: sanitizedRenderOptions,
-        imageUrls,
-        ttsPath
-      })
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown connection error";
-    throw new Error(
-      `Cannot connect to video engine at ${baseUrl}. ` +
-        `Start FastAPI engine (uvicorn app.main:app --reload --port 8000). Cause: ${message}`
-    );
+  const requestBody: Record<string, unknown> = {
+    ...payload,
+    jobId: asText(payload.jobId, "job"),
+    subtitlesText: asText(payload.subtitlesText),
+    titleText: asText(payload.titleText),
+    renderOptions: sanitizedRenderOptions,
+    imageUrls,
+    ttsPath
+  };
+
+  let lastResponse: Response | undefined;
+  let lastNetworkError: string | undefined;
+  const endpointErrors: string[] = [];
+
+  for (const baseUrl of baseUrls) {
+    try {
+      const response = await buildVideoAtEndpoint({
+        baseUrl,
+        body: requestBody,
+        timeoutMs,
+        sharedSecret
+      });
+      if (response.ok) {
+        const result = (await response.json()) as BuildVideoResult;
+        result.outputUrl = await mirrorRenderedVideoToStorage({
+          jobId: payload.jobId,
+          sourceUrl: result.outputUrl
+        });
+        return result;
+      }
+
+      const message = await response.text();
+      endpointErrors.push(`${baseUrl} -> HTTP ${response.status}: ${message}`);
+      lastResponse = response;
+      if (!shouldRetryWithFallback(response.status)) {
+        break;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown connection error";
+      endpointErrors.push(`${baseUrl} -> ${message}`);
+      lastNetworkError = message;
+      continue;
+    }
   }
 
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(`Video engine error (${response.status}): ${message}`);
+  if (lastResponse && !shouldRetryWithFallback(lastResponse.status)) {
+    const detailed = endpointErrors[endpointErrors.length - 1] || `HTTP ${lastResponse.status}`;
+    throw new Error(`Video engine request rejected: ${detailed}`);
   }
 
-  const result = (await response.json()) as BuildVideoResult;
-  result.outputUrl = await mirrorRenderedVideoToStorage({
-    jobId: payload.jobId,
-    sourceUrl: result.outputUrl
-  });
-  return result;
+  const hint = [
+    "Video engine endpoints failed.",
+    `Tried: ${baseUrls.join(" -> ")}`,
+    `Timeout: ${timeoutMs}ms`,
+    endpointErrors.length > 0 ? `Details: ${endpointErrors.join(" | ")}` : undefined,
+    !sharedSecret
+      ? "Tip: for public exposure, set VIDEO_ENGINE_SHARED_SECRET on both web and video-engine."
+      : undefined,
+    lastNetworkError
+      ? "Check primary PC engine connectivity/tunnel and fallback Cloud Run health."
+      : undefined
+  ]
+    .filter(Boolean)
+    .join(" ");
+  throw new Error(hint);
 }

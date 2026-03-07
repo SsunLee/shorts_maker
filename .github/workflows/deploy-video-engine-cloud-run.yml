@@ -24,6 +24,13 @@ jobs:
       GCP_ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
       GCP_ARTIFACT_IMAGE: ${{ vars.GCP_ARTIFACT_IMAGE }}
       GCP_CLOUD_RUN_SERVICE: ${{ vars.GCP_CLOUD_RUN_SERVICE }}
+      GCP_CLOUD_RUN_CPU: ${{ vars.GCP_CLOUD_RUN_CPU }}
+      GCP_CLOUD_RUN_MEMORY: ${{ vars.GCP_CLOUD_RUN_MEMORY }}
+      GCP_CLOUD_RUN_CONCURRENCY: ${{ vars.GCP_CLOUD_RUN_CONCURRENCY }}
+      GCP_CLOUD_RUN_TIMEOUT: ${{ vars.GCP_CLOUD_RUN_TIMEOUT }}
+      GCP_CLOUD_RUN_MIN_INSTANCES: ${{ vars.GCP_CLOUD_RUN_MIN_INSTANCES }}
+      GCP_CLOUD_RUN_MAX_INSTANCES: ${{ vars.GCP_CLOUD_RUN_MAX_INSTANCES }}
+      VIDEO_ENGINE_SHARED_SECRET: ${{ secrets.VIDEO_ENGINE_SHARED_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,6 +92,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CPU="${GCP_CLOUD_RUN_CPU:-2}"
+          MEMORY="${GCP_CLOUD_RUN_MEMORY:-4Gi}"
+          CONCURRENCY="${GCP_CLOUD_RUN_CONCURRENCY:-1}"
+          TIMEOUT="${GCP_CLOUD_RUN_TIMEOUT:-900}"
+          MIN_INSTANCES="${GCP_CLOUD_RUN_MIN_INSTANCES:-0}"
+          MAX_INSTANCES="${GCP_CLOUD_RUN_MAX_INSTANCES:-1}"
+
+          EXTRA_ENV_ARGS=()
+          if [[ -n "${VIDEO_ENGINE_SHARED_SECRET:-}" ]]; then
+            EXTRA_ENV_ARGS+=(--set-env-vars "VIDEO_ENGINE_SHARED_SECRET=${VIDEO_ENGINE_SHARED_SECRET}")
+          fi
+
           gcloud run deploy "${GCP_CLOUD_RUN_SERVICE}" \
             --image "${{ steps.image.outputs.image_uri }}" \
             --region "${GCP_REGION}" \
@@ -92,12 +111,13 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --port 8080 \
-            --cpu 2 \
-            --memory 2Gi \
-            --concurrency 1 \
-            --timeout 900 \
-            --min-instances 1 \
-            --max-instances 1
+            --cpu "${CPU}" \
+            --memory "${MEMORY}" \
+            --concurrency "${CONCURRENCY}" \
+            --timeout "${TIMEOUT}" \
+            --min-instances "${MIN_INSTANCES}" \
+            --max-instances "${MAX_INSTANCES}" \
+            "${EXTRA_ENV_ARGS[@]}"
 
           SERVICE_URL="$(gcloud run services describe "${GCP_CLOUD_RUN_SERVICE}" \
             --region "${GCP_REGION}" \

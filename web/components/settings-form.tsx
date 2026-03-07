@@ -56,6 +56,25 @@ interface LocalCleanupResponse {
   error?: string;
 }
 
+interface VideoEngineCheckSummary {
+  url: string;
+  status: "ok" | "error";
+  latencyMs: number;
+  httpStatus?: number;
+  error?: string;
+}
+
+interface VideoEngineStatusResponse {
+  primaryUrl?: string | null;
+  fallbackUrl?: string | null;
+  baseUrls?: string[];
+  timeoutMs?: number;
+  sharedSecretConfigured?: boolean;
+  connectedUrl?: string | null;
+  checks?: VideoEngineCheckSummary[];
+  error?: string;
+}
+
 interface ModelOption {
   value: string;
   label: string;
@@ -214,6 +233,9 @@ export function SettingsForm(): React.JSX.Element {
   const [localCleanupLoading, setLocalCleanupLoading] = useState(false);
   const [localCleanupRunning, setLocalCleanupRunning] = useState(false);
   const [localCleanupError, setLocalCleanupError] = useState<string>();
+  const [videoEngineStatus, setVideoEngineStatus] = useState<VideoEngineStatusResponse>();
+  const [videoEngineStatusLoading, setVideoEngineStatusLoading] = useState(false);
+  const [videoEngineStatusError, setVideoEngineStatusError] = useState<string>();
   const [theme, setTheme] = useState<AppTheme>("light");
   const currentTextProvider = useMemo(
     () => resolveProviderChip(settings, "text"),
@@ -269,8 +291,31 @@ export function SettingsForm(): React.JSX.Element {
     void refreshLocalCleanupSummary();
   }, []);
 
+  useEffect(() => {
+    void refreshVideoEngineStatus();
+  }, []);
+
   function update<K extends keyof AppSettings>(key: K, value: AppSettings[K]): void {
     setSettings((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function refreshVideoEngineStatus(): Promise<void> {
+    setVideoEngineStatusLoading(true);
+    setVideoEngineStatusError(undefined);
+    try {
+      const response = await fetch("/api/video-engine/status", { cache: "no-store" });
+      const data = (await response.json()) as VideoEngineStatusResponse;
+      if (!response.ok) {
+        throw new Error(data.error || "비디오 엔진 상태를 불러오지 못했습니다.");
+      }
+      setVideoEngineStatus(data);
+    } catch (error) {
+      setVideoEngineStatusError(
+        error instanceof Error ? error.message : "비디오 엔진 상태를 불러오지 못했습니다."
+      );
+    } finally {
+      setVideoEngineStatusLoading(false);
+    }
   }
 
   async function refreshLocalCleanupSummary(): Promise<void> {
@@ -380,6 +425,92 @@ export function SettingsForm(): React.JSX.Element {
         <CardContent className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm text-muted-foreground">Dark Mode / Light Mode</p>
           <Switch checked={theme === "dark"} onCheckedChange={onThemeToggle} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex flex-wrap items-center justify-between gap-2">
+            <span>Video Engine 연결 상태</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refreshVideoEngineStatus()}
+              disabled={videoEngineStatusLoading}
+            >
+              {videoEngineStatusLoading ? "확인 중..." : "상태 새로고침"}
+            </Button>
+          </CardTitle>
+          <CardDescription>
+            현재 서버가 사용하는 비디오 엔진 우선순위와 헬스 체크 결과를 표시합니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">Primary URL</p>
+              <p className="break-all text-sm font-medium">{videoEngineStatus?.primaryUrl || "-"}</p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">Fallback URL</p>
+              <p className="break-all text-sm font-medium">{videoEngineStatus?.fallbackUrl || "-"}</p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">현재 연결 대상</p>
+              <p className="break-all text-sm font-medium">{videoEngineStatus?.connectedUrl || "연결 실패"}</p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">요청 타임아웃</p>
+              <p className="text-sm font-medium">
+                {Number(videoEngineStatus?.timeoutMs || 0) > 0
+                  ? `${Math.round(Number(videoEngineStatus?.timeoutMs) / 1000)}초`
+                  : "-"}
+              </p>
+            </div>
+            <div className="rounded-lg border p-3">
+              <p className="text-xs text-muted-foreground">공유 시크릿 설정</p>
+              <Badge variant={videoEngineStatus?.sharedSecretConfigured ? "default" : "destructive"}>
+                {videoEngineStatus?.sharedSecretConfigured ? "설정됨" : "미설정"}
+              </Badge>
+            </div>
+          </div>
+
+          {(videoEngineStatus?.baseUrls || []).length > 0 ? (
+            <div className="rounded-lg border">
+              <div className="divide-y">
+                {(videoEngineStatus?.baseUrls || []).map((url, index) => {
+                  const check = (videoEngineStatus?.checks || []).find((item) => item.url === url);
+                  return (
+                    <div key={url} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm">
+                      <div className="min-w-0">
+                        <p className="font-medium">
+                          {index === 0 ? "1순위" : `${index + 1}순위`} · {url}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {check
+                            ? `응답 ${check.latencyMs}ms${check.httpStatus ? ` · HTTP ${check.httpStatus}` : ""}${check.error ? ` · ${check.error}` : ""}`
+                            : "상태 정보 없음"}
+                        </p>
+                      </div>
+                      <Badge variant={check?.status === "ok" ? "default" : "destructive"}>
+                        {check?.status === "ok" ? "정상" : "오류"}
+                      </Badge>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">설정된 비디오 엔진 URL이 없습니다.</p>
+          )}
+
+          {videoEngineStatusError ? (
+            <p className="text-sm text-destructive">{videoEngineStatusError}</p>
+          ) : null}
         </CardContent>
       </Card>
 

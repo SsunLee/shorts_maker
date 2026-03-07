@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -52,7 +52,15 @@ def health() -> dict[str, str]:
 
 
 @app.post("/build-video", response_model=BuildVideoResponse)
-def build_video(payload: BuildVideoRequest, request: Request) -> BuildVideoResponse:
+def build_video(
+    payload: BuildVideoRequest,
+    request: Request,
+    x_video_engine_secret: str | None = Header(default=None, alias="X-Video-Engine-Secret"),
+) -> BuildVideoResponse:
+    expected_secret = os.getenv("VIDEO_ENGINE_SHARED_SECRET", "").strip()
+    if expected_secret and x_video_engine_secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized video engine request")
+
     job_dir = OUTPUTS_DIR / payload.jobId
     assets_dir = job_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
