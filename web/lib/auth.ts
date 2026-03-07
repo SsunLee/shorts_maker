@@ -42,7 +42,8 @@ providers.push(
       return {
         id: user.userId,
         name: user.name || "코드 사용자",
-        email: user.email || undefined
+        email: user.email || undefined,
+        accessCodeDisplay: code.toUpperCase()
       };
     }
   })
@@ -57,6 +58,12 @@ export const authOptions: NextAuthOptions = {
     strategy: "jwt"
   },
   callbacks: {
+    async jwt({ token, user }) {
+      if (user && "accessCodeDisplay" in user && typeof user.accessCodeDisplay === "string") {
+        token.accessCodeDisplay = user.accessCodeDisplay;
+      }
+      return token;
+    },
     async signIn({ user }) {
       const userId = String(user.id || user.email || "").trim();
       if (!userId) {
@@ -89,6 +96,8 @@ export const authOptions: NextAuthOptions = {
           (typeof token.sub === "string" && token.sub) ||
           (typeof token.email === "string" && token.email) ||
           undefined;
+        session.user.accessCodeDisplay =
+          typeof token.accessCodeDisplay === "string" ? token.accessCodeDisplay : undefined;
       }
       return session;
     }

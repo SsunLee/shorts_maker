@@ -82,6 +82,7 @@ export function AppNav(): React.JSX.Element {
       try {
         const session = await getSession();
         const rawId =
+          session?.user?.accessCodeDisplay?.trim() ||
           session?.user?.email?.split("@")[0]?.trim() ||
           session?.user?.name?.trim() ||
           session?.user?.email?.trim() ||
