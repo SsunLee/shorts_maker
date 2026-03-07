@@ -100,6 +100,10 @@ type TemplateEditorState = {
   panelWidthPercent: string;
   motionPreset: MotionPreset;
   motionSpeedPercent: string;
+  focusXPercent: string;
+  focusYPercent: string;
+  focusDriftPercent: string;
+  focusZoomPercent: string;
   outputFps: OutputFps;
   customLayers: CustomTextLayerEditor[];
 };
@@ -227,6 +231,10 @@ function createInitialEditor(): TemplateEditorState {
     panelWidthPercent: "100",
     motionPreset: "gentle_zoom",
     motionSpeedPercent: "135",
+    focusXPercent: "50",
+    focusYPercent: "50",
+    focusDriftPercent: "6",
+    focusZoomPercent: "9",
     outputFps: 30,
     customLayers: []
   };
@@ -415,6 +423,10 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       titleColor: normalizeHex(editor.primaryColor, "#FFFFFF"),
       sceneMotionPreset: editor.motionPreset,
       motionSpeedPercent: clampNumber(Number(editor.motionSpeedPercent), 60, 220, 135),
+      focusXPercent: clampNumber(Number(editor.focusXPercent), 0, 100, 50),
+      focusYPercent: clampNumber(Number(editor.focusYPercent), 0, 100, 50),
+      focusDriftPercent: clampNumber(Number(editor.focusDriftPercent), 0, 20, 6),
+      focusZoomPercent: clampNumber(Number(editor.focusZoomPercent), 3, 20, 9),
       outputFps: editor.outputFps,
       videoLayout: editor.videoLayout,
       panelTopPercent: clampNumber(Number(editor.panelTopPercent), 0, 85, 34),
@@ -593,6 +605,10 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
         ? overlay.sceneMotionPreset
         : "gentle_zoom",
     motionSpeedPercent: String(clampNumber(Number(overlay.motionSpeedPercent), 60, 220, 135)),
+    focusXPercent: formatPercentString(clampNumber(Number(overlay.focusXPercent), 0, 100, 50)),
+    focusYPercent: formatPercentString(clampNumber(Number(overlay.focusYPercent), 0, 100, 50)),
+    focusDriftPercent: formatPercentString(clampNumber(Number(overlay.focusDriftPercent), 0, 20, 6)),
+    focusZoomPercent: formatPercentString(clampNumber(Number(overlay.focusZoomPercent), 3, 20, 9)),
     outputFps: overlay.outputFps === 60 ? 60 : 30,
     customLayers
   };
@@ -2055,6 +2071,78 @@ export function TemplatesClient(): React.JSX.Element {
                   }))
                 }
               />
+            </div>
+          </div>
+          <div className="space-y-2 rounded-md border p-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">포커스 모션 옵션</p>
+              <p className="text-xs text-muted-foreground">
+                영상 생성의 모션 옵션과 동일하게 적용됩니다. 중심점, 이동 범위, 줌 강도를 템플릿 단계에서 미리 저장할 수 있습니다.
+              </p>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              <div className="space-y-1">
+                <Label>포커스 X(%)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={editor.focusXPercent}
+                  onChange={(event) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      focusXPercent: event.target.value
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>포커스 Y(%)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={editor.focusYPercent}
+                  onChange={(event) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      focusYPercent: event.target.value
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>이동 범위(%)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={20}
+                  step={0.5}
+                  value={editor.focusDriftPercent}
+                  onChange={(event) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      focusDriftPercent: event.target.value
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>줌 강도(%)</Label>
+                <Input
+                  type="number"
+                  min={3}
+                  max={20}
+                  step={0.5}
+                  value={editor.focusZoomPercent}
+                  onChange={(event) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      focusZoomPercent: event.target.value
+                    }))
+                  }
+                />
+              </div>
             </div>
           </div>
           <div className="grid gap-2 md:grid-cols-2">

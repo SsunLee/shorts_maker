@@ -161,6 +161,84 @@ function resolveLanguageInstruction(language: IdeaLanguage): string {
   return "Write Keyword, Subject, Description, Narration in Korean.";
 }
 
+function describeLanguageForError(language: IdeaLanguage): string {
+  if (language === "en") {
+    return "영어";
+  }
+  if (language === "ja") {
+    return "일본어";
+  }
+  if (language === "es") {
+    return "스페인어";
+  }
+  if (language === "hi") {
+    return "힌디어";
+  }
+  return "한국어";
+}
+
+function stripDecorationsForLanguageCheck(text: string): string {
+  return String(text || "")
+    .replace(/#[\p{L}\p{N}_-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function containsHangul(text: string): boolean {
+  return /[가-힣]/u.test(text);
+}
+
+function containsJapaneseKana(text: string): boolean {
+  return /[\p{Script=Hiragana}\p{Script=Katakana}々〆ヵヶ]/u.test(text);
+}
+
+function containsHan(text: string): boolean {
+  return /\p{Script=Han}/u.test(text);
+}
+
+function containsDevanagari(text: string): boolean {
+  return /[\u0900-\u097F]/u.test(text);
+}
+
+function matchesRequestedLanguageText(
+  text: string,
+  language: IdeaLanguage,
+  field: "keyword" | "longform"
+): boolean {
+  const cleaned = stripDecorationsForLanguageCheck(text);
+  if (!cleaned) {
+    return false;
+  }
+  if (language === "ko") {
+    return /[가-힣]/u.test(cleaned);
+  }
+  if (language === "ja") {
+    if (containsHangul(cleaned)) {
+      return false;
+    }
+    if (field === "keyword") {
+      return containsJapaneseKana(cleaned) || containsHan(cleaned);
+    }
+    return containsJapaneseKana(cleaned);
+  }
+  if (language === "hi") {
+    return containsDevanagari(cleaned);
+  }
+  return true;
+}
+
+function rowMatchesRequestedLanguage(row: IdeaDraftRow, language: IdeaLanguage): boolean {
+  if (language === "en" || language === "es") {
+    return true;
+  }
+  return (
+    matchesRequestedLanguageText(row.Keyword, language, "keyword") &&
+    matchesRequestedLanguageText(row.Subject, language, "longform") &&
+    matchesRequestedLanguageText(row.Description, language, "longform") &&
+    matchesRequestedLanguageText(row.Narration, language, "longform")
+  );
+}
+
 function subscribeCtaByLanguage(language: IdeaLanguage): string {
   if (language === "en") {
     return "Subscribe for more stories like this.";
@@ -253,6 +331,8 @@ function buildPrompt(
     "- Narration must NOT contain hashtags (#...) anywhere, especially at the end\n" +
     `- Narration must end with this exact CTA sentence: "${subscribeCtaByLanguage(language)}"\n` +
     `- Language: ${resolveLanguageInstruction(language)}\n` +
+    "- Use only the requested output language in Keyword, Subject, Description, and Narration.\n" +
+    "- Never switch those fields back to Korean unless Korean is the requested language.\n" +
     "- Output JSON only, no markdown, no explanation"
   );
 }
@@ -282,6 +362,7 @@ function buildRelatedKeywordPrompt(
     duplicateRule +
     "- Keep each keyword under 20 characters when possible\n" +
     `- Language: ${resolveLanguageInstruction(language)}\n` +
+    "- Use only the requested output language for every keyword.\n" +
     "- Output JSON only, no markdown, no explanation"
   );
 }
@@ -291,11 +372,16 @@ function enforceRules(args: {
   count: number;
   blockedKeywords: Set<string>;
   language: IdeaLanguage;
-}): IdeaDraftRow[] {
+}): { rows: IdeaDraftRow[]; languageRejectedCount: number } {
   const output: IdeaDraftRow[] = [];
   const seenInBatch = new Set<string>();
+  let languageRejectedCount = 0;
   args.rows.forEach((row) => {
     if (output.length >= args.count) {
+      return;
+    }
+    if (!rowMatchesRequestedLanguage(row, args.language)) {
+      languageRejectedCount += 1;
       return;
     }
     const keyword = normalizeField(row.Keyword);
@@ -316,7 +402,7 @@ function enforceRules(args: {
       publish: "대기중"
     });
   });
-  return output;
+  return { rows: output, languageRejectedCount };
 }
 
 async function requestIdeaRows(
@@ -398,6 +484,7 @@ function fallbackRelatedKeywords(args: {
   blockedKeywords: Set<string>;
   candidateKeywords?: string[];
   limit: number;
+  language: IdeaLanguage;
 }): string[] {
   const topicKey = normalizeKeywordKey(args.topic);
   const seen = new Set<string>();
@@ -405,7 +492,13 @@ function fallbackRelatedKeywords(args: {
     .map((value) => normalizeField(value))
     .filter((value) => {
       const key = normalizeKeywordKey(value);
-      if (!key || key === topicKey || args.blockedKeywords.has(key) || seen.has(key)) {
+      if (
+        !key ||
+        key === topicKey ||
+        args.blockedKeywords.has(key) ||
+        seen.has(key) ||
+        !matchesRequestedLanguageText(value, args.language, "keyword")
+      ) {
         return false;
       }
       seen.add(key);
@@ -442,6 +535,7 @@ export async function generateIdeas(args: {
   const collected: IdeaDraftRow[] = [];
   const maxAttempts = 4;
   let parseFailureCount = 0;
+  let languageRejectedCount = 0;
 
   for (let attempt = 1; attempt <= maxAttempts && collected.length < count; attempt += 1) {
     const remaining = count - collected.length;
@@ -457,7 +551,8 @@ export async function generateIdeas(args: {
       blockedKeywords,
       language
     });
-    accepted.forEach((item) => {
+    languageRejectedCount += accepted.languageRejectedCount;
+    accepted.rows.forEach((item) => {
       const key = normalizeKeywordKey(item.Keyword);
       blockedKeywords.add(key);
       collected.push(item);
@@ -467,7 +562,17 @@ export async function generateIdeas(args: {
   if (collected.length === 0 && parseFailureCount > 0) {
     throw new Error("아이디어 JSON 파싱에 실패했습니다. 다시 시도해 주세요.");
   }
+  if (collected.length === 0 && languageRejectedCount > 0) {
+    throw new Error(
+      `선택한 ${describeLanguageForError(language)} 결과가 안정적으로 생성되지 않았습니다. 다시 시도해 주세요.`
+    );
+  }
   if (collected.length < count) {
+    if (languageRejectedCount > 0) {
+      throw new Error(
+        `선택한 ${describeLanguageForError(language)} 결과만 유지하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      );
+    }
     throw new Error(
       `기존 keyword와 중복되지 않는 아이디어를 ${count}개 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
     );
@@ -516,7 +621,8 @@ export async function generateRelatedIdeaKeywords(args: {
       topic,
       blockedKeywords,
       candidateKeywords: keywords,
-      limit
+      limit,
+      language
     });
     if (accepted.length > 0) {
       return accepted;
@@ -529,6 +635,7 @@ export async function generateRelatedIdeaKeywords(args: {
     topic,
     blockedKeywords,
     candidateKeywords: args.candidateKeywords,
-    limit
+    limit,
+    language
   });
 }

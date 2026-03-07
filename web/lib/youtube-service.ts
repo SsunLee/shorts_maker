@@ -77,39 +77,6 @@ function createYoutubeClientFromCreds(creds: {
   });
 }
 
-export interface YoutubeChannelProfile {
-  channelId: string;
-  title: string;
-  customUrl?: string;
-}
-
-export async function fetchYoutubeChannelProfile(args?: {
-  userId?: string;
-  settings?: Partial<AppSettings>;
-}): Promise<YoutubeChannelProfile> {
-  const creds = args?.settings
-    ? resolveYoutubeCredentialsFromSettings(args.settings)
-    : await resolveYoutubeCredentials(args?.userId);
-
-  const youtube = createYoutubeClientFromCreds(creds);
-  const response = await youtube.channels.list({
-    part: ["snippet"],
-    mine: true,
-    maxResults: 1
-  });
-
-  const item = response.data.items?.[0];
-  if (!item?.id || !item.snippet?.title) {
-    throw new Error("연결된 YouTube 채널을 찾지 못했습니다.");
-  }
-
-  return {
-    channelId: item.id,
-    title: item.snippet.title,
-    customUrl: item.snippet.customUrl || undefined
-  };
-}
-
 async function downloadRemoteVideo(videoUrl: string): Promise<string> {
   const response = await fetch(videoUrl);
   if (!response.ok) {

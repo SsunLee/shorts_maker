@@ -37,13 +37,6 @@ const emptySettings: AppSettings = {
   youtubeChannelName: ""
 };
 
-interface YoutubeChannelResponse {
-  channelId: string;
-  title: string;
-  customUrl?: string;
-  error?: string;
-}
-
 interface LocalCleanupTargetSummary {
   key: "web_generated" | "video_engine_outputs";
   label: string;
@@ -217,9 +210,6 @@ export function SettingsForm(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings>(emptySettings);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>();
-  const [youtubeChannel, setYoutubeChannel] = useState<YoutubeChannelResponse>();
-  const [youtubeChannelError, setYoutubeChannelError] = useState<string>();
-  const [checkingYoutubeChannel, setCheckingYoutubeChannel] = useState(false);
   const [localCleanup, setLocalCleanup] = useState<LocalCleanupResponse>();
   const [localCleanupLoading, setLocalCleanupLoading] = useState(false);
   const [localCleanupRunning, setLocalCleanupRunning] = useState(false);
@@ -256,30 +246,6 @@ export function SettingsForm(): React.JSX.Element {
         merged.youtubeRedirectUri = `${window.location.origin}/oauth2callback`;
       }
       setSettings(merged);
-
-      if (
-        String(merged.youtubeClientId || "").trim() &&
-        String(merged.youtubeClientSecret || "").trim() &&
-        String(merged.youtubeRefreshToken || "").trim()
-      ) {
-        setCheckingYoutubeChannel(true);
-        try {
-          const channelResponse = await fetch("/api/youtube/channel", { cache: "no-store" });
-          const channel = (await channelResponse.json()) as YoutubeChannelResponse;
-          if (!channelResponse.ok) {
-            throw new Error(channel.error || "YouTube 채널 확인에 실패했습니다.");
-          }
-          setYoutubeChannel(channel);
-          setYoutubeChannelError(undefined);
-        } catch (error) {
-          setYoutubeChannel(undefined);
-          setYoutubeChannelError(
-            error instanceof Error ? error.message : "YouTube 채널 확인에 실패했습니다."
-          );
-        } finally {
-          setCheckingYoutubeChannel(false);
-        }
-      }
     };
     void load();
 
@@ -305,47 +271,6 @@ export function SettingsForm(): React.JSX.Element {
 
   function update<K extends keyof AppSettings>(key: K, value: AppSettings[K]): void {
     setSettings((prev) => ({ ...prev, [key]: value }));
-  }
-
-  async function resolveYoutubeChannel(useCurrentFormValues: boolean): Promise<void> {
-    const clientId = String(settings.youtubeClientId || "").trim();
-    const clientSecret = String(settings.youtubeClientSecret || "").trim();
-    const refreshToken = String(settings.youtubeRefreshToken || "").trim();
-
-    if (!clientId || !clientSecret || !refreshToken) {
-      setYoutubeChannel(undefined);
-      setYoutubeChannelError(undefined);
-      return;
-    }
-
-    setCheckingYoutubeChannel(true);
-    setYoutubeChannelError(undefined);
-    try {
-      const response = await fetch("/api/youtube/channel", {
-        method: useCurrentFormValues ? "POST" : "GET",
-        headers: useCurrentFormValues ? { "Content-Type": "application/json" } : undefined,
-        body: useCurrentFormValues
-          ? JSON.stringify({
-              youtubeClientId: settings.youtubeClientId,
-              youtubeClientSecret: settings.youtubeClientSecret,
-              youtubeRedirectUri: settings.youtubeRedirectUri,
-              youtubeRefreshToken: settings.youtubeRefreshToken
-            })
-          : undefined
-      });
-      const data = (await response.json()) as YoutubeChannelResponse;
-      if (!response.ok) {
-        throw new Error(data.error || "YouTube 채널 확인에 실패했습니다.");
-      }
-      setYoutubeChannel(data);
-    } catch (error) {
-      setYoutubeChannel(undefined);
-      setYoutubeChannelError(
-        error instanceof Error ? error.message : "YouTube 채널 확인에 실패했습니다."
-      );
-    } finally {
-      setCheckingYoutubeChannel(false);
-    }
   }
 
   async function refreshLocalCleanupSummary(): Promise<void> {
@@ -436,7 +361,6 @@ export function SettingsForm(): React.JSX.Element {
       }
 
       setMessage("Settings saved.");
-      await resolveYoutubeChannel(true);
     } catch (submitError) {
       setMessage(submitError instanceof Error ? submitError.message : "Unknown error");
     } finally {
@@ -935,46 +859,6 @@ export function SettingsForm(): React.JSX.Element {
           <CardDescription>업로드 기능(`POST /api/upload-youtube`)에 필요합니다.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="rounded-lg border p-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="space-y-1">
-                <p className="text-sm font-medium">현재 연결 채널</p>
-                <p className="text-xs text-muted-foreground">
-                  저장된 OAuth 값으로 자동 감지합니다. 실패하면 아래 수동 채널명을 식별용으로 사용할 수 있습니다.
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void resolveYoutubeChannel(true)}
-                disabled={checkingYoutubeChannel}
-              >
-                {checkingYoutubeChannel ? "확인 중..." : "채널 자동 확인"}
-              </Button>
-            </div>
-            <div className="mt-3 rounded-md bg-muted/40 px-3 py-2 text-sm">
-              {youtubeChannel ? (
-                <div className="space-y-1">
-                  <p className="font-medium">{youtubeChannel.title}</p>
-                  <p className="text-xs text-muted-foreground">
-                    channelId: {youtubeChannel.channelId}
-                    {youtubeChannel.customUrl ? ` | customUrl: ${youtubeChannel.customUrl}` : ""}
-                  </p>
-                </div>
-              ) : settings.youtubeChannelName ? (
-                <div className="space-y-1">
-                  <p className="font-medium">{settings.youtubeChannelName}</p>
-                  <p className="text-xs text-muted-foreground">수동 입력된 표시용 채널명</p>
-                </div>
-              ) : (
-                <p className="text-muted-foreground">아직 확인된 채널 정보가 없습니다.</p>
-              )}
-            </div>
-            {youtubeChannelError ? (
-              <p className="mt-2 text-xs text-destructive">{youtubeChannelError}</p>
-            ) : null}
-          </div>
           <div className="space-y-2">
             <HelpLabel
               htmlFor="youtubeClientId"
@@ -1030,7 +914,7 @@ export function SettingsForm(): React.JSX.Element {
             <HelpLabel
               htmlFor="youtubeChannelName"
               label="채널명(표시용)"
-              help="자동 감지가 어렵거나 여러 계정을 함께 관리할 때, Settings 화면에서 식별하기 위한 표시용 이름입니다."
+              help="여러 계정을 함께 관리할 때, Settings 화면에서 식별하기 위한 표시용 이름입니다."
             />
             <Input
               id="youtubeChannelName"
