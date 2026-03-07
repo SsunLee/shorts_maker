@@ -1,0 +1,61 @@
+name: Push Prisma Schema to Production DB
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "web/prisma/schema.prisma"
+      - ".github/workflows/db-push-production.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-push-production
+  cancel-in-progress: true
+
+jobs:
+  db-push:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${DATABASE_URL:-}" || (echo "Missing GitHub Secret: PROD_DATABASE_URL" && exit 1)
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prisma validate
+        run: npx prisma validate
+
+      - name: Push schema to production database
+        run: npx prisma db push --skip-generate
+
+      - name: Job summary
+        shell: bash
+        run: |
+          {
+            echo "## Production DB Push"
+            echo ""
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Schema: \`web/prisma/schema.prisma\`"
+            echo "- Result: success"
+          } >> "$GITHUB_STEP_SUMMARY"
