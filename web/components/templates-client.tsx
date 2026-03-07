@@ -65,9 +65,15 @@ type TemplateEditorState = {
   voice: string;
   voiceSpeed: string;
   primaryText: string;
+  primaryBold: boolean;
+  primaryItalic: boolean;
   secondaryText: string;
   secondaryEnabled: boolean;
+  secondaryBold: boolean;
+  secondaryItalic: boolean;
   badgeText: string;
+  badgeBold: boolean;
+  badgeItalic: boolean;
   fontName: string;
   fontBold: boolean;
   fontItalic: boolean;
@@ -196,9 +202,15 @@ function createInitialEditor(): TemplateEditorState {
     voice: "alloy",
     voiceSpeed: "1",
     primaryText: "{{title}}",
+    primaryBold: false,
+    primaryItalic: false,
     secondaryText: "{{topic}}",
     secondaryEnabled: true,
+    secondaryBold: false,
+    secondaryItalic: false,
     badgeText: "AI로 재구성된 콘텐츠입니다.",
+    badgeBold: false,
+    badgeItalic: false,
     fontName: "Noto Sans KR",
     fontBold: false,
     fontItalic: false,
@@ -295,8 +307,12 @@ function detectTemplateFontPreset(fontName: string | undefined): string {
 
 function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOptions {
   const fontName = editor.fontName.trim() || "Noto Sans KR";
-  const fontBold = Boolean(editor.fontBold);
-  const fontItalic = Boolean(editor.fontItalic);
+  const primaryBold = Boolean(editor.primaryBold);
+  const primaryItalic = Boolean(editor.primaryItalic);
+  const secondaryBold = Boolean(editor.secondaryBold);
+  const secondaryItalic = Boolean(editor.secondaryItalic);
+  const badgeBold = Boolean(editor.badgeBold);
+  const badgeItalic = Boolean(editor.badgeItalic);
   const backgroundColor = normalizeHex(editor.backgroundColor, "#000000");
   const backgroundOpacity = clampNumber(Number(editor.backgroundOpacity), 0, 1, 0);
   const primaryText = normalizeText(editor.primaryText);
@@ -322,8 +338,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowOpacity: 1,
       fontThickness: clampNumber(Number(editor.primaryFontThickness), 0, 8, 0),
       fontName,
-      fontBold,
-      fontItalic
+      fontBold: primaryBold,
+      fontItalic: primaryItalic
     },
     ...(editor.secondaryEnabled
       ? [
@@ -345,8 +361,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
             shadowOpacity: 1,
             fontThickness: clampNumber(Number(editor.secondaryFontThickness), 0, 8, 0),
             fontName,
-            fontBold,
-            fontItalic
+            fontBold: secondaryBold,
+            fontItalic: secondaryItalic
           }
         ]
       : [])
@@ -371,8 +387,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowOpacity: 0.8,
       fontThickness: clampNumber(Number(editor.badgeFontThickness), 0, 8, 0),
       fontName,
-      fontBold,
-      fontItalic
+      fontBold: badgeBold,
+      fontItalic: badgeItalic
     });
   }
 
@@ -417,8 +433,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       showTitle: true,
       titleText: primaryText,
       titleFontName: fontName,
-      titleFontBold: fontBold,
-      titleFontItalic: fontItalic,
+      titleFontBold: primaryBold,
+      titleFontItalic: primaryItalic,
       titleFontSize: clampNumber(Number(editor.primaryFontSize), 12, 120, 52),
       titleColor: normalizeHex(editor.primaryColor, "#FFFFFF"),
       sceneMotionPreset: editor.motionPreset,
@@ -529,14 +545,55 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
     voice: (item.voice || "alloy").trim().toLowerCase() || "alloy",
     voiceSpeed: String(clampNumber(Number(item.voiceSpeed), 0.5, 2, 1)),
     primaryText: extractLayerText(item.renderOptions, "__primary_title__", overlay.titleText || ""),
+    primaryBold: extractLayerToggle(
+      item.renderOptions,
+      "__primary_title__",
+      "fontBold",
+      Boolean(overlay.titleFontBold)
+    ),
+    primaryItalic: extractLayerToggle(
+      item.renderOptions,
+      "__primary_title__",
+      "fontItalic",
+      Boolean(overlay.titleFontItalic)
+    ),
     secondaryText: extractLayerText(item.renderOptions, "__secondary_title__", "{{topic}}"),
     secondaryEnabled: hasSecondaryLayer,
+    secondaryBold: extractLayerToggle(
+      item.renderOptions,
+      "__secondary_title__",
+      "fontBold",
+      Boolean(overlay.titleFontBold)
+    ),
+    secondaryItalic: extractLayerToggle(
+      item.renderOptions,
+      "__secondary_title__",
+      "fontItalic",
+      Boolean(overlay.titleFontItalic)
+    ),
     badgeText: extractLayerText(item.renderOptions, "__badge__", ""),
+    badgeBold: extractLayerToggle(
+      item.renderOptions,
+      "__badge__",
+      "fontBold",
+      Boolean(overlay.titleFontBold)
+    ),
+    badgeItalic: extractLayerToggle(
+      item.renderOptions,
+      "__badge__",
+      "fontItalic",
+      Boolean(overlay.titleFontItalic)
+    ),
     fontName:
       (overlay.titleTemplates || []).find((layer) => layer.id === "__primary_title__")?.fontName ||
       overlay.titleFontName ||
       "Noto Sans KR",
-    fontBold: extractLayerToggle(item.renderOptions, "__primary_title__", "fontBold", Boolean(overlay.titleFontBold)),
+    fontBold: extractLayerToggle(
+      item.renderOptions,
+      "__primary_title__",
+      "fontBold",
+      Boolean(overlay.titleFontBold)
+    ),
     fontItalic: extractLayerToggle(
       item.renderOptions,
       "__primary_title__",
@@ -1776,7 +1833,18 @@ export function TemplatesClient(): React.JSX.Element {
                   type="button"
                   size="sm"
                   variant={editor.fontBold ? "default" : "outline"}
-                  onClick={() => setEditor((prev) => ({ ...prev, fontBold: !prev.fontBold }))}
+                  onClick={() =>
+                    setEditor((prev) => {
+                      const next = !prev.fontBold;
+                      return {
+                        ...prev,
+                        fontBold: next,
+                        primaryBold: next,
+                        secondaryBold: next,
+                        badgeBold: next
+                      };
+                    })
+                  }
                 >
                   Bold
                 </Button>
@@ -1784,7 +1852,18 @@ export function TemplatesClient(): React.JSX.Element {
                   type="button"
                   size="sm"
                   variant={editor.fontItalic ? "default" : "outline"}
-                  onClick={() => setEditor((prev) => ({ ...prev, fontItalic: !prev.fontItalic }))}
+                  onClick={() =>
+                    setEditor((prev) => {
+                      const next = !prev.fontItalic;
+                      return {
+                        ...prev,
+                        fontItalic: next,
+                        primaryItalic: next,
+                        secondaryItalic: next,
+                        badgeItalic: next
+                      };
+                    })
+                  }
                 >
                   Italic
                 </Button>
@@ -2181,7 +2260,37 @@ export function TemplatesClient(): React.JSX.Element {
           <div className="grid gap-3 rounded-md border p-3">
             <div className="grid gap-2 2xl:grid-cols-[1fr,110px,110px,120px,90px,90px,90px]">
               <div className="space-y-1">
-                <Label>기본 타이틀 텍스트</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label>기본 타이틀 텍스트</Label>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={editor.primaryBold ? "default" : "outline"}
+                      onClick={() =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          primaryBold: !prev.primaryBold
+                        }))
+                      }
+                    >
+                      Bold
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={editor.primaryItalic ? "default" : "outline"}
+                      onClick={() =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          primaryItalic: !prev.primaryItalic
+                        }))
+                      }
+                    >
+                      Italic
+                    </Button>
+                  </div>
+                </div>
                 <Textarea
                   rows={2}
                   value={editor.primaryText}
@@ -2257,6 +2366,34 @@ export function TemplatesClient(): React.JSX.Element {
                 <div className="flex items-center justify-between gap-2">
                   <Label>보조 타이틀 텍스트</Label>
                   <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={editor.secondaryBold ? "default" : "outline"}
+                      disabled={!editor.secondaryEnabled}
+                      onClick={() =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          secondaryBold: !prev.secondaryBold
+                        }))
+                      }
+                    >
+                      Bold
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={editor.secondaryItalic ? "default" : "outline"}
+                      disabled={!editor.secondaryEnabled}
+                      onClick={() =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          secondaryItalic: !prev.secondaryItalic
+                        }))
+                      }
+                    >
+                      Italic
+                    </Button>
                     <Label htmlFor="secondary-enabled" className="text-xs text-muted-foreground">
                       사용
                     </Label>
@@ -2351,7 +2488,37 @@ export function TemplatesClient(): React.JSX.Element {
             </div>
             <div className="grid gap-2 2xl:grid-cols-[1fr,110px,110px,120px,90px,90px,90px]">
               <div className="space-y-1">
-                <Label>상단 배지 텍스트 (선택)</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label>상단 배지 텍스트 (선택)</Label>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={editor.badgeBold ? "default" : "outline"}
+                      onClick={() =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          badgeBold: !prev.badgeBold
+                        }))
+                      }
+                    >
+                      Bold
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={editor.badgeItalic ? "default" : "outline"}
+                      onClick={() =>
+                        setEditor((prev) => ({
+                          ...prev,
+                          badgeItalic: !prev.badgeItalic
+                        }))
+                      }
+                    >
+                      Italic
+                    </Button>
+                  </div>
+                </div>
                 <Input
                   value={editor.badgeText}
                   onChange={(event) => setEditor((prev) => ({ ...prev, badgeText: event.target.value }))}

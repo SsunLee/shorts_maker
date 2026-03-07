@@ -75,7 +75,7 @@ function textWrapSafetyMultiplier(text: string): number {
     return 1.22;
   }
   if (hasNonAscii) {
-    return 1.14;
+    return 1.08;
   }
   return 1;
 }
@@ -158,14 +158,13 @@ export function wrapTemplateTextLikeEngine(args: {
     return "";
   }
 
-  const widthPercent = clampNumber(args.widthPercent, 10, 95, 60);
+  const widthPercent = clampNumber(args.widthPercent, 10, 100, 60);
   const fontSize = clampNumber(args.fontSize, 12, 120, 48);
   const widthPx = 1080 * (widthPercent / 100);
-  const effectiveWidthPx = widthPx * 0.86;
+  const effectiveWidthPx = widthPx * 0.94;
   const wrapMultiplier = textWrapSafetyMultiplier(text);
-  const unitPx = Math.max(4, fontSize * 0.56 * wrapMultiplier);
+  const unitPx = Math.max(4, fontSize * 0.54 * wrapMultiplier);
   const maxUnits = clampNumber(effectiveWidthPx / unitPx, 6, 220, 18);
 
   return wrapTextByVisualWidth(text, maxUnits).join("\n");
 }
-

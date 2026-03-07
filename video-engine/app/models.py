@@ -52,7 +52,7 @@ class TitleTemplate(BaseModel):
     text: str = Field(default="", max_length=200)
     x: float = Field(default=50.0, ge=0.0, le=100.0)
     y: float = Field(default=10.0, ge=0.0, le=100.0)
-    width: float = Field(default=60.0, ge=10.0, le=95.0)
+    width: float = Field(default=60.0, ge=10.0, le=100.0)
     fontSize: int = Field(default=48, ge=12, le=120)
     color: str = Field(default="#FFFFFF", min_length=4, max_length=16)
     backgroundColor: str = Field(default="#000000", min_length=4, max_length=16)

@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -118,6 +118,8 @@ const TIMELINE_LANE_DEFAULT = 6;
 const TIMELINE_LANE_HEIGHT = 34;
 const TIMELINE_TOP_PADDING = 8;
 const TIMELINE_BOTTOM_PADDING = 10;
+const PREVIEW_PLAYBACK_FPS = 30;
+const PREVIEW_PLAYBACK_SYNC_EPSILON_SEC = 0.004;
 const UUID_V4_LIKE_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -371,7 +373,8 @@ function buildSubtitlePreviewTextShadow(args: {
 
 function smoothStep(value: number): number {
   const t = clampNumber(value, 0, 1, 0);
-  return t * t * (3 - 2 * t);
+  // Smootherstep: keeps both velocity and acceleration continuous at boundaries.
+  return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
 function resolveSceneMotionPresetForScene(
@@ -411,13 +414,15 @@ function computeSceneMotionPreview(args: {
 } {
   const sceneNumber = Math.max(1, Math.floor(args.sceneNumber));
   const resolvedMotionPreset = resolveSceneMotionPresetForScene(args.sceneMotionPreset, sceneNumber);
-  const motionSpeedMultiplier =
+  const rawMotionSpeed =
     clampNumber(
       Number(args.overlay.motionSpeedPercent),
       MOTION_SPEED_PERCENT_MIN,
       MOTION_SPEED_PERCENT_MAX,
       MOTION_SPEED_PERCENT_DEFAULT
     ) / 100;
+  // Compress aggressive speed settings to reduce visible jitter in high-motion sections.
+  const motionSpeedMultiplier = 1 + (rawMotionSpeed - 1) * 0.68;
   const boostedProgress = clampNumber(
     args.sceneProgress * motionSpeedMultiplier,
     0,
@@ -429,7 +434,7 @@ function computeSceneMotionPreview(args: {
   const focusY = clampNumber(Number(args.overlay.focusYPercent), 0, 100, 50) / 100;
   const drift = clampNumber(Number(args.overlay.focusDriftPercent), 0, 20, 6) / 100;
   const driftX = drift;
-  const driftY = drift * 0.72;
+  const driftY = drift * 0.64;
   const zoomGain = clampNumber(Number(args.overlay.focusZoomPercent), 3, 20, 9) / 100;
   const directionX = sceneNumber % 2 === 1 ? -1 : 1;
   const directionY = sceneNumber % 3 === 0 ? 1 : -1;
@@ -524,6 +529,31 @@ function buildCaptionChunksFromNarration(text: string, wordsPerCaption: number):
     }
   });
   return chunks;
+}
+
+function materializeTemplateTextForPreview(args: {
+  original: string;
+  isPrimary: boolean;
+  currentTitle?: string;
+  currentTopic?: string;
+  currentNarration?: string;
+  currentKeyword?: string;
+}): string {
+  const normalizedOriginal = normalizeTemplateTextForRender(args.original || "");
+  const currentTitle = String(args.currentTitle || "").trim();
+  const currentTopic = String(args.currentTopic || "").trim();
+  const currentNarration = String(args.currentNarration || "").trim();
+  const currentKeyword = String(args.currentKeyword || "").trim();
+
+  if (args.isPrimary) {
+    return currentTitle || normalizedOriginal;
+  }
+
+  return normalizedOriginal
+    .replace(/\{\{\s*title\s*\}\}|\{title\}/gi, currentTitle)
+    .replace(/\{\{\s*topic\s*\}\}|\{topic\}/gi, currentTopic)
+    .replace(/\{\{\s*narration\s*\}\}|\{narration\}/gi, currentNarration)
+    .replace(/\{\{\s*keyword\s*\}\}|\{keyword\}/gi, currentKeyword);
 }
 
 function generateSubtitleCuesFromNarration(args: {
@@ -735,6 +765,13 @@ function resolveVideoLayoutForAspect(
   return normalizeVideoLayout(layout);
 }
 
+function resolveImageAspectRatioForLayout(
+  aspectRatio: ImageAspectRatio,
+  layout: RenderOptions["overlay"]["videoLayout"]
+): ImageAspectRatio {
+  return normalizeVideoLayout(layout) === "panel_16_9" ? "16:9" : normalizeImageAspectRatio(aspectRatio);
+}
+
 function isNineBySixteen(width: number, height: number): boolean {
   if (width <= 0 || height <= 0) {
     return false;
@@ -921,7 +958,7 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
         : normalizeTemplateText(item.text),
     x: clampPercent(Number(item.x) || 50),
     y: clampPercent(Number(item.y) || 10),
-    width: clampNumber(Number(item.width), 10, 95, 60),
+    width: clampNumber(Number(item.width), 10, 100, 60),
     fontSize: clampNumber(Number(item.fontSize), 12, 120, Number(overlayDefaults.titleFontSize) || 48),
     color: item.color || overlayDefaults.titleColor || "#FFFFFF",
     backgroundColor: item.backgroundColor || "#000000",
@@ -1169,6 +1206,8 @@ export function CreateVideoForm(): React.JSX.Element {
   const [draggingCueId, setDraggingCueId] = useState<string>();
   const [timelineLaneCount, setTimelineLaneCount] = useState<number>(TIMELINE_LANE_DEFAULT);
   const workflowAudioRef = useRef<HTMLAudioElement>(null);
+  const previewPlaybackRafRef = useRef<number | undefined>(undefined);
+  const previewPlaybackLastPushAtRef = useRef(0);
   const subtitleTimelineRef = useRef<HTMLDivElement>(null);
   const subtitleCueInteractionRef = useRef<
     | {
@@ -1288,6 +1327,18 @@ export function CreateVideoForm(): React.JSX.Element {
         : undefined;
     return Math.max(1000, fromAudio || fromWorkflow || fromCues || 30000);
   }, [manualSubtitleCues, ttsDurationSec, workflow?.input.videoLengthSec]);
+  const syncTimelineAudioSec = useCallback(
+    (nextSec: number, force = false): void => {
+      const clampedSec = clampNumber(nextSec, 0, Math.max(1, timelineDurationMs) / 1000, 0);
+      setTimelineAudioSec((prev) => {
+        if (!force && Math.abs(prev - clampedSec) < PREVIEW_PLAYBACK_SYNC_EPSILON_SEC) {
+          return prev;
+        }
+        return clampedSec;
+      });
+    },
+    [timelineDurationMs]
+  );
   const timelineWaveBars = useMemo(() => {
     const seedText = workflow?.narration || narration || title || "shorts-maker";
     const seed = Array.from(seedText).reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
@@ -1367,6 +1418,28 @@ export function CreateVideoForm(): React.JSX.Element {
   const previewTitleTemplates = useMemo(
     () => [...(renderOptions.overlay.titleTemplates || [])],
     [renderOptions.overlay.titleTemplates]
+  );
+  const previewTemplateTextContext = useMemo(
+    () => {
+      const selectedKeyword =
+        sheetRows.find((row) => row.id === selectedSheetRowId)?.keyword?.trim() || "";
+      return {
+        currentTitle: title.trim() || workflow?.input.title || "",
+        currentTopic: topic.trim() || workflow?.input.topic || "",
+        currentNarration: narration.trim() || workflow?.narration || "",
+        currentKeyword: selectedKeyword
+      };
+    },
+    [
+      title,
+      workflow?.input.title,
+      topic,
+      workflow?.input.topic,
+      narration,
+      workflow?.narration,
+      sheetRows,
+      selectedSheetRowId
+    ]
   );
   const vrewPreviewLayout = useMemo(() => effectiveVideoLayout, [effectiveVideoLayout]);
   const activePreviewCueText = useMemo(() => {
@@ -1767,6 +1840,54 @@ export function CreateVideoForm(): React.JSX.Element {
   useEffect(() => {
     setTimelineAudioSec((prev) => Math.min(prev, timelineDurationMs / 1000));
   }, [timelineDurationMs]);
+
+  useEffect(() => {
+    if (!timelineAudioPlaying) {
+      if (previewPlaybackRafRef.current !== undefined) {
+        window.cancelAnimationFrame(previewPlaybackRafRef.current);
+        previewPlaybackRafRef.current = undefined;
+      }
+      previewPlaybackLastPushAtRef.current = 0;
+      return;
+    }
+
+    const audio = workflowAudioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    const minFrameIntervalMs = 1000 / PREVIEW_PLAYBACK_FPS;
+    const tick = (ts: number): void => {
+      const node = workflowAudioRef.current;
+      if (!node || node.paused || node.ended) {
+        previewPlaybackRafRef.current = undefined;
+        return;
+      }
+
+      if (previewPlaybackLastPushAtRef.current <= 0) {
+        previewPlaybackLastPushAtRef.current = ts;
+      }
+
+      if (ts - previewPlaybackLastPushAtRef.current >= minFrameIntervalMs) {
+        previewPlaybackLastPushAtRef.current = ts;
+        const nextSec = node.currentTime || 0;
+        startTransition(() => {
+          syncTimelineAudioSec(nextSec);
+        });
+      }
+
+      previewPlaybackRafRef.current = window.requestAnimationFrame(tick);
+    };
+
+    previewPlaybackRafRef.current = window.requestAnimationFrame(tick);
+    return () => {
+      if (previewPlaybackRafRef.current !== undefined) {
+        window.cancelAnimationFrame(previewPlaybackRafRef.current);
+        previewPlaybackRafRef.current = undefined;
+      }
+      previewPlaybackLastPushAtRef.current = 0;
+    };
+  }, [timelineAudioPlaying, syncTimelineAudioSec]);
 
   useEffect(() => {
     if (!workflow?.id || workflow.status !== "processing") {
@@ -2538,7 +2659,7 @@ export function CreateVideoForm(): React.JSX.Element {
   function seekTimelineAudio(nextMs: number): void {
     const audio = workflowAudioRef.current;
     const clampedMs = clampNumber(nextMs, 0, timelineDurationMs, 0);
-    setTimelineAudioSec(clampedMs / 1000);
+    syncTimelineAudioSec(clampedMs / 1000, true);
     if (audio) {
       audio.currentTime = clampedMs / 1000;
     }
@@ -2862,7 +2983,7 @@ export function CreateVideoForm(): React.JSX.Element {
       const deltaX = event.clientX - interaction.startX;
       const nextWidth = Math.max(
         10,
-        Math.min(95, Math.round(interaction.startWidth + deltaX * 0.15))
+        Math.min(100, Math.round(interaction.startWidth + deltaX * 0.15))
       );
       updateTemplateItem(interaction.id, { width: nextWidth });
     },
@@ -3321,6 +3442,10 @@ export function CreateVideoForm(): React.JSX.Element {
       (hasAppliedInSheetRows ||
         (sheetRows.length === 0 && !UUID_V4_LIKE_PATTERN.test(appliedId)));
     let effectiveSheetRowId = selectedId || (canUseAppliedId ? appliedId : undefined);
+    const effectiveRequestAspectRatio = resolveImageAspectRatioForLayout(
+      imageAspectRatio,
+      renderOptions.overlay.videoLayout
+    );
     try {
       if (!effectiveSheetRowId) {
         const query = sheetName.trim()
@@ -3362,7 +3487,7 @@ export function CreateVideoForm(): React.JSX.Element {
           topic: topic || undefined,
           narration: narration || undefined,
           imageStyle,
-          imageAspectRatio,
+          imageAspectRatio: effectiveRequestAspectRatio,
           voice,
           voiceSpeed: Number(voiceSpeed),
           useSfx,
@@ -3903,6 +4028,7 @@ export function CreateVideoForm(): React.JSX.Element {
                     <audio
                       ref={workflowAudioRef}
                       src={toDisplayMediaUrl(workflow.ttsUrl)}
+                      preload="auto"
                       controls
                       className="w-full"
                       onLoadedMetadata={(event) => {
@@ -3910,16 +4036,16 @@ export function CreateVideoForm(): React.JSX.Element {
                         if (Number.isFinite(nextDuration) && nextDuration > 0) {
                           setTtsDurationSec(nextDuration);
                         }
-                        setTimelineAudioSec(event.currentTarget.currentTime || 0);
+                        syncTimelineAudioSec(event.currentTarget.currentTime || 0, true);
                       }}
                       onTimeUpdate={(event) => {
-                        setTimelineAudioSec(event.currentTarget.currentTime || 0);
+                        syncTimelineAudioSec(event.currentTarget.currentTime || 0);
                       }}
                       onPlay={() => setTimelineAudioPlaying(true)}
                       onPause={() => setTimelineAudioPlaying(false)}
                       onEnded={() => setTimelineAudioPlaying(false)}
                       onSeeking={(event) => {
-                        setTimelineAudioSec(event.currentTarget.currentTime || 0);
+                        syncTimelineAudioSec(event.currentTarget.currentTime || 0, true);
                       }}
                     />
                   ) : (
@@ -4211,15 +4337,16 @@ export function CreateVideoForm(): React.JSX.Element {
                           <Select
                             value={effectiveVideoLayout}
                             disabled={effectiveImageAspectRatio === "16:9"}
-                            onValueChange={(value) =>
-                              setOverlayOption(
-                                "videoLayout",
-                                resolveVideoLayoutForAspect(
-                                  value as RenderOptions["overlay"]["videoLayout"],
-                                  effectiveImageAspectRatio
-                                )
-                              )
-                            }
+                            onValueChange={(value) => {
+                              const nextLayout = resolveVideoLayoutForAspect(
+                                value as RenderOptions["overlay"]["videoLayout"],
+                                effectiveImageAspectRatio
+                              );
+                              setOverlayOption("videoLayout", nextLayout);
+                              if (nextLayout === "panel_16_9") {
+                                setImageAspectRatio("16:9");
+                              }
+                            }}
                           >
                             <SelectTrigger>
                               <SelectValue placeholder="레이아웃 선택" />
@@ -4715,9 +4842,17 @@ export function CreateVideoForm(): React.JSX.Element {
                                     item.id === primaryTitleTemplateId
                                       ? normalizeTemplateText(item.text).trim() || defaultPrimaryTemplateText
                                       : normalizeTemplateText(item.text);
+                                  const materializedText = materializeTemplateTextForPreview({
+                                    original: rawText,
+                                    isPrimary: item.id === primaryTitleTemplateId,
+                                    currentTitle: previewTemplateTextContext.currentTitle,
+                                    currentTopic: previewTemplateTextContext.currentTopic,
+                                    currentNarration: previewTemplateTextContext.currentNarration,
+                                    currentKeyword: previewTemplateTextContext.currentKeyword
+                                  });
                                   const text = wrapTemplateTextLikeEngine({
-                                    text: rawText,
-                                    widthPercent: clampNumber(Number(item.width), 10, 95, 60),
+                                    text: materializedText,
+                                    widthPercent: clampNumber(Number(item.width), 10, 100, 60),
                                     fontSize: clampNumber(Number(item.fontSize), 12, 120, 44)
                                   });
                                   const titleColor = normalizeHexColor(item.color, "#FFFFFF");
@@ -5111,9 +5246,17 @@ export function CreateVideoForm(): React.JSX.Element {
                                   item.id === primaryTitleTemplateId
                                     ? normalizeTemplateText(item.text).trim() || defaultPrimaryTemplateText
                                     : normalizeTemplateText(item.text);
+                                const materializedText = materializeTemplateTextForPreview({
+                                  original: rawText,
+                                  isPrimary: item.id === primaryTitleTemplateId,
+                                  currentTitle: previewTemplateTextContext.currentTitle,
+                                  currentTopic: previewTemplateTextContext.currentTopic,
+                                  currentNarration: previewTemplateTextContext.currentNarration,
+                                  currentKeyword: previewTemplateTextContext.currentKeyword
+                                });
                                 const wrappedText = wrapTemplateTextLikeEngine({
-                                  text: rawText,
-                                  widthPercent: clampNumber(Number(item.width), 10, 95, 60),
+                                  text: materializedText,
+                                  widthPercent: clampNumber(Number(item.width), 10, 100, 60),
                                   fontSize: clampNumber(Number(item.fontSize), 12, 120, 44)
                                 });
                                 return (
@@ -5331,11 +5474,11 @@ export function CreateVideoForm(): React.JSX.Element {
                                   <Input
                                     type="number"
                                     min={10}
-                                    max={95}
+                                    max={100}
                                     value={item.width}
                                     onChange={(event) =>
                                       updateTemplateItem(item.id, {
-                                        width: clampNumber(Number(event.target.value), 10, 95, 60)
+                                        width: clampNumber(Number(event.target.value), 10, 100, 60)
                                       })
                                     }
                                   />

@@ -9,6 +9,7 @@ import { buildVideoWithEngine } from "@/lib/video-engine-service";
 import { getWorkflow, upsertWorkflow } from "@/lib/workflow-store";
 import {
   CreateVideoRequest,
+  ImageAspectRatio,
   RenderOptions,
   WorkflowStage,
   VideoWorkflow,
@@ -95,6 +96,13 @@ function resolveVideoLayoutForAspect(
     return "panel_16_9";
   }
   return normalizeVideoLayout(value);
+}
+
+function resolveImageAspectRatioForWorkflow(workflow: Pick<VideoWorkflow, "input" | "renderOptions">): ImageAspectRatio {
+  const inputAspectRatio = workflow.input.imageAspectRatio === "16:9" ? "16:9" : "9:16";
+  const overlayLayout = normalizeRenderOptions(workflow.renderOptions).overlay.videoLayout;
+  const effectiveLayout = resolveVideoLayoutForAspect(inputAspectRatio, overlayLayout);
+  return effectiveLayout === "panel_16_9" ? "16:9" : inputAspectRatio;
 }
 
 function normalizeRenderOptions(
@@ -472,9 +480,10 @@ export async function regenerateWorkflowSceneImage(
   }
 
   await upsertRow({ id, status: "generating_images", progress: 55 }, userId);
+  const imageAspectRatio = resolveImageAspectRatioForWorkflow(workflow);
   const [nextImageUrl] = await generateImages(workflow.id, [targetScene.imagePrompt], {
     startIndex: targetIndex - 1,
-    imageAspectRatio: workflow.input.imageAspectRatio === "16:9" ? "16:9" : "9:16"
+    imageAspectRatio
   }, userId);
 
   const scenes = workflow.scenes.map((scene) =>
@@ -554,11 +563,12 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
   try {
     if (workflow.stage === "scene_split_review") {
       await upsertRow({ id, status: "generating_images", progress: 45 }, userId);
+      const imageAspectRatio = resolveImageAspectRatioForWorkflow(workflow);
       const imageUrls = await generateImages(
         workflow.id,
         workflow.scenes.map((scene) => scene.imagePrompt),
         {
-          imageAspectRatio: workflow.input.imageAspectRatio === "16:9" ? "16:9" : "9:16",
+          imageAspectRatio,
           onProgress: async (completed, total) => {
             const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
             await upsertRow({
@@ -621,6 +631,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         ttsPath: workflow.ttsUrl,
         subtitlesText: workflow.narration,
         titleText: workflow.input.title,
+        topicText: workflow.input.topic,
         useSfx: workflow.input.useSfx,
         targetDurationSec: workflow.input.videoLengthSec,
         renderOptions: renderOptionsForVideo
@@ -670,6 +681,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
           ttsPath: workflow.ttsUrl,
           subtitlesText: workflow.narration,
           titleText: workflow.input.title,
+          topicText: workflow.input.topic,
           useSfx: workflow.input.useSfx,
           targetDurationSec: workflow.input.videoLengthSec,
           renderOptions: normalizedRenderOptions

@@ -78,6 +78,10 @@ export interface BuildVideoPayload {
   ttsPath: string;
   subtitlesText: string;
   titleText: string;
+  topicText?: string;
+  keywordText?: string;
+  sourceTitle?: string;
+  sourceTopic?: string;
   useSfx: boolean;
   targetDurationSec?: number;
   renderOptions?: RenderOptions;

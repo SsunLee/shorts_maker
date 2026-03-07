@@ -29,6 +29,118 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizeComparableText(value: string | undefined): string {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function replaceAllUnsafe(source: string, from: string, to: string): string {
+  if (!from) {
+    return source;
+  }
+  return source.split(from).join(to);
+}
+
+function materializeTemplateText(args: {
+  original: string;
+  isPrimary: boolean;
+  currentTitle: string;
+  currentTopic?: string;
+  currentNarration?: string;
+  currentKeyword?: string;
+  sourceTitle?: string;
+  sourceTopic?: string;
+}): string {
+  const normalizedOriginal = String(args.original || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\\n/g, "\n");
+  const currentTitle = String(args.currentTitle || "").trim();
+  const currentTopic = String(args.currentTopic || "").trim();
+  const currentNarration = String(args.currentNarration || "").trim();
+  const currentKeyword = String(args.currentKeyword || "").trim();
+
+  if (args.isPrimary) {
+    return currentTitle || normalizedOriginal;
+  }
+
+  let output = normalizedOriginal;
+  output = output
+    .replace(/\{\{\s*title\s*\}\}|\{title\}/gi, currentTitle)
+    .replace(/\{\{\s*topic\s*\}\}|\{topic\}/gi, currentTopic)
+    .replace(/\{\{\s*narration\s*\}\}|\{narration\}/gi, currentNarration)
+    .replace(/\{\{\s*keyword\s*\}\}|\{keyword\}/gi, currentKeyword);
+  if (output !== normalizedOriginal) {
+    return output;
+  }
+
+  const normalizedSourceTitle = normalizeComparableText(args.sourceTitle);
+  const normalizedSourceTopic = normalizeComparableText(args.sourceTopic);
+  const normalizedCurrent = normalizeComparableText(normalizedOriginal);
+  if (normalizedSourceTitle && normalizedCurrent === normalizedSourceTitle) {
+    return currentTitle || normalizedOriginal;
+  }
+  if (normalizedSourceTopic && normalizedCurrent === normalizedSourceTopic) {
+    return currentTopic || currentTitle || normalizedOriginal;
+  }
+
+  if (args.sourceTitle && currentTitle) {
+    output = replaceAllUnsafe(output, args.sourceTitle, currentTitle);
+  }
+  if (args.sourceTopic && currentTopic) {
+    output = replaceAllUnsafe(output, args.sourceTopic, currentTopic);
+  }
+  return output;
+}
+
+function materializeRenderOptionsForVideo(args: {
+  renderOptions: RenderOptions | undefined;
+  titleText: string;
+  topicText?: string;
+  narrationText?: string;
+  keywordText?: string;
+  sourceTitle?: string;
+  sourceTopic?: string;
+}): RenderOptions | undefined {
+  const renderOptions = args.renderOptions;
+  if (!renderOptions) {
+    return undefined;
+  }
+
+  const titleTemplates = renderOptions.overlay.titleTemplates || [];
+  if (titleTemplates.length === 0) {
+    return renderOptions;
+  }
+
+  const nextTemplates = titleTemplates.map((item) => ({
+    ...item,
+    text: materializeTemplateText({
+      original: item.text,
+      isPrimary: item.id === "__primary_title__",
+      currentTitle: args.titleText,
+      currentTopic: args.topicText,
+      currentNarration: args.narrationText,
+      currentKeyword: args.keywordText,
+      sourceTitle: args.sourceTitle,
+      sourceTopic: args.sourceTopic
+    })
+  }));
+
+  return {
+    ...renderOptions,
+    overlay: {
+      ...renderOptions.overlay,
+      titleText: args.titleText || renderOptions.overlay.titleText || "",
+      titleTemplates: nextTemplates
+    }
+  };
+}
+
 function normalizeRenderOptionsForEngine(
   renderOptions: BuildVideoPayload["renderOptions"]
 ): RenderOptions | undefined {
@@ -65,7 +177,7 @@ function normalizeRenderOptionsForEngine(
         text: asText(row.text),
         x: clampNumber(asFiniteNumber(row.x, 50), 0, 100),
         y: clampNumber(asFiniteNumber(row.y, 10), 0, 100),
-        width: clampNumber(asFiniteNumber(row.width, 60), 10, 95),
+        width: clampNumber(asFiniteNumber(row.width, 60), 10, 100),
         fontSize: Math.round(clampNumber(asFiniteNumber(row.fontSize, 48), 12, 120)),
         color: asText(row.color, "#FFFFFF"),
         backgroundColor: asText(row.backgroundColor, "#000000"),
@@ -171,7 +283,16 @@ export async function buildVideoWithEngine(
     payload.imageUrls.map((source) => toEngineReadableAsset(source))
   );
   const ttsPath = await toEngineReadableAsset(payload.ttsPath);
-  const sanitizedRenderOptions = normalizeRenderOptionsForEngine(payload.renderOptions);
+  const normalizedRenderOptions = normalizeRenderOptionsForEngine(payload.renderOptions);
+  const sanitizedRenderOptions = materializeRenderOptionsForVideo({
+    renderOptions: normalizedRenderOptions,
+    titleText: asText(payload.titleText),
+    topicText: asText(payload.topicText),
+    narrationText: asText(payload.subtitlesText),
+    keywordText: asText(payload.keywordText),
+    sourceTitle: asText(payload.sourceTitle),
+    sourceTopic: asText(payload.sourceTopic)
+  });
 
   let response: Response;
   try {

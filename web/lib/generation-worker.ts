@@ -76,6 +76,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       ttsPath: tts.publicUrl,
       subtitlesText: narration,
       titleText: payload.title,
+      topicText: payload.topic,
       useSfx: payload.useSfx,
       targetDurationSec: payload.videoLengthSec
     });

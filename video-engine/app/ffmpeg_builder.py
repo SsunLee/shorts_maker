@@ -387,9 +387,13 @@ def _zoompan_motion_filter(
 
     frames_minus_one = max(1, frame_count - 1)
     t_expr = f"(on/{frames_minus_one})"
-    motion_speed = _clamp(_safe_float(options.get("motionSpeedPercent"), 135.0), 60.0, 220.0) / 100.0
+    raw_motion_speed = _clamp(_safe_float(options.get("motionSpeedPercent"), 135.0), 60.0, 220.0) / 100.0
+    motion_speed = 1.0 + (raw_motion_speed - 1.0) * 0.68
     progress_expr = f"clip({t_expr}*{motion_speed:.2f},0,1)"
-    ease_expr = f"(3*{progress_expr}*{progress_expr}-2*{progress_expr}*{progress_expr}*{progress_expr})"
+    ease_expr = (
+        f"({progress_expr}*{progress_expr}*{progress_expr}"
+        f"*({progress_expr}*({progress_expr}*6-15)+10))"
+    )
     try:
         configured_zoom = float(options.get("focusZoomPercent"))
     except (TypeError, ValueError):
@@ -400,7 +404,7 @@ def _zoompan_motion_filter(
     focus_y = _clamp(_safe_float(options.get("focusYPercent"), 50.0), 0.0, 100.0) / 100.0
     drift = _clamp(_safe_float(options.get("focusDriftPercent"), 6.0), 0.0, 20.0) / 100.0
     drift_x = drift
-    drift_y = drift * 0.72
+    drift_y = drift * 0.64
     direction_x = -1.0 if scene_index % 2 else 1.0
     direction_y = -1.0 if scene_index % 3 else 1.0
     start_fx = _clamp(focus_x - (drift_x * direction_x), 0.06, 0.94)
@@ -418,7 +422,7 @@ def _zoompan_motion_filter(
     y_ud_expr = f"'clip(ih*({start_fy:.4f}+({end_fy - start_fy:.4f})*{ease_expr})-(ih/zoom/2),0,ih-ih/zoom)'"
     x_center_focus_expr = f"'clip(iw*{focus_x:.4f}-(iw/zoom/2),0,iw-iw/zoom)'"
     y_center_focus_expr = f"'clip(ih*{focus_y:.4f}-(ih/zoom/2),0,ih-ih/zoom)'"
-    oversample_scale = 2.0 if fps >= 60 else 1.5
+    oversample_scale = 2.4 if fps >= 60 else 2.0
     motion_w = _even(int(round(out_w * oversample_scale)))
     motion_h = _even(int(round(out_h * oversample_scale)))
     zoompan_tail = (
@@ -583,7 +587,7 @@ def _text_wrap_safety_multiplier(text: str) -> float:
     if has_emoji_or_symbol:
         return 1.22
     if has_non_ascii:
-        return 1.14
+        return 1.08
     return 1.0
 
 
@@ -783,7 +787,7 @@ def _build_title_template_filter(
 
     fontsize = int(template.get("fontSize") or 48)
     width_pct = float(template.get("width", 60.0))
-    width_pct = max(10.0, min(95.0, width_pct))
+    width_pct = max(10.0, min(100.0, width_pct))
     color_raw = str(template.get("color") or "#FFFFFF").strip()
     color = color_raw if color_raw.startswith("#") else "#FFFFFF"
     background_color_raw = str(template.get("backgroundColor") or "#000000").strip()
@@ -827,12 +831,13 @@ def _build_title_template_filter(
         if resolved_font_file:
             font_file = resolved_font_file
 
-    # Approximate wrapping by template width so preview/editor box and ffmpeg output are closer.
-    # Use conservative width + script-aware multiplier to reduce clipping in non-Latin text.
+    # Approximate wrapping by template width.
+    # Keep coefficients aligned with web/lib/template-text-wrap.ts so editor preview
+    # and engine output line-break at the same point as closely as possible.
     width_px = 1080 * (width_pct / 100.0)
-    effective_width_px = width_px * 0.86
+    effective_width_px = width_px * 0.94
     wrap_multiplier = _text_wrap_safety_multiplier(text)
-    unit_px = max(4.0, fontsize * 0.56 * wrap_multiplier)
+    unit_px = max(4.0, fontsize * 0.54 * wrap_multiplier)
     max_units = max(6.0, min(220.0, effective_width_px / unit_px))
     wrapped_lines = _wrap_text_by_visual_width(text, max_units)
     if not wrapped_lines:
