@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import os from "os";
 import path from "path";
 import {
   getSheetsContext,
@@ -9,6 +10,7 @@ import { progressFromStatus } from "@/lib/status";
 import { VideoRow, VideoStatus } from "@/lib/types";
 
 const rowsFile = path.join(process.cwd(), "data", "rows.json");
+const serverlessRowsFile = path.join(os.tmpdir(), "shorts-maker", "rows.json");
 const DEFAULT_SHEET_COLUMNS = [
   "id",
   "status",
@@ -502,6 +504,14 @@ function ensureKnownStatusForLocalRows(status: string | undefined): VideoStatus 
   return toVideoStatus(status);
 }
 
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 function normalizeLocalRow(
   row: Omit<Partial<VideoRow>, "status"> & { status?: string }
 ): VideoRow {
@@ -530,29 +540,34 @@ function ensureProgress(row: VideoRow): VideoRow {
   };
 }
 
-async function ensureRowsFile(): Promise<void> {
-  await fs.mkdir(path.dirname(rowsFile), { recursive: true });
-  try {
-    await fs.access(rowsFile);
-  } catch {
-    await fs.writeFile(rowsFile, JSON.stringify([], null, 2), "utf8");
-  }
-}
-
 async function readRowsFile(): Promise<VideoRow[]> {
-  await ensureRowsFile();
-  const raw = await fs.readFile(rowsFile, "utf8");
-  try {
-    const parsed = JSON.parse(raw) as Partial<VideoRow>[];
-    return parsed.map((row) => normalizeLocalRow(row));
-  } catch {
-    return [];
+  const candidates = isReadOnlyServerlessRuntime()
+    ? [serverlessRowsFile, rowsFile]
+    : [rowsFile, serverlessRowsFile];
+
+  for (const candidate of candidates) {
+    try {
+      const raw = await fs.readFile(candidate, "utf8");
+      const parsed = JSON.parse(raw) as Partial<VideoRow>[];
+      return parsed.map((row) => normalizeLocalRow(row));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        continue;
+      }
+      if (error instanceof SyntaxError) {
+        return [];
+      }
+      throw error;
+    }
   }
+  return [];
 }
 
 async function writeRowsFile(rows: VideoRow[]): Promise<void> {
-  await ensureRowsFile();
-  await fs.writeFile(rowsFile, JSON.stringify(rows, null, 2), "utf8");
+  const target = isReadOnlyServerlessRuntime() ? serverlessRowsFile : rowsFile;
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, JSON.stringify(rows, null, 2), "utf8");
 }
 
 async function listRowsFromSheets(context: SheetsContext): Promise<VideoRow[]> {
