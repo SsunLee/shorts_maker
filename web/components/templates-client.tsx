@@ -103,6 +103,7 @@ type TemplateEditorState = {
   badgeColor: string;
   subtitlePosition: RenderOptions["subtitle"]["position"];
   subtitleFontSize: string;
+  subtitleMaxCharsPerCaption: string;
   subtitleYPercent: string;
   subtitleSampleText: string;
   videoLayout: VideoLayout;
@@ -169,6 +170,7 @@ const BASE_SUBTITLE: RenderOptions["subtitle"] = {
   position: "bottom",
   subtitleYPercent: 86,
   wordsPerCaption: 5,
+  maxCharsPerCaption: 18,
   manualCues: []
 };
 
@@ -243,6 +245,7 @@ function createInitialEditor(): TemplateEditorState {
     badgeColor: "#FFFFFF",
     subtitlePosition: "bottom",
     subtitleFontSize: "16",
+    subtitleMaxCharsPerCaption: "18",
     subtitleYPercent: "86",
     subtitleSampleText: "신비한 고대 이집트 문자의 비밀을 지금 공개합니다.",
     videoLayout: "fill_9_16",
@@ -421,14 +424,15 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
   return {
     subtitle: {
       ...BASE_SUBTITLE,
-      fontSize: clampNumber(Number(editor.subtitleFontSize), 10, 120, 16),
+      fontSize: clampNumber(Number(editor.subtitleFontSize), 8, 120, 16),
       position:
         editor.subtitlePosition === "top" ||
         editor.subtitlePosition === "middle" ||
         editor.subtitlePosition === "bottom"
           ? editor.subtitlePosition
           : "bottom",
-      subtitleYPercent: clampNumber(Number(editor.subtitleYPercent), 0, 100, 86)
+      subtitleYPercent: clampNumber(Number(editor.subtitleYPercent), 0, 100, 86),
+      maxCharsPerCaption: clampNumber(Number(editor.subtitleMaxCharsPerCaption), 8, 60, 18)
     },
     overlay: {
       ...BASE_OVERLAY,
@@ -648,7 +652,10 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
       item.renderOptions.subtitle.position === "bottom"
         ? item.renderOptions.subtitle.position
         : "bottom",
-    subtitleFontSize: String(clampNumber(Number(item.renderOptions.subtitle.fontSize), 10, 120, 16)),
+    subtitleFontSize: String(clampNumber(Number(item.renderOptions.subtitle.fontSize), 8, 120, 16)),
+    subtitleMaxCharsPerCaption: String(
+      clampNumber(Number(item.renderOptions.subtitle.maxCharsPerCaption), 8, 60, 18)
+    ),
     subtitleYPercent: formatPercentString(
       clampNumber(Number(item.renderOptions.subtitle.subtitleYPercent), 0, 100, 86)
     ),
@@ -1102,7 +1109,7 @@ export function TemplatesClient(): React.JSX.Element {
     () =>
       clampNumber(
         Number(editor.subtitleFontSize) * subtitlePreviewRenderScale,
-        10,
+        8,
         120,
         24
       ),
@@ -2978,7 +2985,7 @@ export function TemplatesClient(): React.JSX.Element {
                 </div>
               ))}
             </div>
-            <div className="grid gap-2 md:grid-cols-[1fr,120px,120px,1fr]">
+            <div className="grid gap-2 md:grid-cols-[1fr,120px,140px,120px,1fr]">
               <div className="space-y-1">
                 <Label>자막 예시 텍스트</Label>
                 <Input
@@ -3014,13 +3021,28 @@ export function TemplatesClient(): React.JSX.Element {
                 <Label>자막 크기</Label>
                 <Input
                   type="number"
-                  min={10}
+                  min={8}
                   max={120}
                   value={editor.subtitleFontSize}
                   onChange={(event) =>
                     setEditor((prev) => ({
                       ...prev,
                       subtitleFontSize: event.target.value
+                    }))
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>자막 최대 글자수</Label>
+                <Input
+                  type="number"
+                  min={8}
+                  max={60}
+                  value={editor.subtitleMaxCharsPerCaption}
+                  onChange={(event) =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      subtitleMaxCharsPerCaption: event.target.value
                     }))
                   }
                 />

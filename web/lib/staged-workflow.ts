@@ -45,6 +45,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
     position: "bottom",
     subtitleYPercent: 86,
     wordsPerCaption: 5,
+    maxCharsPerCaption: 18,
     manualCues: []
   },
   overlay: {
@@ -140,7 +141,7 @@ function normalizeRenderOptions(
   return {
     subtitle: {
       ...subtitle,
-      fontSize: clampNumber(Number(subtitle.fontSize), 10, 80, 16),
+      fontSize: clampNumber(Number(subtitle.fontSize), 8, 80, 16),
       outline: clampNumber(Number(subtitle.outline), 0, 8, 2),
       shadow: clampNumber(Number(subtitle.shadow), 0, 8, 1),
       shadowOpacity: clampNumber(Number(subtitle.shadowOpacity), 0, 1, 1),
@@ -148,6 +149,7 @@ function normalizeRenderOptions(
       subtitleDelayMs: clampNumber(Number(subtitle.subtitleDelayMs), -500, 1500, 180),
       subtitleYPercent: clampNumber(Number(subtitle.subtitleYPercent), 0, 100, 86),
       wordsPerCaption: clampNumber(Number(subtitle.wordsPerCaption), 2, 10, 5),
+      maxCharsPerCaption: clampNumber(Number(subtitle.maxCharsPerCaption), 8, 60, 18),
       manualCues
     },
     overlay: {

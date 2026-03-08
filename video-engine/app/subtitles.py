@@ -13,12 +13,17 @@ def _format_timestamp(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
 
-def _build_caption_chunks(text: str, words_per_caption: int) -> list[str]:
+def _build_caption_chunks(
+    text: str,
+    words_per_caption: int,
+    max_chars_per_caption: int,
+) -> list[str]:
     normalized = re.sub(r"\r\n?", "\n", text).strip()
     if not normalized:
         return []
 
     safe_words = max(2, min(10, int(words_per_caption)))
+    safe_chars = max(8, min(60, int(max_chars_per_caption)))
     sentence_units: list[str] = []
     for line in re.split(r"\n+", normalized):
         stripped_line = line.strip()
@@ -32,11 +37,31 @@ def _build_caption_chunks(text: str, words_per_caption: int) -> list[str]:
     chunks: list[str] = []
     for unit in sentence_units:
         words = [word for word in unit.split(" ") if word]
-        if len(words) <= safe_words:
+        compact_len = len(re.sub(r"\s+", "", unit))
+        has_whitespace_break = bool(re.search(r"\s", unit)) and len(words) > 1
+        if len(words) <= safe_words and compact_len <= safe_chars:
             chunks.append(unit)
             continue
-        for idx in range(0, len(words), safe_words):
-            chunks.append(" ".join(words[idx : idx + safe_words]))
+        if not has_whitespace_break:
+            for idx in range(0, len(unit), safe_chars):
+                piece = unit[idx : idx + safe_chars].strip()
+                if piece:
+                    chunks.append(piece)
+            continue
+
+        current_words: list[str] = []
+        for word in words:
+            next_words = [*current_words, word]
+            next_text = " ".join(next_words)
+            next_len = len(re.sub(r"\s+", "", next_text))
+            if len(next_words) > safe_words or next_len > safe_chars:
+                if current_words:
+                    chunks.append(" ".join(current_words))
+                current_words = [word]
+            else:
+                current_words = next_words
+        if current_words:
+            chunks.append(" ".join(current_words))
     return chunks
 
 
@@ -44,15 +69,21 @@ def build_srt_from_text(
     text: str,
     duration_sec: float,
     words_per_caption: int = 5,
+    max_chars_per_caption: int = 18,
     subtitle_delay_ms: int = 180,
 ) -> str:
     """
-    Convert narration text into an SRT string by chunking 4-6 words per subtitle.
+    Convert narration text into an SRT string by chunking based on
+    words per caption and max characters per caption.
     """
     normalized = re.sub(r"\s+", " ", text).strip()
     if not normalized:
         return ""
-    chunks = _build_caption_chunks(normalized, words_per_caption)
+    chunks = _build_caption_chunks(
+        normalized,
+        words_per_caption,
+        max_chars_per_caption,
+    )
     if not chunks:
         return ""
 

@@ -10,7 +10,7 @@ class SubtitleCue(BaseModel):
 
 class SubtitleOptions(BaseModel):
     fontName: str = Field(default="Arial", min_length=1)
-    fontSize: int = Field(default=16, ge=10, le=80)
+    fontSize: int = Field(default=16, ge=8, le=80)
     primaryColor: str = Field(default="#FFFFFF", min_length=4, max_length=16)
     outlineColor: str = Field(default="#000000", min_length=4, max_length=16)
     outline: int = Field(default=2, ge=0, le=8)
@@ -21,6 +21,7 @@ class SubtitleOptions(BaseModel):
     position: str = Field(default="bottom")
     subtitleYPercent: float = Field(default=86.0, ge=0.0, le=100.0)
     wordsPerCaption: int = Field(default=5, ge=2, le=10)
+    maxCharsPerCaption: int = Field(default=18, ge=8, le=60)
     manualCues: list[SubtitleCue] = Field(default_factory=list)
 
 

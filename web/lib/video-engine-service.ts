@@ -204,7 +204,7 @@ function normalizeRenderOptionsForEngine(
   return {
     subtitle: {
       fontName: asText(subtitleRaw.fontName, "Arial"),
-      fontSize: Math.round(clampNumber(asFiniteNumber(subtitleRaw.fontSize, 16), 10, 80)),
+      fontSize: Math.round(clampNumber(asFiniteNumber(subtitleRaw.fontSize, 16), 8, 80)),
       primaryColor: asText(subtitleRaw.primaryColor, "#FFFFFF"),
       outlineColor: asText(subtitleRaw.outlineColor, "#000000"),
       outline: Math.round(clampNumber(asFiniteNumber(subtitleRaw.outline, 2), 0, 8)),
@@ -215,6 +215,9 @@ function normalizeRenderOptionsForEngine(
       position: (asText(subtitleRaw.position, "bottom") as RenderOptions["subtitle"]["position"]),
       subtitleYPercent: clampNumber(asFiniteNumber(subtitleRaw.subtitleYPercent, 86), 0, 100),
       wordsPerCaption: Math.round(clampNumber(asFiniteNumber(subtitleRaw.wordsPerCaption, 5), 2, 10)),
+      maxCharsPerCaption: Math.round(
+        clampNumber(asFiniteNumber(subtitleRaw.maxCharsPerCaption, 18), 8, 60)
+      ),
       manualCues
     },
     overlay: {

@@ -107,6 +107,7 @@ export interface SubtitleStyleOptions {
   position: "top" | "middle" | "bottom";
   subtitleYPercent: number;
   wordsPerCaption: number;
+  maxCharsPerCaption?: number;
   manualCues?: SubtitleCue[];
 }
 

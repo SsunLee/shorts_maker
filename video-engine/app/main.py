@@ -84,6 +84,11 @@ def build_video(
             if payload.renderOptions is not None
             else 5
         )
+        max_chars_per_caption = (
+            payload.renderOptions.subtitle.maxCharsPerCaption
+            if payload.renderOptions is not None
+            else 18
+        )
         subtitle_delay_ms = (
             payload.renderOptions.subtitle.subtitleDelayMs
             if payload.renderOptions is not None
@@ -104,6 +109,7 @@ def build_video(
                 payload.subtitlesText,
                 duration,
                 words_per_caption=words_per_caption,
+                max_chars_per_caption=max_chars_per_caption,
                 subtitle_delay_ms=subtitle_delay_ms,
             )
         srt_path = assets_dir / "subtitles.srt"

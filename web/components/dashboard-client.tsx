@@ -260,6 +260,14 @@ export function DashboardClient(): React.JSX.Element {
     }
     return automationTemplates.find((item) => item.id === scheduleTemplateId);
   }, [automationTemplates, scheduleTemplateId, activeTemplate]);
+  const deletableScheduleTemplateId = useMemo(() => {
+    if (!scheduleTemplateId || scheduleTemplateId === ACTIVE_TEMPLATE_VALUE) {
+      return undefined;
+    }
+    return automationTemplates.some((item) => item.id === scheduleTemplateId)
+      ? scheduleTemplateId
+      : undefined;
+  }, [automationTemplates, scheduleTemplateId]);
 
   function hydrateScheduleForm(next: AutomationScheduleState): void {
     setScheduleEnabled(next.config.enabled);
@@ -465,8 +473,21 @@ export function DashboardClient(): React.JSX.Element {
       if (!response.ok) {
         throw new Error(data.error || "템플릿 삭제에 실패했습니다.");
       }
-      setAutomationTemplates(data.templates || []);
-      setActiveAutomationTemplateId(data.activeTemplateId || ACTIVE_TEMPLATE_VALUE);
+      const nextTemplates = data.templates || [];
+      const nextActiveTemplateId = data.activeTemplateId || ACTIVE_TEMPLATE_VALUE;
+      setAutomationTemplates(nextTemplates);
+      setActiveAutomationTemplateId(nextActiveTemplateId);
+      setScheduleTemplateId((prev) => {
+        if (!prev || prev === ACTIVE_TEMPLATE_VALUE) {
+          return prev || ACTIVE_TEMPLATE_VALUE;
+        }
+        return nextTemplates.some((item) => item.id === prev)
+          ? prev
+          : nextActiveTemplateId;
+      });
+      if (scheduleTemplateId === templateId) {
+        setScheduleDraftDirty(true);
+      }
     } catch (templateError) {
       setAutomationTemplateError(
         templateError instanceof Error ? templateError.message : "Unknown error"
@@ -766,7 +787,7 @@ export function DashboardClient(): React.JSX.Element {
     const subtitleY = clampNumber(Number(subtitle?.subtitleYPercent), 0, 100, 86);
     const subtitleFontSize = clampNumber(
       Number(subtitle?.fontSize) * subtitleScale,
-      10,
+      8,
       120,
       20
     );
@@ -1396,6 +1417,21 @@ export function DashboardClient(): React.JSX.Element {
                 ))}
               </SelectContent>
             </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                deletableScheduleTemplateId ? void deleteTemplate(deletableScheduleTemplateId) : undefined
+              }
+              disabled={
+                scheduleTemplateMode !== "applied_template" ||
+                automationTemplateBusy ||
+                !deletableScheduleTemplateId
+              }
+            >
+              선택 템플릿 삭제
+            </Button>
           </div>
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">유튜브 공개 범위</p>

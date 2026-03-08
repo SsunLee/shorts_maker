@@ -146,7 +146,8 @@ const subtitleStylePresets: SubtitleStylePreset[] = [
       fontThickness: 0,
       position: "bottom",
       subtitleYPercent: 86,
-      wordsPerCaption: 5
+      wordsPerCaption: 5,
+      maxCharsPerCaption: 18
     }
   },
   {
@@ -164,7 +165,8 @@ const subtitleStylePresets: SubtitleStylePreset[] = [
       fontThickness: 4,
       position: "bottom",
       subtitleYPercent: 86,
-      wordsPerCaption: 4
+      wordsPerCaption: 4,
+      maxCharsPerCaption: 16
     }
   },
   {
@@ -182,7 +184,8 @@ const subtitleStylePresets: SubtitleStylePreset[] = [
       fontThickness: 2,
       position: "middle",
       subtitleYPercent: 52,
-      wordsPerCaption: 4
+      wordsPerCaption: 4,
+      maxCharsPerCaption: 16
     }
   },
   {
@@ -200,7 +203,8 @@ const subtitleStylePresets: SubtitleStylePreset[] = [
       fontThickness: 1,
       position: "bottom",
       subtitleYPercent: 86,
-      wordsPerCaption: 6
+      wordsPerCaption: 6,
+      maxCharsPerCaption: 20
     }
   },
   {
@@ -218,7 +222,8 @@ const subtitleStylePresets: SubtitleStylePreset[] = [
       fontThickness: 0,
       position: "middle",
       subtitleYPercent: 52,
-      wordsPerCaption: 5
+      wordsPerCaption: 5,
+      maxCharsPerCaption: 18
     }
   }
 ];
@@ -494,23 +499,27 @@ function computeSceneMotionPreview(args: {
   };
 }
 
-function splitSubtitlePreviewLines(text: string, wordsPerCaption: number): string[] {
-  const safeWords = Math.max(2, Math.min(10, wordsPerCaption));
-  const chunks: string[] = [];
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  for (let index = 0; index < words.length; index += safeWords) {
-    chunks.push(words.slice(index, index + safeWords).join(" "));
-  }
+function splitSubtitlePreviewLines(
+  text: string,
+  wordsPerCaption: number,
+  maxCharsPerCaption: number
+): string[] {
+  const chunks = buildCaptionChunksFromNarration(text, wordsPerCaption, maxCharsPerCaption);
   return chunks.length > 0 ? chunks : [text];
 }
 
-function buildCaptionChunksFromNarration(text: string, wordsPerCaption: number): string[] {
+function buildCaptionChunksFromNarration(
+  text: string,
+  wordsPerCaption: number,
+  maxCharsPerCaption: number
+): string[] {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   if (!normalized) {
     return [];
   }
 
   const safeWords = Math.max(2, Math.min(10, wordsPerCaption));
+  const safeChars = Math.max(8, Math.min(60, maxCharsPerCaption));
   const sentenceUnits = normalized
     .split(/\n+/)
     .flatMap((line) => line.match(/[^.!?。！？]+[.!?。！？]?/g) || [line])
@@ -520,12 +529,39 @@ function buildCaptionChunksFromNarration(text: string, wordsPerCaption: number):
   const chunks: string[] = [];
   sentenceUnits.forEach((unit) => {
     const words = unit.split(/\s+/).filter(Boolean);
-    if (words.length <= safeWords) {
+    const compactLength = unit.replace(/\s+/g, "").length;
+    const hasWhitespaceBreak = /\s/.test(unit) && words.length > 1;
+    if (words.length <= safeWords && compactLength <= safeChars) {
       chunks.push(unit);
       return;
     }
-    for (let index = 0; index < words.length; index += safeWords) {
-      chunks.push(words.slice(index, index + safeWords).join(" "));
+    if (!hasWhitespaceBreak) {
+      const chars = Array.from(unit);
+      for (let index = 0; index < chars.length; index += safeChars) {
+        const piece = chars.slice(index, index + safeChars).join("").trim();
+        if (piece) {
+          chunks.push(piece);
+        }
+      }
+      return;
+    }
+
+    let currentWords: string[] = [];
+    for (const word of words) {
+      const nextWords = [...currentWords, word];
+      const nextText = nextWords.join(" ");
+      const nextLength = nextText.replace(/\s+/g, "").length;
+      if (nextWords.length > safeWords || nextLength > safeChars) {
+        if (currentWords.length > 0) {
+          chunks.push(currentWords.join(" "));
+        }
+        currentWords = [word];
+      } else {
+        currentWords = nextWords;
+      }
+    }
+    if (currentWords.length > 0) {
+      chunks.push(currentWords.join(" "));
     }
   });
   return chunks;
@@ -560,6 +596,7 @@ function generateSubtitleCuesFromNarration(args: {
   narration: string;
   durationSec: number;
   wordsPerCaption: number;
+  maxCharsPerCaption: number;
   subtitleDelayMs: number;
 }): SubtitleCue[] {
   const normalized = args.narration.replace(/\s+/g, " ").trim();
@@ -567,7 +604,11 @@ function generateSubtitleCuesFromNarration(args: {
     return [];
   }
 
-  const chunks = buildCaptionChunksFromNarration(normalized, args.wordsPerCaption || 5);
+  const chunks = buildCaptionChunksFromNarration(
+    normalized,
+    args.wordsPerCaption || 5,
+    args.maxCharsPerCaption || 18
+  );
   if (chunks.length === 0) {
     return [];
   }
@@ -664,7 +705,8 @@ function detectSubtitleStylePreset(subtitle: RenderOptions["subtitle"]): string 
       92,
       subtitlePreviewYForPosition(subtitle.position)
     ),
-    wordsPerCaption: subtitle.wordsPerCaption
+    wordsPerCaption: subtitle.wordsPerCaption,
+    maxCharsPerCaption: clampNumber(Number(subtitle.maxCharsPerCaption), 8, 60, 18)
   };
 
   const matched = subtitleStylePresets.find((preset) => {
@@ -696,7 +738,9 @@ function detectSubtitleStylePreset(subtitle: RenderOptions["subtitle"]): string 
       position: preset.subtitle.position ?? normalizedCurrent.position,
       subtitleYPercent:
         preset.subtitle.subtitleYPercent ?? normalizedCurrent.subtitleYPercent,
-      wordsPerCaption: preset.subtitle.wordsPerCaption ?? normalizedCurrent.wordsPerCaption
+      wordsPerCaption: preset.subtitle.wordsPerCaption ?? normalizedCurrent.wordsPerCaption,
+      maxCharsPerCaption:
+        preset.subtitle.maxCharsPerCaption ?? normalizedCurrent.maxCharsPerCaption
     };
     return (
       normalizedCurrent.fontName === expected.fontName &&
@@ -709,7 +753,8 @@ function detectSubtitleStylePreset(subtitle: RenderOptions["subtitle"]): string 
       normalizedCurrent.fontThickness === expected.fontThickness &&
       normalizedCurrent.position === expected.position &&
       normalizedCurrent.subtitleYPercent === expected.subtitleYPercent &&
-      normalizedCurrent.wordsPerCaption === expected.wordsPerCaption
+      normalizedCurrent.wordsPerCaption === expected.wordsPerCaption &&
+      normalizedCurrent.maxCharsPerCaption === expected.maxCharsPerCaption
     );
   });
   return matched?.id || customSubtitleStyleOption;
@@ -872,6 +917,7 @@ const defaultRenderOptions: RenderOptions = {
     position: "bottom",
     subtitleYPercent: 86,
     wordsPerCaption: 5,
+    maxCharsPerCaption: 18,
     manualCues: []
   },
   overlay: {
@@ -907,7 +953,7 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
   };
   const normalizedSubtitle: RenderOptions["subtitle"] = {
     fontName: String(subtitleDefaults.fontName || defaultRenderOptions.subtitle.fontName).trim() || "Arial",
-    fontSize: clampNumber(Number(subtitleDefaults.fontSize), 10, 80, 16),
+    fontSize: clampNumber(Number(subtitleDefaults.fontSize), 8, 80, 16),
     primaryColor: normalizeHexColor(subtitleDefaults.primaryColor, "#FFFFFF"),
     outlineColor: normalizeHexColor(subtitleDefaults.outlineColor, "#000000"),
     outline: clampNumber(Number(subtitleDefaults.outline), 0, 8, 2),
@@ -934,6 +980,7 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
       )
     ),
     wordsPerCaption: clampNumber(Number(subtitleDefaults.wordsPerCaption), 2, 10, 5),
+    maxCharsPerCaption: clampNumber(Number(subtitleDefaults.maxCharsPerCaption), 8, 60, 18),
     manualCues: Array.isArray(subtitleDefaults.manualCues)
       ? subtitleDefaults.manualCues
           .map((cue, index) => {
@@ -1398,12 +1445,14 @@ export function CreateVideoForm(): React.JSX.Element {
       narration: workflow.narration,
       durationSec,
       wordsPerCaption: renderOptions.subtitle.wordsPerCaption,
+      maxCharsPerCaption: renderOptions.subtitle.maxCharsPerCaption || 18,
       subtitleDelayMs: renderOptions.subtitle.subtitleDelayMs
     });
   }, [
     workflow,
     ttsDurationSec,
     renderOptions.subtitle.wordsPerCaption,
+    renderOptions.subtitle.maxCharsPerCaption,
     renderOptions.subtitle.subtitleDelayMs
   ]);
   const effectivePreviewCues = manualSubtitleCues.length > 0 ? timelineCues : generatedPreviewCues;
@@ -2137,9 +2186,10 @@ export function CreateVideoForm(): React.JSX.Element {
     () =>
       splitSubtitlePreviewLines(
         subtitlePreviewSentence,
-        clampNumber(renderOptions.subtitle.wordsPerCaption, 2, 10, 5)
+        clampNumber(renderOptions.subtitle.wordsPerCaption, 2, 10, 5),
+        clampNumber(Number(renderOptions.subtitle.maxCharsPerCaption), 8, 60, 18)
       ),
-    [renderOptions.subtitle.wordsPerCaption]
+    [renderOptions.subtitle.wordsPerCaption, renderOptions.subtitle.maxCharsPerCaption]
   );
   const subtitlePreviewTop = useMemo(
     () =>
@@ -2178,7 +2228,7 @@ export function CreateVideoForm(): React.JSX.Element {
     () =>
       clampNumber(
         renderOptions.subtitle.fontSize * templateSubtitleRenderScale,
-        10,
+        8,
         120,
         24
       ),
@@ -2209,7 +2259,7 @@ export function CreateVideoForm(): React.JSX.Element {
     () =>
       clampNumber(
         renderOptions.subtitle.fontSize * vrewSubtitleRenderScale,
-        10,
+        8,
         120,
         22
       ),
@@ -2639,6 +2689,7 @@ export function CreateVideoForm(): React.JSX.Element {
       narration: workflow.narration,
       durationSec,
       wordsPerCaption: renderOptions.subtitle.wordsPerCaption,
+      maxCharsPerCaption: renderOptions.subtitle.maxCharsPerCaption || 18,
       subtitleDelayMs: renderOptions.subtitle.subtitleDelayMs
     });
     setManualSubtitleCues(cues);
@@ -4503,6 +4554,22 @@ export function CreateVideoForm(): React.JSX.Element {
                           />
                         </div>
                         <div className="space-y-1">
+                          <Label htmlFor="subtitleMaxChars">자막 최대 글자 수 (캡션당)</Label>
+                          <Input
+                            id="subtitleMaxChars"
+                            type="number"
+                            min={8}
+                            max={60}
+                            value={clampNumber(Number(renderOptions.subtitle.maxCharsPerCaption), 8, 60, 18)}
+                            onChange={(event) =>
+                              setSubtitleOption(
+                                "maxCharsPerCaption",
+                                clampNumber(Number(event.target.value), 8, 60, 18)
+                              )
+                            }
+                          />
+                        </div>
+                        <div className="space-y-1">
                           <Label htmlFor="subtitleDelayMs">자막 시작 지연(ms)</Label>
                           <Input
                             id="subtitleDelayMs"
@@ -4523,13 +4590,13 @@ export function CreateVideoForm(): React.JSX.Element {
                           <Input
                             id="subtitleSize"
                             type="number"
-                            min={10}
+                            min={8}
                             max={80}
                             value={renderOptions.subtitle.fontSize}
                             onChange={(event) =>
                               setSubtitleOption(
                                 "fontSize",
-                                clampNumber(Number(event.target.value), 10, 80, 16)
+                                clampNumber(Number(event.target.value), 8, 80, 16)
                               )
                             }
                           />
