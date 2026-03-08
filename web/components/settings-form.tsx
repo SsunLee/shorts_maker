@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleHelp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -225,6 +225,10 @@ function formatBytes(bytes: number | undefined): string {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 export function SettingsForm(): React.JSX.Element {
   const [settings, setSettings] = useState<AppSettings>(emptySettings);
   const [saving, setSaving] = useState(false);
@@ -236,7 +240,12 @@ export function SettingsForm(): React.JSX.Element {
   const [videoEngineStatus, setVideoEngineStatus] = useState<VideoEngineStatusResponse>();
   const [videoEngineStatusLoading, setVideoEngineStatusLoading] = useState(false);
   const [videoEngineStatusError, setVideoEngineStatusError] = useState<string>();
+  const [settingsJsonDraft, setSettingsJsonDraft] = useState("");
+  const [settingsJsonLoading, setSettingsJsonLoading] = useState(false);
+  const [settingsJsonError, setSettingsJsonError] = useState<string>();
+  const [settingsJsonMessage, setSettingsJsonMessage] = useState<string>();
   const [theme, setTheme] = useState<AppTheme>("light");
+  const settingsJsonFileRef = useRef<HTMLInputElement | null>(null);
   const currentTextProvider = useMemo(
     () => resolveProviderChip(settings, "text"),
     [settings]
@@ -387,6 +396,70 @@ export function SettingsForm(): React.JSX.Element {
       geminiTtsModel: "gemini-2.5-flash-preview-tts"
     }));
     setMessage("저비용 추천 모델값을 적용했습니다. 저장 버튼을 눌러 반영하세요.");
+  }
+
+  async function loadSettingsJsonFromServer(): Promise<void> {
+    setSettingsJsonLoading(true);
+    setSettingsJsonError(undefined);
+    setSettingsJsonMessage(undefined);
+    try {
+      const response = await fetch("/api/settings", { cache: "no-store" });
+      const data = (await response.json()) as AppSettings | { error?: string };
+      if (!response.ok) {
+        throw new Error(("error" in data && data.error) || "설정 JSON을 불러오지 못했습니다.");
+      }
+      const merged = { ...emptySettings, ...(data as AppSettings) };
+      if (!String(merged.youtubeRedirectUri || "").trim() && typeof window !== "undefined") {
+        merged.youtubeRedirectUri = `${window.location.origin}/oauth2callback`;
+      }
+      setSettingsJsonDraft(JSON.stringify(merged, null, 2));
+      setSettingsJsonMessage("현재 저장된 설정 JSON을 불러왔습니다.");
+    } catch (loadError) {
+      setSettingsJsonError(
+        loadError instanceof Error ? loadError.message : "설정 JSON을 불러오지 못했습니다."
+      );
+    } finally {
+      setSettingsJsonLoading(false);
+    }
+  }
+
+  function applySettingsJsonDraft(): void {
+    setSettingsJsonError(undefined);
+    setSettingsJsonMessage(undefined);
+    try {
+      const parsed = JSON.parse(settingsJsonDraft) as unknown;
+      if (!isPlainRecord(parsed)) {
+        throw new Error("JSON 루트는 객체 형태여야 합니다.");
+      }
+      const merged = { ...emptySettings, ...(parsed as Partial<AppSettings>) };
+      if (!String(merged.youtubeRedirectUri || "").trim() && typeof window !== "undefined") {
+        merged.youtubeRedirectUri = `${window.location.origin}/oauth2callback`;
+      }
+      setSettings(merged);
+      setSettingsJsonMessage("JSON 내용을 폼에 반영했습니다. Save Settings를 눌러 저장하세요.");
+    } catch (parseError) {
+      setSettingsJsonError(parseError instanceof Error ? parseError.message : "JSON 파싱에 실패했습니다.");
+    }
+  }
+
+  function onSettingsJsonFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    void (async () => {
+      try {
+        const text = await file.text();
+        setSettingsJsonDraft(text);
+        setSettingsJsonMessage("JSON 파일 내용을 불러왔습니다. 적용 버튼으로 폼에 반영하세요.");
+        setSettingsJsonError(undefined);
+      } catch (fileError) {
+        setSettingsJsonError(
+          fileError instanceof Error ? fileError.message : "JSON 파일을 읽지 못했습니다."
+        );
+      }
+    })();
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
@@ -1054,6 +1127,59 @@ export function SettingsForm(): React.JSX.Element {
               placeholder="예: Sunbae Shorts Main"
             />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Settings 가져오기 / JSON 수정</CardTitle>
+          <CardDescription>
+            현재 저장된 설정 JSON을 불러와 수정한 뒤, 폼에 반영할 수 있습니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <input
+            ref={settingsJsonFileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={onSettingsJsonFileChange}
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void loadSettingsJsonFromServer()}
+              disabled={settingsJsonLoading}
+            >
+              {settingsJsonLoading ? "불러오는 중..." : "json 수정하기 (현재값 불러오기)"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => settingsJsonFileRef.current?.click()}
+            >
+              JSON 파일 불러오기
+            </Button>
+            <Button type="button" variant="outline" onClick={applySettingsJsonDraft}>
+              JSON 폼에 반영
+            </Button>
+          </div>
+          <Textarea
+            rows={10}
+            value={settingsJsonDraft}
+            onChange={(event) => setSettingsJsonDraft(event.target.value)}
+            placeholder='{"openaiApiKey":"","gsheetSpreadsheetId":"","youtubeChannelName":""}'
+          />
+          {settingsJsonError ? (
+            <p className="text-sm text-destructive">{settingsJsonError}</p>
+          ) : settingsJsonMessage ? (
+            <p className="text-sm text-emerald-500">{settingsJsonMessage}</p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              JSON 폼에 반영 후에는 반드시 아래 Save Settings 버튼으로 최종 저장해야 합니다.
+            </p>
+          )}
         </CardContent>
       </Card>
 

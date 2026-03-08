@@ -746,6 +746,89 @@ type DragState = {
 };
 
 type AutoSaveStatus = "idle" | "saving" | "saved" | "error";
+type TemplateImportPayload = {
+  templateName?: string;
+  imageStyle?: string;
+  sourceTitle?: string;
+  sourceTopic?: string;
+  voice?: string;
+  voiceSpeed?: number;
+  videoLengthSec?: number;
+  sceneCount?: number;
+  renderOptions: RenderOptions;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeImportedTemplates(value: unknown): TemplateImportPayload[] {
+  let candidates: unknown[] = [];
+  if (Array.isArray(value)) {
+    candidates = value;
+  } else if (isRecord(value) && Array.isArray(value.templates)) {
+    candidates = value.templates;
+  } else if (isRecord(value)) {
+    candidates = [value];
+  } else {
+    throw new Error("JSON 형식이 올바르지 않습니다. 객체 또는 배열이어야 합니다.");
+  }
+
+  const normalized: TemplateImportPayload[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const item = candidates[index];
+    if (!isRecord(item)) {
+      throw new Error(`템플릿 ${index + 1}: 객체 형식이 아닙니다.`);
+    }
+    const renderOptions = item.renderOptions;
+    if (
+      !isRecord(renderOptions) ||
+      !isRecord(renderOptions.overlay) ||
+      !isRecord(renderOptions.subtitle)
+    ) {
+      throw new Error(`템플릿 ${index + 1}: renderOptions(overlay/subtitle)가 필요합니다.`);
+    }
+    const voiceSpeedRaw = Number(item.voiceSpeed);
+    const videoLengthSecRaw = Number(item.videoLengthSec);
+    const sceneCountRaw = Number(item.sceneCount);
+    normalized.push({
+      templateName:
+        typeof item.templateName === "string" && item.templateName.trim()
+          ? item.templateName.trim()
+          : undefined,
+      imageStyle:
+        typeof item.imageStyle === "string" && item.imageStyle.trim()
+          ? item.imageStyle.trim()
+          : undefined,
+      sourceTitle:
+        typeof item.sourceTitle === "string" && item.sourceTitle.trim()
+          ? item.sourceTitle.trim()
+          : undefined,
+      sourceTopic:
+        typeof item.sourceTopic === "string" && item.sourceTopic.trim()
+          ? item.sourceTopic.trim()
+          : undefined,
+      voice:
+        typeof item.voice === "string" && item.voice.trim()
+          ? item.voice.trim().toLowerCase()
+          : undefined,
+      voiceSpeed: Number.isFinite(voiceSpeedRaw)
+        ? clampNumber(voiceSpeedRaw, 0.5, 2, 1)
+        : undefined,
+      videoLengthSec: Number.isFinite(videoLengthSecRaw)
+        ? Math.round(clampNumber(videoLengthSecRaw, 10, 180, 30))
+        : undefined,
+      sceneCount: Number.isFinite(sceneCountRaw)
+        ? Math.round(clampNumber(sceneCountRaw, 3, 12, 5))
+        : undefined,
+      renderOptions: renderOptions as unknown as RenderOptions
+    });
+  }
+  if (normalized.length === 0) {
+    throw new Error("가져올 템플릿이 없습니다.");
+  }
+  return normalized;
+}
 
 function buildTemplatePayload(editor: TemplateEditorState, renderOptions: RenderOptions): {
   templateName: string;
@@ -831,9 +914,13 @@ export function TemplatesClient(): React.JSX.Element {
   const [templateSelectOpen, setTemplateSelectOpen] = useState(true);
   const [templateNameOpen, setTemplateNameOpen] = useState(true);
   const [voiceSectionOpen, setVoiceSectionOpen] = useState(true);
+  const [templateImportJson, setTemplateImportJson] = useState("");
+  const [templateImportMessage, setTemplateImportMessage] = useState<string>();
+  const [templateImportError, setTemplateImportError] = useState<string>();
   const previewCanvasRef = useRef<HTMLDivElement | null>(null);
   const templateLayoutRef = useRef<HTMLDivElement | null>(null);
   const previewFollowRef = useRef<HTMLDivElement | null>(null);
+  const templateImportFileRef = useRef<HTMLInputElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSaveRequestSeqRef = useRef(0);
@@ -1609,6 +1696,64 @@ export function TemplatesClient(): React.JSX.Element {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function importTemplatesFromJsonText(rawText: string): Promise<void> {
+    const text = rawText.trim();
+    if (!text) {
+      setTemplateImportError("JSON 텍스트를 입력해 주세요.");
+      setTemplateImportMessage(undefined);
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    setSuccess(undefined);
+    setTemplateImportError(undefined);
+    setTemplateImportMessage(undefined);
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      const payloads = normalizeImportedTemplates(parsed);
+      for (const payload of payloads) {
+        const response = await fetch("/api/automation-template", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await readJsonResponse<AutomationTemplateResponse>(response);
+        if (!response.ok) {
+          throw new Error(data.error || "템플릿 가져오기에 실패했습니다.");
+        }
+      }
+      await refreshTemplates();
+      setTemplateImportMessage(`${payloads.length}개 템플릿을 가져왔습니다.`);
+      setSuccess(`${payloads.length}개 템플릿을 가져왔습니다.`);
+    } catch (importError) {
+      const message =
+        importError instanceof Error ? importError.message : "템플릿 가져오기에 실패했습니다.";
+      setTemplateImportError(message);
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onTemplateImportFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    void (async () => {
+      try {
+        const text = await file.text();
+        setTemplateImportJson(text);
+        await importTemplatesFromJsonText(text);
+      } catch (fileError) {
+        setTemplateImportError(
+          fileError instanceof Error ? fileError.message : "템플릿 파일 읽기에 실패했습니다."
+        );
+      }
+    })();
   }
 
   function onSelectTemplate(value: string): void {
@@ -2893,6 +3038,60 @@ export function TemplatesClient(): React.JSX.Element {
                   }
                 />
               </div>
+            </div>
+          </div>
+
+          <div className="rounded-md border p-3">
+            <Label className="text-sm font-semibold">템플릿 가져오기(JSON)</Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              JSON 텍스트를 붙여넣거나 파일을 선택해 템플릿을 일괄 가져올 수 있습니다.
+            </p>
+            <div className="mt-3 space-y-2">
+              <Textarea
+                rows={6}
+                value={templateImportJson}
+                onChange={(event) => {
+                  setTemplateImportJson(event.target.value);
+                  if (templateImportError) {
+                    setTemplateImportError(undefined);
+                  }
+                }}
+                placeholder='{"templateName":"예시","renderOptions":{"subtitle":{},"overlay":{}}}'
+              />
+              <input
+                ref={templateImportFileRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={onTemplateImportFileChange}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => templateImportFileRef.current?.click()}
+                  disabled={busy}
+                >
+                  JSON 파일 선택
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void importTemplatesFromJsonText(templateImportJson)}
+                  disabled={busy}
+                >
+                  JSON 텍스트 가져오기
+                </Button>
+              </div>
+              {templateImportError ? (
+                <p className="text-xs text-destructive">{templateImportError}</p>
+              ) : templateImportMessage ? (
+                <p className="text-xs text-emerald-500">{templateImportMessage}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  형식: 템플릿 객체 1개, 템플릿 배열, 또는 {"{ templates: [...] }"} 형태를 지원합니다.
+                </p>
+              )}
             </div>
           </div>
 
