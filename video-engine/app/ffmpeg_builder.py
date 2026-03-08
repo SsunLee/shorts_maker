@@ -689,7 +689,16 @@ def _resolve_font_file_for_text(
 ) -> str:
     alias = _normalize_font_alias(requested_font_name)
 
-    # Explicit user family mapping first.
+    # Script-based fallback first to avoid broken glyphs when requested family
+    # does not support the script (e.g. Pretendard + Devanagari).
+    if _contains_devanagari(text):
+        return _resolve_devanagari_font_file()
+    if _contains_hangul(text) or _contains_cjk_or_kana(text):
+        return _resolve_korean_font_file(prefer_bold)
+    if _contains_arabic(text):
+        return _resolve_arabic_font_file(prefer_bold)
+
+    # Explicit user family mapping next.
     if alias in {"malgungothic", "notosanskr", "pretendard"}:
         return _resolve_korean_font_file(prefer_bold)
     if alias in {"nanumgothic"}:
@@ -707,14 +716,6 @@ def _resolve_font_file_for_text(
     if alias in {"notosansdevanagari", "nirmalui"}:
         return _resolve_devanagari_font_file()
     if alias in {"notosansarabic"}:
-        return _resolve_arabic_font_file(prefer_bold)
-
-    # Script-based fallback next.
-    if _contains_devanagari(text):
-        return _resolve_devanagari_font_file()
-    if _contains_hangul(text) or _contains_cjk_or_kana(text):
-        return _resolve_korean_font_file(prefer_bold)
-    if _contains_arabic(text):
         return _resolve_arabic_font_file(prefer_bold)
 
     return _resolve_latin_font_file(prefer_bold)
