@@ -162,7 +162,8 @@ def _hex_to_ass_color(value: str, fallback: str) -> str:
     r = raw[0:2]
     g = raw[2:4]
     b = raw[4:6]
-    return f"&H{b}{g}{r}&"
+    # ASS expects AABBGGRR; force opaque alpha(00) to avoid renderer ambiguity.
+    return f"&H00{b}{g}{r}&"
 
 
 def _hex_to_ass_color_alpha(value: str, fallback: str, opacity: float) -> str:
@@ -267,6 +268,7 @@ def _subtitle_filter_value(
         f"FontName={font_name}",
         f"FontSize={font_size}",
         f"PrimaryColour={primary_color}",
+        f"SecondaryColour={primary_color}",
         f"OutlineColour={outline_color}",
         f"BackColour={shadow_color}",
         "BorderStyle=1",
