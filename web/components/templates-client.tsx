@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Eye, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,8 +9,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageStyleSnapshot } from "@/components/image-style-snapshot";
-import { AppSettings, RenderOptions } from "@/lib/types";
+import { AppSettings, RenderOptions, SheetContentRow } from "@/lib/types";
 import { wrapTemplateTextLikeEngine } from "@/lib/template-text-wrap";
+import { buildFontUnsupportedLanguageNotice } from "@/lib/font-language-compat";
+import {
+  isLocalFontAccessSupported,
+  mergeFontOptions,
+  queryInstalledFontNames
+} from "@/lib/local-fonts";
 import {
   ALL_VOICE_OPTIONS,
   filterVoiceOptions,
@@ -309,12 +315,15 @@ function subtitleAssScaleForCanvas(canvasScale: number): number {
   return clampNumber(safeCanvasScale * assToOutputScale, 0.6, 3, 1.25);
 }
 
-function detectTemplateFontPreset(fontName: string | undefined): string {
+function detectTemplateFontPreset(
+  fontName: string | undefined,
+  availableFonts: string[] = templateFontOptions
+): string {
   const normalized = String(fontName || "").trim();
   if (!normalized) {
     return customTemplateFontOption;
   }
-  return templateFontOptions.includes(normalized) ? normalized : customTemplateFontOption;
+  return availableFonts.includes(normalized) ? normalized : customTemplateFontOption;
 }
 
 function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOptions {
@@ -933,6 +942,11 @@ export function TemplatesClient(): React.JSX.Element {
   const [templateImportJson, setTemplateImportJson] = useState("");
   const [templateImportMessage, setTemplateImportMessage] = useState<string>();
   const [templateImportError, setTemplateImportError] = useState<string>();
+  const [readySheetRowsForFontCheck, setReadySheetRowsForFontCheck] = useState<SheetContentRow[]>([]);
+  const [fontLanguageNotice, setFontLanguageNotice] = useState<string>();
+  const [localFontNames, setLocalFontNames] = useState<string[]>([]);
+  const [localFontLoading, setLocalFontLoading] = useState(false);
+  const [localFontMessage, setLocalFontMessage] = useState<string>();
   const previewCanvasRef = useRef<HTMLDivElement | null>(null);
   const templateLayoutRef = useRef<HTMLDivElement | null>(null);
   const previewFollowRef = useRef<HTMLDivElement | null>(null);
@@ -1031,6 +1045,25 @@ export function TemplatesClient(): React.JSX.Element {
     const observer = new ResizeObserver(() => updateSize());
     observer.observe(node);
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    void (async () => {
+      try {
+        const response = await fetch("/api/sheet-rows", { cache: "no-store" });
+        const data = (await response.json()) as { rows?: SheetContentRow[] };
+        if (!mounted || !response.ok) {
+          return;
+        }
+        setReadySheetRowsForFontCheck(data.rows || []);
+      } catch {
+        // Ignore row lookup failures for optional font warning.
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -1141,6 +1174,44 @@ export function TemplatesClient(): React.JSX.Element {
       }) as CSSProperties,
     [previewPaneWidth]
   );
+  const availableTemplateFonts = useMemo(
+    () => mergeFontOptions(templateFontOptions, localFontNames),
+    [localFontNames]
+  );
+  const notifyFontLanguageSupport = useCallback(
+    (fontName: string): void => {
+      const notice = buildFontUnsupportedLanguageNotice(fontName, readySheetRowsForFontCheck);
+      setFontLanguageNotice(notice);
+    },
+    [readySheetRowsForFontCheck]
+  );
+  const loadLocalFonts = useCallback(async (): Promise<void> => {
+    if (!isLocalFontAccessSupported()) {
+      setLocalFontMessage("현재 브라우저는 설치 폰트 조회를 지원하지 않습니다.");
+      return;
+    }
+    setLocalFontLoading(true);
+    setLocalFontMessage(undefined);
+    try {
+      const names = await queryInstalledFontNames();
+      setLocalFontNames(names);
+      setLocalFontMessage(
+        names.length > 0 ? `설치 폰트 ${names.length}개를 불러왔습니다.` : "설치 폰트를 찾지 못했습니다."
+      );
+    } catch (error) {
+      setLocalFontMessage(
+        error instanceof Error
+          ? `설치 폰트 조회 실패: ${error.message}`
+          : "설치 폰트 조회에 실패했습니다."
+      );
+    } finally {
+      setLocalFontLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    notifyFontLanguageSupport(editor.fontName);
+  }, [editor.fontName, notifyFontLanguageSupport]);
 
   useEffect(() => {
     if (!availableVoiceOptions.length) {
@@ -1992,9 +2063,21 @@ export function TemplatesClient(): React.JSX.Element {
 
           <div className="grid gap-2 md:grid-cols-4">
             <div className="space-y-1">
-              <Label>폰트명</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label>폰트명</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => void loadLocalFonts()}
+                  disabled={localFontLoading}
+                >
+                  {localFontLoading ? "불러오는 중..." : "설치 폰트 불러오기"}
+                </Button>
+              </div>
               <Select
-                value={detectTemplateFontPreset(editor.fontName)}
+                value={detectTemplateFontPreset(editor.fontName, availableTemplateFonts)}
                 onValueChange={(value) =>
                   setEditor((prev) => ({
                     ...prev,
@@ -2006,7 +2089,7 @@ export function TemplatesClient(): React.JSX.Element {
                   <SelectValue placeholder="폰트 선택" />
                 </SelectTrigger>
                 <SelectContent>
-                  {templateFontOptions.map((name) => (
+                  {availableTemplateFonts.map((name) => (
                     <SelectItem key={name} value={name}>
                       {name}
                     </SelectItem>
@@ -2014,6 +2097,9 @@ export function TemplatesClient(): React.JSX.Element {
                   <SelectItem value={customTemplateFontOption}>직접 입력</SelectItem>
                 </SelectContent>
               </Select>
+              {localFontMessage ? (
+                <p className="text-xs text-muted-foreground">{localFontMessage}</p>
+              ) : null}
             </div>
             <div className="space-y-1">
               <Label>폰트 스타일</Label>
@@ -2089,7 +2175,8 @@ export function TemplatesClient(): React.JSX.Element {
               />
             </div>
           </div>
-          {detectTemplateFontPreset(editor.fontName) === customTemplateFontOption ? (
+          {detectTemplateFontPreset(editor.fontName, availableTemplateFonts) ===
+          customTemplateFontOption ? (
             <div className="space-y-1">
               <Label>사용자 지정 폰트명</Label>
               <Input
@@ -2097,6 +2184,12 @@ export function TemplatesClient(): React.JSX.Element {
                 onChange={(event) => setEditor((prev) => ({ ...prev, fontName: event.target.value }))}
                 placeholder="예: Noto Sans KR"
               />
+            </div>
+          ) : null}
+          {fontLanguageNotice ? (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <AlertTriangle className="mr-1 inline h-3.5 w-3.5 align-text-bottom" />
+              {fontLanguageNotice}
             </div>
           ) : null}
 

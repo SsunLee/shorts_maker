@@ -32,6 +32,12 @@ import {
   normalizeTemplateText as normalizeTemplateTextForRender,
   wrapTemplateTextLikeEngine
 } from "@/lib/template-text-wrap";
+import { buildFontUnsupportedLanguageNotice } from "@/lib/font-language-compat";
+import {
+  isLocalFontAccessSupported,
+  mergeFontOptions,
+  queryInstalledFontNames
+} from "@/lib/local-fonts";
 
 const voiceSpeedOptions = ["0.75", "0.9", "1", "1.1", "1.25", "1.5"];
 const sceneCountOptions = ["3", "4", "5", "6", "8", "10", "12"];
@@ -294,18 +300,21 @@ function detectStylePreset(style: string): string {
   return imageStylePresets.includes(style) ? style : customStyleOption;
 }
 
-function detectFontPreset(fontName?: string): string {
+function detectFontPreset(fontName?: string, availableFonts: string[] = titleFontPresets): string {
   if (!fontName) {
     return customFontOption;
   }
-  return titleFontPresets.includes(fontName) ? fontName : customFontOption;
+  return availableFonts.includes(fontName) ? fontName : customFontOption;
 }
 
-function detectSubtitleFontPreset(fontName?: string): string {
+function detectSubtitleFontPreset(
+  fontName?: string,
+  availableFonts: string[] = subtitleFontPresets
+): string {
   if (!fontName) {
     return customSubtitleFontOption;
   }
-  return subtitleFontPresets.includes(fontName) ? fontName : customSubtitleFontOption;
+  return availableFonts.includes(fontName) ? fontName : customSubtitleFontOption;
 }
 
 function normalizeImageAspectRatio(value?: string): ImageAspectRatio {
@@ -1205,6 +1214,10 @@ export function CreateVideoForm(): React.JSX.Element {
   const [appliedSheetRowId, setAppliedSheetRowId] = useState<string>("");
   const [loadingSheetRows, setLoadingSheetRows] = useState(false);
   const [sheetError, setSheetError] = useState<string>();
+  const [fontLanguageNotice, setFontLanguageNotice] = useState<string>();
+  const [localFontNames, setLocalFontNames] = useState<string[]>([]);
+  const [localFontLoading, setLocalFontLoading] = useState(false);
+  const [localFontMessage, setLocalFontMessage] = useState<string>();
   const [previewText, setPreviewText] = useState(
     "This is a voice preview for your short-form content."
   );
@@ -1831,6 +1844,45 @@ export function CreateVideoForm(): React.JSX.Element {
       hydratedRef.current = true;
     });
   }, [refreshResumableWorkflows, refreshAutomationTemplatePresets]);
+
+  const notifyFontLanguageSupport = useCallback(
+    (fontName: string, scope: string): void => {
+      const notice = buildFontUnsupportedLanguageNotice(fontName, sheetRows);
+      setFontLanguageNotice(notice ? `${scope}: ${notice}` : undefined);
+    },
+    [sheetRows]
+  );
+  const availableSubtitleFonts = useMemo(
+    () => mergeFontOptions(subtitleFontPresets, localFontNames),
+    [localFontNames]
+  );
+  const availableTitleFonts = useMemo(
+    () => mergeFontOptions(titleFontPresets, localFontNames),
+    [localFontNames]
+  );
+  const loadLocalFonts = useCallback(async (): Promise<void> => {
+    if (!isLocalFontAccessSupported()) {
+      setLocalFontMessage("현재 브라우저는 설치 폰트 조회를 지원하지 않습니다.");
+      return;
+    }
+    setLocalFontLoading(true);
+    setLocalFontMessage(undefined);
+    try {
+      const names = await queryInstalledFontNames();
+      setLocalFontNames(names);
+      setLocalFontMessage(
+        names.length > 0 ? `설치 폰트 ${names.length}개를 불러왔습니다.` : "설치 폰트를 찾지 못했습니다."
+      );
+    } catch (error) {
+      setLocalFontMessage(
+        error instanceof Error
+          ? `설치 폰트 조회 실패: ${error.message}`
+          : "설치 폰트 조회에 실패했습니다."
+      );
+    } finally {
+      setLocalFontLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!hydratedRef.current) {
@@ -4203,25 +4255,43 @@ export function CreateVideoForm(): React.JSX.Element {
                           </p>
                         </div>
                         <div className="space-y-1">
-                          <Label>자막 폰트</Label>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label>자막 폰트</Label>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              onClick={() => void loadLocalFonts()}
+                              disabled={localFontLoading}
+                            >
+                              {localFontLoading ? "불러오는 중..." : "설치 폰트 불러오기"}
+                            </Button>
+                          </div>
                           <Select
-                            value={detectSubtitleFontPreset(renderOptions.subtitle.fontName)}
+                            value={detectSubtitleFontPreset(
+                              renderOptions.subtitle.fontName,
+                              availableSubtitleFonts
+                            )}
                             onValueChange={(value) => {
                               if (value === customSubtitleFontOption) {
                                 const currentFont = renderOptions.subtitle.fontName.trim();
-                                if (!currentFont || subtitleFontPresets.includes(currentFont)) {
-                                  setSubtitleOption("fontName", "Pretendard");
+                                if (!currentFont) {
+                                  const nextFont = "Pretendard";
+                                  setSubtitleOption("fontName", nextFont);
+                                  notifyFontLanguageSupport(nextFont, "자막 폰트");
                                 }
                                 return;
                               }
                               setSubtitleOption("fontName", value);
+                              notifyFontLanguageSupport(value, "자막 폰트");
                             }}
                           >
                             <SelectTrigger>
                               <SelectValue placeholder="자막 폰트 선택" />
                             </SelectTrigger>
                             <SelectContent>
-                              {subtitleFontPresets.map((font) => (
+                              {availableSubtitleFonts.map((font) => (
                                 <SelectItem key={font} value={font}>
                                   {font}
                                 </SelectItem>
@@ -4231,7 +4301,15 @@ export function CreateVideoForm(): React.JSX.Element {
                               </SelectItem>
                             </SelectContent>
                           </Select>
+                          {localFontMessage ? (
+                            <p className="text-xs text-muted-foreground">{localFontMessage}</p>
+                          ) : null}
                         </div>
+                        {fontLanguageNotice ? (
+                          <div className="rounded-md border border-amber-300/70 bg-amber-50/60 p-2 text-xs text-amber-800 md:col-span-4">
+                            {fontLanguageNotice}
+                          </div>
+                        ) : null}
                         <div className="space-y-1">
                           <Label>이미지 모션 효과</Label>
                           <Select
@@ -4497,19 +4575,21 @@ export function CreateVideoForm(): React.JSX.Element {
                         </div>
                       ) : null}
 
-                      {detectSubtitleFontPreset(renderOptions.subtitle.fontName) ===
+                      {detectSubtitleFontPreset(
+                        renderOptions.subtitle.fontName,
+                        availableSubtitleFonts
+                      ) ===
                       customSubtitleFontOption ? (
                         <div className="space-y-1">
                           <Label htmlFor="subtitleCustomFont">자막 사용자 폰트명</Label>
                           <Input
                             id="subtitleCustomFont"
                             value={renderOptions.subtitle.fontName}
-                            onChange={(event) =>
-                              setSubtitleOption(
-                                "fontName",
-                                event.target.value.trim() || "Pretendard"
-                              )
-                            }
+                            onChange={(event) => {
+                              const nextFont = event.target.value.trim() || "Pretendard";
+                              setSubtitleOption("fontName", nextFont);
+                              notifyFontLanguageSupport(nextFont, "자막 폰트");
+                            }}
                             placeholder="예: Pretendard"
                           />
                         </div>
@@ -5550,18 +5630,22 @@ export function CreateVideoForm(): React.JSX.Element {
                                 <div className="min-w-0 space-y-1 xl:col-span-2">
                                   <Label className="text-xs text-muted-foreground">폰트</Label>
                                   <Select
-                                    value={detectFontPreset(item.fontName)}
-                                    onValueChange={(value) =>
+                                    value={detectFontPreset(item.fontName, availableTitleFonts)}
+                                    onValueChange={(value) => {
+                                      const nextFont = value === customFontOption ? "" : value;
                                       updateTemplateItem(item.id, {
-                                        fontName: value === customFontOption ? "" : value
-                                      })
-                                    }
+                                        fontName: nextFont
+                                      });
+                                      if (nextFont) {
+                                        notifyFontLanguageSupport(nextFont, "타이틀 폰트");
+                                      }
+                                    }}
                                   >
                                     <SelectTrigger>
                                       <SelectValue placeholder="Template Font" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      {titleFontPresets.map((font) => (
+                                      {availableTitleFonts.map((font) => (
                                         <SelectItem key={font} value={font}>
                                           {font}
                                         </SelectItem>
@@ -5750,16 +5834,21 @@ export function CreateVideoForm(): React.JSX.Element {
                                 </div>
                               </div>
 
-                              {detectFontPreset(item.fontName) === customFontOption ? (
+                              {detectFontPreset(item.fontName, availableTitleFonts) ===
+                              customFontOption ? (
                                 <div className="space-y-1">
                                   <Label className="text-xs text-muted-foreground">
                                     사용자 지정 폰트명
                                   </Label>
                                   <Input
                                     value={item.fontName || ""}
-                                    onChange={(event) =>
-                                      updateTemplateItem(item.id, { fontName: event.target.value })
-                                    }
+                                    onChange={(event) => {
+                                      const nextFont = event.target.value;
+                                      updateTemplateItem(item.id, { fontName: nextFont });
+                                      if (nextFont.trim()) {
+                                        notifyFontLanguageSupport(nextFont, "타이틀 폰트");
+                                      }
+                                    }}
                                     placeholder="예: Pretendard"
                                   />
                                 </div>
