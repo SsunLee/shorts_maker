@@ -194,13 +194,44 @@ function buildImageStyleInstruction(style: string): string {
   return preset;
 }
 
+function shouldApplyJapaneseVisualHint(args: {
+  title: string;
+  topic?: string;
+  narration: string;
+}): boolean {
+  const language = detectNarrationLanguage(
+    `${String(args.title || "")}\n${String(args.topic || "")}\n${String(args.narration || "")}`
+  );
+  return language === "ja";
+}
+
+function appendJapaneseVisualHint(prompt: string): string {
+  const safePrompt = String(prompt || "").trim();
+  if (!safePrompt) {
+    return safePrompt;
+  }
+  const lowered = safePrompt.toLowerCase();
+  if (
+    lowered.includes("east asian") ||
+    lowered.includes("japanese people") ||
+    lowered.includes("japanese setting")
+  ) {
+    return safePrompt;
+  }
+  return `${safePrompt}. East Asian (Japanese) people/context when people appear.`;
+}
+
 function fallbackSplitScenes(args: {
   narration: string;
   imageStyle: string;
   imageAspectRatio: ImageAspectRatio;
   sceneCount: number;
+  japaneseVisualHint?: boolean;
 }): WorkflowScene[] {
   const styleInstruction = buildImageStyleInstruction(args.imageStyle);
+  const japaneseVisualGuide = args.japaneseVisualHint
+    ? "East Asian (Japanese) people/context when people appear."
+    : "";
   const composition =
     args.imageAspectRatio === "16:9"
       ? "Landscape 16:9 composition for cinematic widescreen framing."
@@ -213,7 +244,9 @@ function fallbackSplitScenes(args: {
       index: idx + 1,
       sceneTitle: `Scene ${idx + 1}`,
       narrationText: chunk || args.narration,
-      imagePrompt: `${styleInstruction}. ${chunk || args.narration}. ${composition}`
+      imagePrompt: `${styleInstruction}. ${chunk || args.narration}. ${composition}${
+        japaneseVisualGuide ? ` ${japaneseVisualGuide}` : ""
+      }`
     };
   });
 }
@@ -293,6 +326,13 @@ export async function generateImagePrompts(args: {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
   const styleInstruction = buildImageStyleInstruction(args.imageStyle);
+  const japaneseVisualHint = shouldApplyJapaneseVisualHint({
+    title: args.title,
+    narration: args.narration
+  });
+  const japaneseVisualGuide = japaneseVisualHint
+    ? "If people appear, explicitly depict East Asian (Japanese) people/context."
+    : "";
   const compositionGuide =
     imageAspectRatio === "16:9"
       ? "Use cinematic landscape 16:9 composition with strong horizontal framing."
@@ -312,6 +352,7 @@ export async function generateImagePrompts(args: {
             "Prompts must be non-graphic, educational, and safe for general audiences. " +
             "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
             `${compositionGuide}\n` +
+            `${japaneseVisualGuide}\n` +
             `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}`
         })
     });
@@ -320,7 +361,7 @@ export async function generateImagePrompts(args: {
     if (prompts.length !== sceneCount) {
       throw new Error(`Failed to generate exactly ${sceneCount} image prompts.`);
     }
-    return prompts;
+    return japaneseVisualHint ? prompts.map(appendJapaneseVisualHint) : prompts;
   }
 
   const client = await getOpenAiClient(userId);
@@ -333,7 +374,8 @@ export async function generateImagePrompts(args: {
           `Output only a JSON array with exactly ${sceneCount} short image prompts. ` +
           "Prompts must be non-graphic, educational, and safe for general audiences. " +
           "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction. " +
-          compositionGuide
+          compositionGuide +
+          (japaneseVisualGuide ? ` ${japaneseVisualGuide}` : "")
       },
       {
         role: "user",
@@ -346,7 +388,7 @@ export async function generateImagePrompts(args: {
   if (prompts.length !== sceneCount) {
     throw new Error(`Failed to generate exactly ${sceneCount} image prompts.`);
   }
-  return prompts;
+  return japaneseVisualHint ? prompts.map(appendJapaneseVisualHint) : prompts;
 }
 
 /** Split narration into N scenes and generate one image prompt per scene. */
@@ -360,6 +402,13 @@ export async function splitNarrationToScenes(args: {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
   const styleInstruction = buildImageStyleInstruction(args.imageStyle);
+  const japaneseVisualHint = shouldApplyJapaneseVisualHint({
+    title: args.title,
+    narration: args.narration
+  });
+  const japaneseVisualGuide = japaneseVisualHint
+    ? "If people appear, explicitly depict East Asian (Japanese) people/context."
+    : "";
   const compositionGuide =
     imageAspectRatio === "16:9"
       ? "All image prompts must explicitly request landscape 16:9 composition."
@@ -379,6 +428,7 @@ export async function splitNarrationToScenes(args: {
             "All imagePrompt values must be non-graphic, educational, and safe for general audiences. " +
             "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
             `${compositionGuide}\n` +
+            `${japaneseVisualGuide}\n` +
             `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}\n` +
             `Split the narration flow into ${sceneCount} logical scenes and write one visual prompt per scene.`
         })
@@ -386,14 +436,20 @@ export async function splitNarrationToScenes(args: {
 
     const parsed = safeParseScenes(response.text || "", sceneCount);
     if (parsed) {
-      return parsed;
+      return japaneseVisualHint
+        ? parsed.map((scene) => ({
+            ...scene,
+            imagePrompt: appendJapaneseVisualHint(scene.imagePrompt)
+          }))
+        : parsed;
     }
 
     return fallbackSplitScenes({
       narration: args.narration,
       imageStyle: args.imageStyle,
       imageAspectRatio,
-      sceneCount
+      sceneCount,
+      japaneseVisualHint
     });
   }
 
@@ -407,7 +463,8 @@ export async function splitNarrationToScenes(args: {
           `Return only JSON array with exactly ${sceneCount} objects: sceneTitle, narrationText, imagePrompt. ` +
           "All imagePrompt values must be non-graphic, educational, and safe for general audiences. " +
           "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction. " +
-          compositionGuide
+          compositionGuide +
+          (japaneseVisualGuide ? ` ${japaneseVisualGuide}` : "")
       },
       {
         role: "user",
@@ -420,14 +477,20 @@ export async function splitNarrationToScenes(args: {
 
   const parsed = safeParseScenes(response.output_text || "", sceneCount);
   if (parsed) {
-    return parsed;
+    return japaneseVisualHint
+      ? parsed.map((scene) => ({
+          ...scene,
+          imagePrompt: appendJapaneseVisualHint(scene.imagePrompt)
+        }))
+      : parsed;
   }
 
   return fallbackSplitScenes({
     narration: args.narration,
     imageStyle: args.imageStyle,
     imageAspectRatio,
-    sceneCount
+    sceneCount,
+    japaneseVisualHint
   });
 }
 
