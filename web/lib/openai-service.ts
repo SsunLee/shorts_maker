@@ -164,12 +164,43 @@ function safeParseScenes(raw: string, sceneCount: number): WorkflowScene[] | nul
   }
 }
 
+function normalizeImageStylePreset(style: string): string {
+  const raw = String(style || "").trim().toLowerCase();
+  if (!raw) {
+    return "Cinematic photo-real";
+  }
+  if (
+    raw === "완전 실사 포토그래퍼" ||
+    raw === "ultra photoreal photographer" ||
+    raw.includes("photographer") ||
+    raw.includes("ultra photo-real") ||
+    raw.includes("hyper realistic")
+  ) {
+    return "Ultra photoreal photographer";
+  }
+  return String(style || "").trim();
+}
+
+function buildImageStyleInstruction(style: string): string {
+  const preset = normalizeImageStylePreset(style);
+  if (preset === "Ultra photoreal photographer") {
+    return (
+      "Ultra photoreal professional photography style. " +
+      "Documentary-grade realism, physically accurate lighting, natural skin/texture detail, " +
+      "real camera optics (35mm/50mm/85mm lens look), subtle depth-of-field, clean dynamic range, " +
+      "sharp focus on subject. No illustration, no anime, no 3D render, no painterly look, no CGI/plastic texture."
+    );
+  }
+  return preset;
+}
+
 function fallbackSplitScenes(args: {
   narration: string;
   imageStyle: string;
   imageAspectRatio: ImageAspectRatio;
   sceneCount: number;
 }): WorkflowScene[] {
+  const styleInstruction = buildImageStyleInstruction(args.imageStyle);
   const composition =
     args.imageAspectRatio === "16:9"
       ? "Landscape 16:9 composition for cinematic widescreen framing."
@@ -182,7 +213,7 @@ function fallbackSplitScenes(args: {
       index: idx + 1,
       sceneTitle: `Scene ${idx + 1}`,
       narrationText: chunk || args.narration,
-      imagePrompt: `${args.imageStyle}. ${chunk || args.narration}. ${composition}`
+      imagePrompt: `${styleInstruction}. ${chunk || args.narration}. ${composition}`
     };
   });
 }
@@ -261,6 +292,7 @@ export async function generateImagePrompts(args: {
 }, userId?: string): Promise<string[]> {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
+  const styleInstruction = buildImageStyleInstruction(args.imageStyle);
   const compositionGuide =
     imageAspectRatio === "16:9"
       ? "Use cinematic landscape 16:9 composition with strong horizontal framing."
@@ -280,7 +312,7 @@ export async function generateImagePrompts(args: {
             "Prompts must be non-graphic, educational, and safe for general audiences. " +
             "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
             `${compositionGuide}\n` +
-            `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}`
+            `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}`
         })
     });
 
@@ -305,7 +337,7 @@ export async function generateImagePrompts(args: {
       },
       {
         role: "user",
-        content: `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}`
+        content: `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}`
       }
     ]
   });
@@ -327,6 +359,7 @@ export async function splitNarrationToScenes(args: {
 }, userId?: string): Promise<WorkflowScene[]> {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
+  const styleInstruction = buildImageStyleInstruction(args.imageStyle);
   const compositionGuide =
     imageAspectRatio === "16:9"
       ? "All image prompts must explicitly request landscape 16:9 composition."
@@ -346,7 +379,7 @@ export async function splitNarrationToScenes(args: {
             "All imagePrompt values must be non-graphic, educational, and safe for general audiences. " +
             "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
             `${compositionGuide}\n` +
-            `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}\n` +
+            `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}\n` +
             `Split the narration flow into ${sceneCount} logical scenes and write one visual prompt per scene.`
         })
     });
@@ -379,7 +412,7 @@ export async function splitNarrationToScenes(args: {
       {
         role: "user",
         content:
-          `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${args.imageStyle}\n` +
+          `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}\n` +
           `Split the narration flow into ${sceneCount} logical scenes and write one visual prompt per scene.`
       }
     ]

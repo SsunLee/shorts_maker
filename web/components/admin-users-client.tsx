@@ -104,6 +104,8 @@ export function AdminUsersClient({
     code: string;
   }>();
   const [showLatestIssuedCode, setShowLatestIssuedCode] = useState(false);
+  const [issuedCodeByUser, setIssuedCodeByUser] = useState<Record<string, string>>({});
+  const [showIssuedCodeByUser, setShowIssuedCodeByUser] = useState<Record<string, boolean>>({});
 
   async function load(): Promise<void> {
     setError(undefined);
@@ -114,6 +116,24 @@ export function AdminUsersClient({
     }
     const nextUsers = data.users || [];
     setUsers(nextUsers);
+    setIssuedCodeByUser((prev) => {
+      const next: Record<string, string> = {};
+      nextUsers.forEach((user) => {
+        if (prev[user.userId]) {
+          next[user.userId] = prev[user.userId];
+        }
+      });
+      return next;
+    });
+    setShowIssuedCodeByUser((prev) => {
+      const next: Record<string, boolean> = {};
+      nextUsers.forEach((user) => {
+        if (typeof prev[user.userId] === "boolean") {
+          next[user.userId] = prev[user.userId];
+        }
+      });
+      return next;
+    });
     setDraftExpireByUser((prev) => {
       const next: Record<string, string> = {};
       nextUsers.forEach((user) => {
@@ -193,6 +213,10 @@ export function AdminUsersClient({
         code: data.accessCode || ""
       });
       setShowLatestIssuedCode(true);
+      if (data.user?.userId && data.accessCode) {
+        setIssuedCodeByUser((prev) => ({ ...prev, [data.user!.userId]: data.accessCode! }));
+        setShowIssuedCodeByUser((prev) => ({ ...prev, [data.user!.userId]: true }));
+      }
       setNewUserName("");
       setNewUserExpiresAt("");
       await load();
@@ -225,6 +249,10 @@ export function AdminUsersClient({
         code: data.accessCode || ""
       });
       setShowLatestIssuedCode(true);
+      if (data.accessCode) {
+        setIssuedCodeByUser((prev) => ({ ...prev, [user.userId]: data.accessCode! }));
+        setShowIssuedCodeByUser((prev) => ({ ...prev, [user.userId]: true }));
+      }
       await load();
     } catch (issueError) {
       setError(issueError instanceof Error ? issueError.message : "Unknown error");
@@ -258,6 +286,16 @@ export function AdminUsersClient({
       if (latestIssuedCode?.userId === user.userId) {
         setLatestIssuedCode(undefined);
       }
+      setIssuedCodeByUser((prev) => {
+        const next = { ...prev };
+        delete next[user.userId];
+        return next;
+      });
+      setShowIssuedCodeByUser((prev) => {
+        const next = { ...prev };
+        delete next[user.userId];
+        return next;
+      });
       await load();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Unknown error");
@@ -418,6 +456,8 @@ export function AdminUsersClient({
                 const canChangeRole = !isCurrentUser;
                 const canDeactivate = !isCurrentUser;
                 const canDelete = !isCurrentUser;
+                const issuedCode = issuedCodeByUser[user.userId];
+                const showIssuedCode = Boolean(showIssuedCodeByUser[user.userId]);
 
                 return (
                   <tr key={user.userId} className="border-t align-middle">
@@ -458,10 +498,45 @@ export function AdminUsersClient({
                     </td>
                     <td className="px-3 py-2">
                       <div className="space-y-1">
-                        <p>{user.accessCodeHint || "-"}</p>
+                        {issuedCode ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <code className="rounded bg-muted px-2 py-1 font-semibold tracking-[0.2em]">
+                              {showIssuedCode ? issuedCode : maskCode(issuedCode)}
+                            </code>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                setShowIssuedCodeByUser((prev) => ({
+                                  ...prev,
+                                  [user.userId]: !Boolean(prev[user.userId])
+                                }))
+                              }
+                            >
+                              {showIssuedCode ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                              <span>{showIssuedCode ? "가리기" : "보이기"}</span>
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void copyCode(issuedCode)}
+                            >
+                              복사
+                            </Button>
+                          </div>
+                        ) : (
+                          <p>{user.accessCodeHint || "-"}</p>
+                        )}
                         <p className="text-xs text-muted-foreground">
                           발급: {formatDateTime(user.accessCodeIssuedAt)}
                         </p>
+                        {!issuedCode ? (
+                          <p className="text-[11px] text-muted-foreground">
+                            기존 코드는 해시 저장이라 원문 조회 불가, `코드 보이기` 시 새 코드가 발급됩니다.
+                          </p>
+                        ) : null}
                       </div>
                     </td>
                     <td className="px-3 py-2">{formatDateTime(user.accessCodeLastUsedAt)}</td>
@@ -503,6 +578,24 @@ export function AdminUsersClient({
                           }}
                         >
                           만료 해제
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={savingUserId === user.userId}
+                          onClick={() => {
+                            if (issuedCode) {
+                              setShowIssuedCodeByUser((prev) => ({
+                                ...prev,
+                                [user.userId]: !Boolean(prev[user.userId])
+                              }));
+                              return;
+                            }
+                            void reissueCode(user);
+                          }}
+                        >
+                          코드 보이기
                         </Button>
                         <Button
                           type="button"

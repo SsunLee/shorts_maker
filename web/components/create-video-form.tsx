@@ -43,6 +43,7 @@ const SERVER_TEMPLATE_PREFIX = "server:";
 const customStyleOption = "__custom__";
 const imageStylePresets = [
   "Cinematic photo-real",
+  "Ultra photoreal photographer",
   "Minimal flat illustration",
   "Anime cel-shaded",
   "3D Pixar-style",
@@ -287,6 +288,9 @@ function formatTokenCount(tokens: number): string {
 }
 
 function detectStylePreset(style: string): string {
+  if (style === "완전 실사 포토그래퍼") {
+    return "Ultra photoreal photographer";
+  }
   return imageStylePresets.includes(style) ? style : customStyleOption;
 }
 
@@ -907,6 +911,7 @@ const defaultRenderOptions: RenderOptions = {
   subtitle: {
     fontName: "Arial",
     fontSize: 16,
+    fontBold: false,
     primaryColor: "#FFFFFF",
     outlineColor: "#000000",
     outline: 2,
@@ -954,6 +959,7 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
   const normalizedSubtitle: RenderOptions["subtitle"] = {
     fontName: String(subtitleDefaults.fontName || defaultRenderOptions.subtitle.fontName).trim() || "Arial",
     fontSize: clampNumber(Number(subtitleDefaults.fontSize), 8, 80, 16),
+    fontBold: Boolean(subtitleDefaults.fontBold),
     primaryColor: normalizeHexColor(subtitleDefaults.primaryColor, "#FFFFFF"),
     outlineColor: normalizeHexColor(subtitleDefaults.outlineColor, "#000000"),
     outline: clampNumber(Number(subtitleDefaults.outline), 0, 8, 2),
@@ -4998,6 +5004,7 @@ export function CreateVideoForm(): React.JSX.Element {
                                       style={{
                                         color: normalizeHexColor(renderOptions.subtitle.primaryColor, "#FFFFFF"),
                                         fontFamily: renderOptions.subtitle.fontName || "Arial",
+                                        fontWeight: renderOptions.subtitle.fontBold ? 700 : 400,
                                         fontSize: `${vrewSubtitlePreviewFontSize}px`,
                                         textShadow: vrewSubtitlePreviewTextShadow || undefined,
                                         lineHeight: 1.22,
@@ -5444,6 +5451,7 @@ export function CreateVideoForm(): React.JSX.Element {
                                     "#FFFFFF"
                                   ),
                                   fontFamily: renderOptions.subtitle.fontName || "Arial",
+                                  fontWeight: renderOptions.subtitle.fontBold ? 700 : 400,
                                   fontSize: `${subtitlePreviewFontSize}px`,
                                   textShadow: subtitlePreviewTextShadow || undefined,
                                   lineHeight: 1.25,

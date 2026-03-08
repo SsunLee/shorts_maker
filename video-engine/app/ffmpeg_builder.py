@@ -186,6 +186,12 @@ def _subtitle_bold_weight(font_thickness: Any) -> int:
     return int(round(400.0 + (thickness / 8.0) * 500.0))
 
 
+def _subtitle_bold_style(font_bold: Any, font_thickness: Any) -> int:
+    if bool(font_bold):
+        return 900
+    return _subtitle_bold_weight(font_thickness)
+
+
 def _subtitle_layout(position: str, subtitle_y_pct: Any) -> tuple[int, int]:
     # libass style margins are resolved in script PlayRes coordinates (default ~288 high for SRT),
     # not in output pixels (1920). Using output-pixel margins can push subtitles off-screen.
@@ -280,7 +286,10 @@ def _subtitle_filter_value(
     shadow = int(options.get("shadow") or 1)
     shadow_opacity = float(options.get("shadowOpacity") or 1.0)
     shadow_opacity = max(0.0, min(1.0, shadow_opacity))
-    bold_weight = _subtitle_bold_weight(options.get("fontThickness"))
+    bold_weight = _subtitle_bold_style(
+        options.get("fontBold"),
+        options.get("fontThickness"),
+    )
     primary_color = _hex_to_ass_color(str(options.get("primaryColor") or ""), "FFFFFF")
     outline_color = _hex_to_ass_color(str(options.get("outlineColor") or ""), "000000")
     shadow_color = _hex_to_ass_color_alpha("#000000", "000000", shadow_opacity)

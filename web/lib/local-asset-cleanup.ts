@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import path from "path";
 
 export interface LocalCleanupTarget {
-  key: "web_generated" | "video_engine_outputs";
+  key: LocalCleanupTargetKey;
   label: string;
   absolutePath: string;
   exists: boolean;
@@ -24,8 +24,10 @@ interface ScanTotals {
   totalSizeBytes: number;
 }
 
+export type LocalCleanupTargetKey = "web_generated" | "video_engine_outputs";
+
 function getCleanupTargetPaths(): Array<{
-  key: LocalCleanupTarget["key"];
+  key: LocalCleanupTargetKey;
   label: string;
   absolutePath: string;
 }> {
@@ -149,6 +151,15 @@ export async function inspectLocalCleanupTargets(): Promise<LocalCleanupSummary>
 
 export async function cleanupLocalGeneratedAssets(): Promise<LocalCleanupSummary> {
   const targets = getCleanupTargetPaths();
+  await Promise.all(targets.map((target) => emptyDirectory(target.absolutePath)));
+  return inspectLocalCleanupTargets();
+}
+
+export async function cleanupSelectedLocalGeneratedAssets(
+  keys: LocalCleanupTargetKey[]
+): Promise<LocalCleanupSummary> {
+  const keySet = new Set(keys);
+  const targets = getCleanupTargetPaths().filter((target) => keySet.has(target.key));
   await Promise.all(targets.map((target) => emptyDirectory(target.absolutePath)));
   return inspectLocalCleanupTargets();
 }

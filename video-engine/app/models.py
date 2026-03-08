@@ -11,6 +11,7 @@ class SubtitleCue(BaseModel):
 class SubtitleOptions(BaseModel):
     fontName: str = Field(default="Arial", min_length=1)
     fontSize: int = Field(default=16, ge=8, le=80)
+    fontBold: bool = False
     primaryColor: str = Field(default="#FFFFFF", min_length=4, max_length=16)
     outlineColor: str = Field(default="#000000", min_length=4, max_length=16)
     outline: int = Field(default=2, ge=0, le=8)

@@ -38,7 +38,7 @@ const emptySettings: AppSettings = {
 };
 
 interface LocalCleanupTargetSummary {
-  key: "web_generated" | "video_engine_outputs";
+  key: LocalCleanupTargetKey;
   label: string;
   absolutePath: string;
   exists: boolean;
@@ -47,12 +47,37 @@ interface LocalCleanupTargetSummary {
   totalSizeBytes: number;
 }
 
+type LocalCleanupTargetKey = "web_generated" | "video_engine_outputs";
+
 interface LocalCleanupResponse {
   ok?: boolean;
   targets?: LocalCleanupTargetSummary[];
   totalFileCount?: number;
   totalDirectoryCount?: number;
   totalSizeBytes?: number;
+  cleanedAll?: boolean;
+  cleanedKeys?: LocalCleanupTargetKey[];
+  error?: string;
+}
+
+interface S3AssetJobSummary {
+  jobId: string;
+  assetCount: number;
+  generatedCount: number;
+  renderedCount: number;
+  totalSizeBytes: number;
+  lastModified?: string;
+}
+
+interface S3StorageSummaryResponse {
+  ok?: boolean;
+  enabled?: boolean;
+  bucket?: string;
+  jobs?: S3AssetJobSummary[];
+  totalAssets?: number;
+  totalSizeBytes?: number;
+  cleanedAll?: boolean;
+  cleanedJobIds?: string[];
   error?: string;
 }
 
@@ -225,6 +250,18 @@ function formatBytes(bytes: number | undefined): string {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function formatDateTime(value: string | undefined): string {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "-";
+  }
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) {
+    return raw;
+  }
+  return parsed.toLocaleString();
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -237,6 +274,12 @@ export function SettingsForm(): React.JSX.Element {
   const [localCleanupLoading, setLocalCleanupLoading] = useState(false);
   const [localCleanupRunning, setLocalCleanupRunning] = useState(false);
   const [localCleanupError, setLocalCleanupError] = useState<string>();
+  const [selectedLocalCleanupKeys, setSelectedLocalCleanupKeys] = useState<LocalCleanupTargetKey[]>([]);
+  const [s3CleanupSummary, setS3CleanupSummary] = useState<S3StorageSummaryResponse>();
+  const [s3CleanupLoading, setS3CleanupLoading] = useState(false);
+  const [s3CleanupRunning, setS3CleanupRunning] = useState(false);
+  const [s3CleanupError, setS3CleanupError] = useState<string>();
+  const [selectedS3JobIds, setSelectedS3JobIds] = useState<string[]>([]);
   const [videoEngineStatus, setVideoEngineStatus] = useState<VideoEngineStatusResponse>();
   const [videoEngineStatusLoading, setVideoEngineStatusLoading] = useState(false);
   const [videoEngineStatusError, setVideoEngineStatusError] = useState<string>();
@@ -301,6 +344,10 @@ export function SettingsForm(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    void refreshS3CleanupSummary();
+  }, []);
+
+  useEffect(() => {
     void refreshVideoEngineStatus();
   }, []);
 
@@ -337,6 +384,14 @@ export function SettingsForm(): React.JSX.Element {
         throw new Error(data.error || "로컬 파일 현황을 불러오지 못했습니다.");
       }
       setLocalCleanup(data);
+      setSelectedLocalCleanupKeys((prev) => {
+        const available = new Set((data.targets || []).map((item) => item.key));
+        const filtered = prev.filter((item) => available.has(item));
+        if (filtered.length > 0) {
+          return filtered;
+        }
+        return (data.targets || []).filter((item) => item.exists).map((item) => item.key);
+      });
     } catch (error) {
       setLocalCleanupError(
         error instanceof Error ? error.message : "로컬 파일 현황을 불러오지 못했습니다."
@@ -346,11 +401,34 @@ export function SettingsForm(): React.JSX.Element {
     }
   }
 
-  async function cleanupLocalAssets(): Promise<void> {
+  function toggleLocalCleanupKey(key: LocalCleanupTargetKey): void {
+    setSelectedLocalCleanupKeys((prev) =>
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
+    );
+  }
+
+  function toggleAllLocalCleanupKeys(nextChecked: boolean): void {
+    if (!nextChecked) {
+      setSelectedLocalCleanupKeys([]);
+      return;
+    }
+    const keys = (localCleanup?.targets || []).filter((item) => item.exists).map((item) => item.key);
+    setSelectedLocalCleanupKeys(keys);
+  }
+
+  async function cleanupLocalAssets(mode: "selected" | "all"): Promise<void> {
+    const selectedTargets =
+      mode === "all"
+        ? localCleanup?.targets || []
+        : (localCleanup?.targets || []).filter((item) => selectedLocalCleanupKeys.includes(item.key));
+    if (selectedTargets.length === 0) {
+      setLocalCleanupError("삭제할 로컬 경로를 먼저 선택해 주세요.");
+      return;
+    }
+    const lines = selectedTargets.map((item) => `- ${item.absolutePath}`).join("\n");
     const confirmed = window.confirm(
       "로컬 생성 파일을 정리할까요?\n\n" +
-        "- web/public/generated\n" +
-        "- ../video-engine/outputs\n\n" +
+        `${lines}\n\n` +
         "S3/실섭 버킷에는 영향을 주지 않습니다."
     );
     if (!confirmed) {
@@ -362,20 +440,112 @@ export function SettingsForm(): React.JSX.Element {
     setMessage(undefined);
     try {
       const response = await fetch("/api/local-assets/cleanup", {
-        method: "DELETE"
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body:
+          mode === "all"
+            ? JSON.stringify({ all: true })
+            : JSON.stringify({ keys: selectedLocalCleanupKeys })
       });
       const data = (await response.json()) as LocalCleanupResponse;
       if (!response.ok || !data.ok) {
         throw new Error(data.error || "로컬 파일 정리에 실패했습니다.");
       }
       setLocalCleanup(data);
-      setMessage("로컬 생성 파일 정리가 완료되었습니다.");
+      setMessage(mode === "all" ? "로컬 생성 파일 전체 정리가 완료되었습니다." : "선택한 로컬 생성 파일 정리가 완료되었습니다.");
+      setSelectedLocalCleanupKeys((prev) =>
+        prev.filter((key) => (data.targets || []).some((target) => target.key === key))
+      );
     } catch (error) {
       setLocalCleanupError(
         error instanceof Error ? error.message : "로컬 파일 정리에 실패했습니다."
       );
     } finally {
       setLocalCleanupRunning(false);
+    }
+  }
+
+  async function refreshS3CleanupSummary(): Promise<void> {
+    setS3CleanupLoading(true);
+    setS3CleanupError(undefined);
+    try {
+      const response = await fetch("/api/storage/assets", { cache: "no-store" });
+      const data = (await response.json()) as S3StorageSummaryResponse;
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "S3 파일 현황을 불러오지 못했습니다.");
+      }
+      setS3CleanupSummary(data);
+      setSelectedS3JobIds((prev) => {
+        const available = new Set((data.jobs || []).map((item) => item.jobId));
+        return prev.filter((item) => available.has(item));
+      });
+    } catch (error) {
+      setS3CleanupError(
+        error instanceof Error ? error.message : "S3 파일 현황을 불러오지 못했습니다."
+      );
+    } finally {
+      setS3CleanupLoading(false);
+    }
+  }
+
+  function toggleS3JobId(jobId: string): void {
+    setSelectedS3JobIds((prev) =>
+      prev.includes(jobId) ? prev.filter((item) => item !== jobId) : [...prev, jobId]
+    );
+  }
+
+  function toggleAllS3JobIds(nextChecked: boolean): void {
+    if (!nextChecked) {
+      setSelectedS3JobIds([]);
+      return;
+    }
+    setSelectedS3JobIds((s3CleanupSummary?.jobs || []).map((item) => item.jobId));
+  }
+
+  async function cleanupS3Assets(mode: "selected" | "all"): Promise<void> {
+    const selectedJobs = mode === "all" ? s3CleanupSummary?.jobs || [] : (s3CleanupSummary?.jobs || []).filter((item) => selectedS3JobIds.includes(item.jobId));
+    if (selectedJobs.length === 0) {
+      setS3CleanupError("삭제할 S3 작업을 먼저 선택해 주세요.");
+      return;
+    }
+    const previewLines =
+      mode === "all"
+        ? `총 ${selectedJobs.length}개 작업`
+        : selectedJobs.slice(0, 12).map((item) => `- ${item.jobId}`).join("\n") +
+          (selectedJobs.length > 12 ? `\n... 외 ${selectedJobs.length - 12}개` : "");
+    const confirmed = window.confirm(
+      "S3 파일을 정리할까요?\n\n" +
+        `${previewLines}\n\n` +
+        "실제 버킷에서 삭제되며 복구할 수 없습니다."
+    );
+    if (!confirmed) {
+      return;
+    }
+    setS3CleanupRunning(true);
+    setS3CleanupError(undefined);
+    setMessage(undefined);
+    try {
+      const response = await fetch("/api/storage/assets", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body:
+          mode === "all"
+            ? JSON.stringify({ all: true })
+            : JSON.stringify({ jobIds: selectedS3JobIds })
+      });
+      const data = (await response.json()) as S3StorageSummaryResponse;
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "S3 정리에 실패했습니다.");
+      }
+      await refreshS3CleanupSummary();
+      setMessage(mode === "all" ? "S3 전체 정리가 완료되었습니다." : "선택한 S3 작업 정리가 완료되었습니다.");
+      if (mode !== "all") {
+        setSelectedS3JobIds([]);
+      }
+    } catch (error) {
+      setS3CleanupError(error instanceof Error ? error.message : "S3 정리에 실패했습니다.");
+    } finally {
+      setS3CleanupRunning(false);
     }
   }
 
@@ -996,11 +1166,22 @@ export function SettingsForm(): React.JSX.Element {
             </Button>
             <Button
               type="button"
+              variant="outline"
+              onClick={() => void cleanupLocalAssets("selected")}
+              disabled={
+                localCleanupRunning ||
+                selectedLocalCleanupKeys.length === 0
+              }
+            >
+              {localCleanupRunning ? "정리 중..." : "선택 삭제"}
+            </Button>
+            <Button
+              type="button"
               variant="destructive"
-              onClick={() => void cleanupLocalAssets()}
+              onClick={() => void cleanupLocalAssets("all")}
               disabled={localCleanupRunning}
             >
-              {localCleanupRunning ? "정리 중..." : "로컬 파일 정리"}
+              {localCleanupRunning ? "정리 중..." : "전체 삭제"}
             </Button>
           </div>
 
@@ -1020,11 +1201,35 @@ export function SettingsForm(): React.JSX.Element {
                   <p className="text-sm font-medium">{formatBytes(localCleanup.totalSizeBytes)}</p>
                 </div>
               </div>
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <p className="text-xs text-muted-foreground">삭제할 경로를 선택하세요</p>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={
+                      (localCleanup.targets || []).filter((item) => item.exists).length > 0 &&
+                      (localCleanup.targets || [])
+                        .filter((item) => item.exists)
+                        .every((item) => selectedLocalCleanupKeys.includes(item.key))
+                    }
+                    onChange={(event) => toggleAllLocalCleanupKeys(event.target.checked)}
+                  />
+                  전체 선택
+                </label>
+              </div>
               <div className="divide-y">
                 {(localCleanup.targets || []).map((target) => (
                   <div key={target.key} className="space-y-1 p-3 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="font-medium">{target.label}</p>
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedLocalCleanupKeys.includes(target.key)}
+                          onChange={() => toggleLocalCleanupKey(target.key)}
+                          disabled={!target.exists}
+                        />
+                        <p className="font-medium">{target.label}</p>
+                      </label>
                       <Badge variant={target.exists ? "muted" : "default"}>
                         {target.exists ? "존재" : "없음"}
                       </Badge>
@@ -1041,6 +1246,116 @@ export function SettingsForm(): React.JSX.Element {
 
           {localCleanupError ? (
             <p className="text-sm text-destructive">{localCleanupError}</p>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>S3 File Cleanup</CardTitle>
+          <CardDescription>
+            S3 버킷에 저장된 generated/rendered 결과를 작업 ID 단위로 선택 삭제하거나 전체 삭제할 수 있습니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void refreshS3CleanupSummary()}
+              disabled={s3CleanupLoading}
+            >
+              {s3CleanupLoading ? "확인 중..." : "S3 현황 새로고침"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void cleanupS3Assets("selected")}
+              disabled={
+                s3CleanupRunning ||
+                selectedS3JobIds.length === 0 ||
+                !s3CleanupSummary?.enabled
+              }
+            >
+              {s3CleanupRunning ? "정리 중..." : "선택 삭제"}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void cleanupS3Assets("all")}
+              disabled={s3CleanupRunning || !s3CleanupSummary?.enabled}
+            >
+              {s3CleanupRunning ? "정리 중..." : "전체 삭제"}
+            </Button>
+          </div>
+
+          {s3CleanupSummary?.enabled ? (
+            <div className="rounded-lg border">
+              <div className="grid gap-3 border-b p-3 md:grid-cols-3">
+                <div>
+                  <p className="text-xs text-muted-foreground">버킷</p>
+                  <p className="text-sm font-medium break-all">{s3CleanupSummary.bucket || "-"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">총 파일 수</p>
+                  <p className="text-sm font-medium">{s3CleanupSummary.totalAssets || 0}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">총 용량</p>
+                  <p className="text-sm font-medium">{formatBytes(s3CleanupSummary.totalSizeBytes)}</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <p className="text-xs text-muted-foreground">작업 ID 기준으로 삭제 대상을 선택하세요</p>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={
+                      (s3CleanupSummary.jobs || []).length > 0 &&
+                      (s3CleanupSummary.jobs || []).every((item) => selectedS3JobIds.includes(item.jobId))
+                    }
+                    onChange={(event) => toggleAllS3JobIds(event.target.checked)}
+                  />
+                  전체 선택
+                </label>
+              </div>
+              <div className="divide-y">
+                {(s3CleanupSummary.jobs || []).map((job) => (
+                  <div key={job.jobId} className="space-y-1 p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedS3JobIds.includes(job.jobId)}
+                          onChange={() => toggleS3JobId(job.jobId)}
+                        />
+                        <p className="font-medium">{job.jobId}</p>
+                      </label>
+                      <Badge variant="muted">
+                        {job.assetCount}개 파일
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      generated {job.generatedCount}개 | rendered {job.renderedCount}개 | 용량 {formatBytes(job.totalSizeBytes)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      마지막 수정: {formatDateTime(job.lastModified)}
+                    </p>
+                  </div>
+                ))}
+                {(s3CleanupSummary.jobs || []).length === 0 ? (
+                  <p className="p-3 text-sm text-muted-foreground">정리할 S3 파일이 없습니다.</p>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border p-3 text-sm text-muted-foreground">
+              S3가 설정되지 않았거나 비활성화 상태입니다.
+            </div>
+          )}
+
+          {s3CleanupError ? (
+            <p className="text-sm text-destructive">{s3CleanupError}</p>
           ) : null}
         </CardContent>
       </Card>

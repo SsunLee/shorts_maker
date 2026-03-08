@@ -4,6 +4,12 @@ import { resolveApiKeys, resolveModelForTask, resolveProviderForTask } from "@/l
 import { IdeaDraftRow, IdeaLanguage } from "@/lib/types";
 
 type Provider = "openai" | "gemini";
+type LatestNewsItem = {
+  title: string;
+  source: string;
+  publishedAt: string;
+  link: string;
+};
 
 function stripJsonFence(raw: string): string {
   const trimmed = String(raw || "").trim();
@@ -20,6 +26,153 @@ function normalizeField(value: unknown): string {
 
 function normalizeKeywordKey(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function extractTopicAnchors(topic: string): string[] {
+  const raw = String(topic || "").trim();
+  if (!raw) {
+    return [];
+  }
+
+  const stopwords = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "for",
+    "on",
+    "with",
+    "about",
+    "latest",
+    "news",
+    "trend",
+    "trending",
+    "최신",
+    "뉴스",
+    "주제",
+    "관련",
+    "話題",
+    "最新",
+    "ニュース",
+    "समाचार"
+  ]);
+
+  const candidates = [
+    raw,
+    ...raw
+      .split(/[\s,./|()[\]{}\-–—:;!?'"`~@#$%^&*+=<>]+/u)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  ];
+
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const token of candidates) {
+    const normalized = token.toLowerCase();
+    if (!normalized || stopwords.has(normalized)) {
+      continue;
+    }
+    const hasLatin = /[a-z]/i.test(token);
+    const minLength = hasLatin ? 3 : 2;
+    if (Array.from(token).length < minLength) {
+      continue;
+    }
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    output.push(token);
+    if (output.length >= 6) {
+      break;
+    }
+  }
+  return output;
+}
+
+function rowIncludesTopicAnchor(row: IdeaDraftRow, anchors: string[]): boolean {
+  if (anchors.length === 0) {
+    return true;
+  }
+  const keyword = normalizeField(row.Keyword);
+  const subject = normalizeField(row.Subject);
+  const narration = normalizeField(row.Narration);
+  const haystackRaw = `${keyword}\n${subject}\n${narration}`;
+  const haystackLower = haystackRaw.toLowerCase();
+  return anchors.some((anchor) => {
+    const anchorRaw = String(anchor || "").trim();
+    if (!anchorRaw) {
+      return false;
+    }
+    const anchorLower = anchorRaw.toLowerCase();
+    return haystackRaw.includes(anchorRaw) || haystackLower.includes(anchorLower);
+  });
+}
+
+function stripCdata(value: string): string {
+  return String(value || "").replace(/^<!\[CDATA\[/i, "").replace(/\]\]>$/i, "");
+}
+
+function decodeXmlEntities(value: string): string {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#x2F;/gi, "/")
+    .replace(/&#(\d+);/g, (_, digits: string) => {
+      const code = Number.parseInt(digits, 10);
+      return Number.isFinite(code) ? String.fromCharCode(code) : "";
+    });
+}
+
+function extractXmlTagValue(xml: string, tagName: string): string {
+  const match = xml.match(new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, "i"));
+  if (!match) {
+    return "";
+  }
+  return decodeXmlEntities(stripCdata(match[1]).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+}
+
+function parseLatestNewsItemsFromRss(xml: string, limit: number): LatestNewsItem[] {
+  const blocks = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  const items: LatestNewsItem[] = [];
+
+  for (const block of blocks) {
+    if (items.length >= limit) {
+      break;
+    }
+    let title = extractXmlTagValue(block, "title");
+    const link = extractXmlTagValue(block, "link");
+    const publishedAt = extractXmlTagValue(block, "pubDate");
+    let source = extractXmlTagValue(block, "source");
+
+    if (!source && title.includes(" - ")) {
+      const split = title.split(" - ");
+      if (split.length >= 2) {
+        source = split.pop() || "";
+        title = split.join(" - ").trim();
+      }
+    }
+
+    title = title.replace(/\s*-\s*Google News$/i, "").trim();
+    if (!title) {
+      continue;
+    }
+    items.push({
+      title,
+      source: source || "Unknown source",
+      publishedAt,
+      link
+    });
+  }
+
+  return items;
 }
 
 function safeParseIdeaRows(raw: string): IdeaDraftRow[] {
@@ -292,16 +445,114 @@ function normalizeNarrationForIdeas(narration: string, language: IdeaLanguage): 
   return `${cleaned}\n\n${subscribeCtaByLanguage(language)}`;
 }
 
+function requiresHardSpecificity(topic: string): boolean {
+  const normalized = String(topic || "").toLowerCase();
+  return (
+    /(latest|breaking|news|trend|trending|announcement|announced|202\d|20\d{2})/.test(normalized) ||
+    /(최신|실시간|속보|뉴스|트렌드|발표|신소재|신기술|핫한|화제)/u.test(topic) ||
+    /(最新|速報|ニュース|発表|新素材|新技術|話題|トレンド)/u.test(topic) ||
+    /(último|noticias|tendencia|anuncio)/u.test(normalized) ||
+    /(ताज़ा|समाचार|घोषणा|ट्रेंड)/u.test(topic)
+  );
+}
+
+function resolveNewsLocale(language: IdeaLanguage): { hl: string; gl: string; ceid: string } {
+  if (language === "ja") {
+    return { hl: "ja-JP", gl: "JP", ceid: "JP:ja" };
+  }
+  if (language === "ko") {
+    return { hl: "ko-KR", gl: "KR", ceid: "KR:ko" };
+  }
+  if (language === "es") {
+    return { hl: "es-ES", gl: "ES", ceid: "ES:es" };
+  }
+  if (language === "hi") {
+    return { hl: "hi-IN", gl: "IN", ceid: "IN:hi" };
+  }
+  return { hl: "en-US", gl: "US", ceid: "US:en" };
+}
+
+async function fetchLatestNewsContext(topic: string, language: IdeaLanguage): Promise<LatestNewsItem[]> {
+  if (!requiresHardSpecificity(topic)) {
+    return [];
+  }
+
+  const timeoutMs = parsePositiveInt(process.env.IDEA_NEWS_TIMEOUT_MS, 3500);
+  const { hl, gl, ceid } = resolveNewsLocale(language);
+  const query = `${topic} when:7d`;
+  const endpoint =
+    `https://news.google.com/rss/search?q=${encodeURIComponent(query)}` +
+    `&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(gl)}&ceid=${encodeURIComponent(ceid)}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const xml = await response.text();
+    return parseLatestNewsItemsFromRss(xml, 4);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function buildPrompt(
   topic: string,
   count: number,
   excludedKeywords: string[],
-  language: IdeaLanguage
+  language: IdeaLanguage,
+  latestNewsItems: LatestNewsItem[] = [],
+  topicAnchors: string[] = []
 ): string {
   const excludedText = formatExcludedKeywords(excludedKeywords);
   const duplicateRule = excludedText
     ? `- Do not reuse existing keywords: ${excludedText}\n`
     : "- Do not duplicate existing keywords.\n";
+  const hardSpecificity = requiresHardSpecificity(topic);
+  const specificityRule =
+    "- Avoid vague placeholders with no concrete referent (e.g. 'innovative new material' alone).\n" +
+    "- Each idea must include at least one concrete anchor noun relevant to the topic in both Subject and Narration.\n" +
+    "  Concrete anchors include: person/team/organization/material/technology/product/event/competition/zodiac sign/place.\n";
+  const hardSpecificityRule = hardSpecificity
+    ? "- Because this topic implies recency/news, every idea must name at least one specific real-world anchor\n" +
+      "  (e.g. material name like graphene, organization/lab, league/team/player, product line, event name).\n" +
+      "- If the claim is future-looking or unconfirmed, phrase it as outlook/expectation (not confirmed fact).\n"
+    : "";
+  const topicAnchorBlock =
+    topicAnchors.length > 0
+      ? "[Topic Anchors]\n" +
+        `- Preferred anchor terms extracted from user topic: ${topicAnchors.join(", ")}\n` +
+        "- Every idea should explicitly include at least one anchor term (or exact inflection) in Subject or Narration.\n\n"
+      : "";
+  const latestNewsContextBlock =
+    latestNewsItems.length > 0
+      ? "[Recent News Context]\n" +
+        latestNewsItems
+          .map((item, index) => {
+            const published = item.publishedAt ? ` | Published: ${item.publishedAt}` : "";
+            const source = item.source ? ` | Source: ${item.source}` : "";
+            const link = item.link ? ` | URL: ${item.link}` : "";
+            return `${index + 1}. ${item.title}${source}${published}${link}`;
+          })
+          .join("\n") +
+        "\n\n[News Grounding Rules]\n" +
+        "- Treat Recent News Context as anchor facts. Do not invent outlets, dates, or specific claims not grounded there.\n" +
+        "- For each idea, reference at least one concrete anchor from the context in Subject or Narration.\n" +
+        "- If certainty is low, use cautious wording (e.g. expected/reported/under discussion).\n\n"
+      : "";
+  const domainSpecificityRule =
+    "- Prefer concrete nouns over abstract wording.\n" +
+    "- If topic is place/culture, mention specific district/landmark/store/event names.\n" +
+    "- If topic is technology/science, mention specific material/component/process/protocol names.\n" +
+    "- If topic is sports, mention league/team/player/tournament names.\n" +
+    "- If topic is history, mention era/person/place/artifact names.\n";
 
   return (
     `You are a short-video content idea assistant for topic "${topic}".\n\n` +
@@ -331,6 +582,11 @@ function buildPrompt(
     "- Narration must NOT contain hashtags (#...) anywhere, especially at the end\n" +
     `- Narration must end with this exact CTA sentence: "${subscribeCtaByLanguage(language)}"\n` +
     `- Language: ${resolveLanguageInstruction(language)}\n` +
+    topicAnchorBlock +
+    latestNewsContextBlock +
+    domainSpecificityRule +
+    specificityRule +
+    hardSpecificityRule +
     "- Use only the requested output language in Keyword, Subject, Description, and Narration.\n" +
     "- Never switch those fields back to Korean unless Korean is the requested language.\n" +
     "- Output JSON only, no markdown, no explanation"
@@ -341,12 +597,17 @@ function buildRelatedKeywordPrompt(
   topic: string,
   excludedKeywords: string[],
   language: IdeaLanguage,
-  limit: number
+  limit: number,
+  topicAnchors: string[] = []
 ): string {
   const excludedText = formatExcludedKeywords(excludedKeywords);
   const duplicateRule = excludedText
     ? `- Avoid these keywords because they already exist or were just generated: ${excludedText}\n`
     : "- Avoid repeating the exact input topic or existing sheet keywords.\n";
+  const anchorRule =
+    topicAnchors.length > 0
+      ? `- Prefer terms closely connected to these anchors: ${topicAnchors.join(", ")}\n`
+      : "";
 
   return (
     `You are a short-video trend strategist for topic "${topic}".\n\n` +
@@ -358,6 +619,7 @@ function buildRelatedKeywordPrompt(
     "[Rules]\n" +
     `- Suggest ${limit} adjacent or faster-growing subtopic keywords related to "${topic}"\n` +
     "- Prioritize topics that feel more current, clickable, and specific for short-form videos\n" +
+    anchorRule +
     "- Do not output the exact same phrase as the input topic\n" +
     duplicateRule +
     "- Keep each keyword under 20 characters when possible\n" +
@@ -372,10 +634,16 @@ function enforceRules(args: {
   count: number;
   blockedKeywords: Set<string>;
   language: IdeaLanguage;
-}): { rows: IdeaDraftRow[]; languageRejectedCount: number } {
+  topicAnchors: string[];
+}): {
+  rows: IdeaDraftRow[];
+  languageRejectedCount: number;
+  specificityRejectedCount: number;
+} {
   const output: IdeaDraftRow[] = [];
   const seenInBatch = new Set<string>();
   let languageRejectedCount = 0;
+  let specificityRejectedCount = 0;
   args.rows.forEach((row) => {
     if (output.length >= args.count) {
       return;
@@ -392,6 +660,10 @@ function enforceRules(args: {
     if (args.blockedKeywords.has(keywordKey) || seenInBatch.has(keywordKey)) {
       return;
     }
+    if (!rowIncludesTopicAnchor(row, args.topicAnchors)) {
+      specificityRejectedCount += 1;
+      return;
+    }
     seenInBatch.add(keywordKey);
     output.push({
       Status: "준비",
@@ -402,7 +674,7 @@ function enforceRules(args: {
       publish: "대기중"
     });
   });
-  return { rows: output, languageRejectedCount };
+  return { rows: output, languageRejectedCount, specificityRejectedCount };
 }
 
 async function requestIdeaRows(
@@ -536,10 +808,20 @@ export async function generateIdeas(args: {
   const maxAttempts = 4;
   let parseFailureCount = 0;
   let languageRejectedCount = 0;
+  let specificityRejectedCount = 0;
+  const topicAnchors = extractTopicAnchors(topic);
+  const latestNewsItems = await fetchLatestNewsContext(topic, language);
 
   for (let attempt = 1; attempt <= maxAttempts && collected.length < count; attempt += 1) {
     const remaining = count - collected.length;
-    const prompt = buildPrompt(topic, remaining, Array.from(blockedKeywords), language);
+    const prompt = buildPrompt(
+      topic,
+      remaining,
+      Array.from(blockedKeywords),
+      language,
+      latestNewsItems,
+      topicAnchors
+    );
     const rows = await requestIdeaRows(provider, prompt, args.userId);
     if (rows.length === 0) {
       parseFailureCount += 1;
@@ -549,9 +831,11 @@ export async function generateIdeas(args: {
       rows,
       count: remaining,
       blockedKeywords,
-      language
+      language,
+      topicAnchors
     });
     languageRejectedCount += accepted.languageRejectedCount;
+    specificityRejectedCount += accepted.specificityRejectedCount;
     accepted.rows.forEach((item) => {
       const key = normalizeKeywordKey(item.Keyword);
       blockedKeywords.add(key);
@@ -567,10 +851,20 @@ export async function generateIdeas(args: {
       `선택한 ${describeLanguageForError(language)} 결과가 안정적으로 생성되지 않았습니다. 다시 시도해 주세요.`
     );
   }
+  if (collected.length === 0 && specificityRejectedCount > 0) {
+    throw new Error(
+      `주제 핵심어를 직접 언급하는 결과가 부족했습니다. 주제를 조금 더 구체화해서 다시 시도해 주세요.`
+    );
+  }
   if (collected.length < count) {
     if (languageRejectedCount > 0) {
       throw new Error(
         `선택한 ${describeLanguageForError(language)} 결과만 유지하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      );
+    }
+    if (specificityRejectedCount > 0) {
+      throw new Error(
+        `주제 핵심어를 직접 언급하는 아이디어만 유지하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
       );
     }
     throw new Error(
@@ -610,11 +904,13 @@ export async function generateRelatedIdeaKeywords(args: {
 
   try {
     const provider = await resolveProvider(args.userId);
+    const topicAnchors = extractTopicAnchors(topic);
     const prompt = buildRelatedKeywordPrompt(
       topic,
       Array.from(blockedKeywords),
       language,
-      limit
+      limit,
+      topicAnchors
     );
     const keywords = await requestRelatedKeywords(provider, prompt, args.userId);
     const accepted = fallbackRelatedKeywords({

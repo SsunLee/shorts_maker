@@ -24,6 +24,7 @@ const FALLBACK_VISUAL: SnapshotVisual = {
 
 const SNAPSHOT_IMAGE_MAP: Record<string, string> = {
   "Cinematic photo-real": "/style-snapshots/cinematic-photo-real.jpg",
+  "Ultra photoreal photographer": "/style-snapshots/cinematic-photo-real.jpg",
   "Minimal flat illustration": "/style-snapshots/minimal-flat-illustration.jpg",
   "Anime cel-shaded": "/style-snapshots/anime-cel-shaded.jpg",
   "3D Pixar-style": "/style-snapshots/3d-pixar-style.jpg",
@@ -48,7 +49,12 @@ function resolveSnapshotVisual(styleText: string): SnapshotVisual {
       accent: "#fbbf24"
     };
   }
-  if (raw.includes("cinematic") || raw.includes("photo")) {
+  if (
+    (raw.includes("cinematic") || raw.includes("photo")) &&
+    !raw.includes("photographer") &&
+    !raw.includes("완전 실사") &&
+    !raw.includes("포토그래퍼")
+  ) {
     return {
       label: "Cinematic photo-real",
       hint: "영화 톤의 사실적 조명",
@@ -56,6 +62,17 @@ function resolveSnapshotVisual(styleText: string): SnapshotVisual {
       glow: "radial-gradient(circle at 68% 28%, rgba(251,191,36,0.35), transparent 55%)",
       grain:
         "repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 4px)",
+      accent: "#fbbf24"
+    };
+  }
+  if (raw.includes("완전 실사") || raw.includes("포토그래퍼") || raw.includes("photographer")) {
+    return {
+      label: "Ultra photoreal photographer",
+      hint: "프로 사진가 수준의 고해상도 실사",
+      background: "linear-gradient(135deg, #0b1220 0%, #1f2937 45%, #6b3f10 100%)",
+      glow: "radial-gradient(circle at 70% 28%, rgba(255,205,120,0.32), transparent 56%)",
+      grain:
+        "repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 4px)",
       accent: "#fbbf24"
     };
   }

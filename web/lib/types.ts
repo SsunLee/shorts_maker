@@ -97,6 +97,7 @@ export interface SubtitleCue {
 export interface SubtitleStyleOptions {
   fontName: string;
   fontSize: number;
+  fontBold?: boolean;
   primaryColor: string;
   outlineColor: string;
   outline: number;

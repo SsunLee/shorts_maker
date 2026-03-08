@@ -48,6 +48,7 @@ interface AutomationTemplateItem {
     subtitle?: {
       fontName?: string;
       fontSize?: number;
+      fontBold?: boolean;
       primaryColor?: string;
       outlineColor?: string;
       outline?: number;
@@ -867,6 +868,7 @@ export function DashboardClient(): React.JSX.Element {
                 top: `${subtitleY}%`,
                 color: normalizeHexColor(subtitle?.primaryColor, "#FFFFFF"),
                 fontFamily: subtitle?.fontName || "Arial",
+                fontWeight: subtitle?.fontBold ? 700 : 400,
                 fontSize: `${subtitleFontSize}px`,
                 overflowWrap: "anywhere",
                 wordBreak: "break-word",

@@ -103,6 +103,7 @@ type TemplateEditorState = {
   badgeColor: string;
   subtitlePosition: RenderOptions["subtitle"]["position"];
   subtitleFontSize: string;
+  subtitleBold: boolean;
   subtitleMaxCharsPerCaption: string;
   subtitleYPercent: string;
   subtitleSampleText: string;
@@ -129,6 +130,7 @@ const templateSceneCountOptions = ["3", "4", "5", "6", "8", "10", "12"];
 const customStyleOption = "__custom__";
 const imageStylePresets = [
   "Cinematic photo-real",
+  "Ultra photoreal photographer",
   "Minimal flat illustration",
   "Anime cel-shaded",
   "3D Pixar-style",
@@ -154,12 +156,16 @@ const VIDEO_RENDER_HEIGHT = 1920;
 const ASS_DEFAULT_PLAYRES_Y = 288;
 
 function detectImageStylePreset(style: string): string {
+  if (style === "완전 실사 포토그래퍼") {
+    return "Ultra photoreal photographer";
+  }
   return imageStylePresets.includes(style) ? style : customStyleOption;
 }
 
 const BASE_SUBTITLE: RenderOptions["subtitle"] = {
   fontName: "Arial",
   fontSize: 16,
+  fontBold: false,
   primaryColor: "#FFFFFF",
   outlineColor: "#000000",
   outline: 2,
@@ -245,6 +251,7 @@ function createInitialEditor(): TemplateEditorState {
     badgeColor: "#FFFFFF",
     subtitlePosition: "bottom",
     subtitleFontSize: "16",
+    subtitleBold: false,
     subtitleMaxCharsPerCaption: "18",
     subtitleYPercent: "86",
     subtitleSampleText: "신비한 고대 이집트 문자의 비밀을 지금 공개합니다.",
@@ -425,6 +432,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
     subtitle: {
       ...BASE_SUBTITLE,
       fontSize: clampNumber(Number(editor.subtitleFontSize), 8, 120, 16),
+      fontBold: Boolean(editor.subtitleBold),
       position:
         editor.subtitlePosition === "top" ||
         editor.subtitlePosition === "middle" ||
@@ -653,6 +661,7 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
         ? item.renderOptions.subtitle.position
         : "bottom",
     subtitleFontSize: String(clampNumber(Number(item.renderOptions.subtitle.fontSize), 8, 120, 16)),
+    subtitleBold: Boolean(item.renderOptions.subtitle.fontBold),
     subtitleMaxCharsPerCaption: String(
       clampNumber(Number(item.renderOptions.subtitle.maxCharsPerCaption), 8, 60, 18)
     ),
@@ -1922,6 +1931,17 @@ export function TemplatesClient(): React.JSX.Element {
                       <Plus className="mr-1 h-4 w-4" />
                       신규 초기화
                     </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        selectedTemplateId !== "__new__" ? void removeTemplate(selectedTemplateId) : undefined
+                      }
+                      disabled={busy || selectedTemplateId === "__new__"}
+                    >
+                      <Trash2 className="mr-1 h-4 w-4" />
+                      선택 삭제
+                    </Button>
                   </div>
                 </div>
                 {selectedTemplateId !== "__new__" ? (
@@ -2985,16 +3005,16 @@ export function TemplatesClient(): React.JSX.Element {
                 </div>
               ))}
             </div>
-            <div className="grid gap-2 md:grid-cols-[1fr,120px,140px,120px,1fr]">
-              <div className="space-y-1">
-                <Label>자막 예시 텍스트</Label>
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(90px,0.6fr)_minmax(120px,0.8fr)_minmax(130px,0.9fr)_minmax(110px,0.8fr)]">
+              <div className="min-w-0 space-y-1">
+                <Label className="whitespace-nowrap">자막 예시 텍스트</Label>
                 <Input
                   value={editor.subtitleSampleText}
                   onChange={(event) => setEditor((prev) => ({ ...prev, subtitleSampleText: event.target.value }))}
                 />
               </div>
-              <div className="space-y-1">
-                <Label>자막 위치(상/중/하)</Label>
+              <div className="min-w-0 space-y-1">
+                <Label className="whitespace-nowrap">자막 위치</Label>
                 <Select
                   value={editor.subtitlePosition}
                   onValueChange={(value) =>
@@ -3017,8 +3037,24 @@ export function TemplatesClient(): React.JSX.Element {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1">
-                <Label>자막 크기</Label>
+              <div className="min-w-0 space-y-1">
+                <Label className="whitespace-nowrap">자막 굵게</Label>
+                <Button
+                  type="button"
+                  variant={editor.subtitleBold ? "default" : "outline"}
+                  className="w-full"
+                  onClick={() =>
+                    setEditor((prev) => ({
+                      ...prev,
+                      subtitleBold: !prev.subtitleBold
+                    }))
+                  }
+                >
+                  Bold
+                </Button>
+              </div>
+              <div className="min-w-0 space-y-1">
+                <Label className="whitespace-nowrap">자막 크기</Label>
                 <Input
                   type="number"
                   min={8}
@@ -3032,8 +3068,8 @@ export function TemplatesClient(): React.JSX.Element {
                   }
                 />
               </div>
-              <div className="space-y-1">
-                <Label>자막 최대 글자수</Label>
+              <div className="min-w-0 space-y-1">
+                <Label className="whitespace-nowrap">자막 최대 글자수</Label>
                 <Input
                   type="number"
                   min={8}
@@ -3047,8 +3083,8 @@ export function TemplatesClient(): React.JSX.Element {
                   }
                 />
               </div>
-              <div className="space-y-1">
-                <Label>자막 Y(%)</Label>
+              <div className="min-w-0 space-y-1">
+                <Label className="whitespace-nowrap">자막 Y(%)</Label>
                 <Input
                   type="number"
                   value={editor.subtitleYPercent}
@@ -3349,6 +3385,7 @@ export function TemplatesClient(): React.JSX.Element {
                   className="whitespace-pre-wrap"
                   style={{
                     fontSize: `${subtitlePreviewFontSize}px`,
+                    fontWeight: editor.subtitleBold ? 700 : 400,
                     overflowWrap: "anywhere",
                     wordBreak: "break-word"
                   }}

@@ -206,6 +206,7 @@ function normalizeRenderOptionsForEngine(
       fontName: asText(subtitleRaw.fontName, "Arial"),
       // Keep engine payload compatible with stricter deployed schemas (min 10).
       fontSize: Math.round(clampNumber(asFiniteNumber(subtitleRaw.fontSize, 16), 10, 80)),
+      fontBold: Boolean(subtitleRaw.fontBold),
       primaryColor: asText(subtitleRaw.primaryColor, "#FFFFFF"),
       outlineColor: asText(subtitleRaw.outlineColor, "#000000"),
       outline: Math.round(clampNumber(asFiniteNumber(subtitleRaw.outline, 2), 0, 8)),

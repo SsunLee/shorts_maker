@@ -35,6 +35,7 @@ export const DEFAULT_RENDER_OPTIONS: RenderOptions = {
   subtitle: {
     fontName: "Arial",
     fontSize: 16,
+    fontBold: false,
     primaryColor: "#FFFFFF",
     outlineColor: "#000000",
     outline: 2,
@@ -142,6 +143,7 @@ function normalizeRenderOptions(
     subtitle: {
       ...subtitle,
       fontSize: clampNumber(Number(subtitle.fontSize), 8, 80, 16),
+      fontBold: Boolean(subtitle.fontBold),
       outline: clampNumber(Number(subtitle.outline), 0, 8, 2),
       shadow: clampNumber(Number(subtitle.shadow), 0, 8, 1),
       shadowOpacity: clampNumber(Number(subtitle.shadowOpacity), 0, 1, 1),
