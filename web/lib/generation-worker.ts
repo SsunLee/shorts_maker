@@ -32,6 +32,11 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       imageAspectRatio: payload.imageAspectRatio,
       sceneCount: payload.sceneCount
     }, userId);
+    if (imagePrompts.length < 3) {
+      throw new Error(
+        `Image prompt generation returned ${imagePrompts.length} scene(s). At least 3 scenes are required.`
+      );
+    }
 
     await upsertRow({
       id,
@@ -52,6 +57,11 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
         }, userId);
       }
     }, userId);
+    if (imageUrls.length < 3) {
+      throw new Error(
+        `Image generation returned ${imageUrls.length} image(s). At least 3 images are required for rendering.`
+      );
+    }
 
     await upsertRow({
       id,

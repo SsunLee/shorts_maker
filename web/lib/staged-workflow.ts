@@ -564,6 +564,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
 
   try {
     if (workflow.stage === "scene_split_review") {
+      validateScenes(workflow.scenes);
       await upsertRow({ id, status: "generating_images", progress: 45 }, userId);
       const imageAspectRatio = resolveImageAspectRatioForWorkflow(workflow);
       const imageUrls = await generateImages(
@@ -594,6 +595,9 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         ...scene,
         imageUrl: imageUrls[index]
       }));
+      if (scenes.some((scene) => !scene.imageUrl)) {
+        throw new Error("일부 장면 이미지 생성에 실패했습니다. 이미지 생성 단계를 다시 시도해 주세요.");
+      }
 
       const updated = withTimestamps(
         {
@@ -615,6 +619,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
     }
 
     if (workflow.stage === "assets_review") {
+      validateScenes(workflow.scenes);
       if (!workflow.ttsUrl || workflow.scenes.some((scene) => !scene.imageUrl)) {
         throw new Error("Audio/images are missing. Complete previous stage first.");
       }
@@ -659,6 +664,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
     }
 
     if (workflow.stage === "video_review") {
+      validateScenes(workflow.scenes);
       if (!workflow.ttsUrl || workflow.scenes.some((scene) => !scene.imageUrl)) {
         throw new Error("Audio/images are missing. Complete previous stage first.");
       }

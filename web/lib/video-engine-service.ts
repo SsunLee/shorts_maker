@@ -204,7 +204,8 @@ function normalizeRenderOptionsForEngine(
   return {
     subtitle: {
       fontName: asText(subtitleRaw.fontName, "Arial"),
-      fontSize: Math.round(clampNumber(asFiniteNumber(subtitleRaw.fontSize, 16), 8, 80)),
+      // Keep engine payload compatible with stricter deployed schemas (min 10).
+      fontSize: Math.round(clampNumber(asFiniteNumber(subtitleRaw.fontSize, 16), 10, 80)),
       primaryColor: asText(subtitleRaw.primaryColor, "#FFFFFF"),
       outlineColor: asText(subtitleRaw.outlineColor, "#000000"),
       outline: Math.round(clampNumber(asFiniteNumber(subtitleRaw.outline, 2), 0, 8)),
@@ -259,6 +260,28 @@ function parsePathname(source: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeImageUrlsForEngine(sources: string[]): string[] {
+  const normalized = sources
+    .map((item) => String(item || "").trim())
+    .filter((item) => item.length > 0);
+
+  if (normalized.length === 0) {
+    throw new Error(
+      "영상 렌더링용 이미지가 없습니다. 이미지 생성 단계를 다시 실행한 뒤 재시도해 주세요."
+    );
+  }
+
+  if (normalized.length >= 3) {
+    return normalized;
+  }
+
+  const padded = [...normalized];
+  while (padded.length < 3) {
+    padded.push(normalized[padded.length % normalized.length]);
+  }
+  return padded;
 }
 
 function shouldRetryWithFallback(status: number): boolean {
@@ -321,6 +344,7 @@ export async function buildVideoWithEngine(
   const imageUrls = await Promise.all(
     payload.imageUrls.map((source) => toEngineReadableAsset(source))
   );
+  const normalizedImageUrls = normalizeImageUrlsForEngine(imageUrls);
   const ttsPath = await toEngineReadableAsset(payload.ttsPath);
   const normalizedRenderOptions = normalizeRenderOptionsForEngine(payload.renderOptions);
   const sanitizedRenderOptions = materializeRenderOptionsForVideo({
@@ -339,7 +363,7 @@ export async function buildVideoWithEngine(
     subtitlesText: asText(payload.subtitlesText),
     titleText: asText(payload.titleText),
     renderOptions: sanitizedRenderOptions,
-    imageUrls,
+    imageUrls: normalizedImageUrls,
     ttsPath
   };
 
