@@ -245,6 +245,7 @@ def _subtitle_filter_value(
             "nanumgothic",
             "noto sans kr",
             "segoe ui",
+            "pretendard",
         }
         if font_name.strip().lower() in unsafe_font_names:
             font_name = "Noto Sans Devanagari"
@@ -257,6 +258,7 @@ def _subtitle_filter_value(
             "nanumgothic",
             "noto sans kr",
             "segoe ui",
+            "pretendard",
         }
         if font_name.strip().lower() in unsafe_font_names:
             font_name = "Noto Sans CJK KR"
@@ -269,6 +271,7 @@ def _subtitle_filter_value(
             "nanumgothic",
             "noto sans kr",
             "segoe ui",
+            "pretendard",
         }
         if font_name.strip().lower() in unsafe_font_names:
             font_name = "Noto Sans Arabic"
@@ -625,12 +628,27 @@ def _resolve_devanagari_font_file() -> str:
         Path("/usr/share/fonts/truetype/noto/NotoSerifDevanagari-Regular.ttf"),
         Path("/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.ttf"),
         Path("/usr/share/fonts/noto/NotoSansDevanagari-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansDevanagari.ttf"),
+        Path("/usr/share/fonts/truetype/noto/NotoSerifDevanagari.ttf"),
+    ]
+    linux_globs = [
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari*.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSerifDevanagari*.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansDevanagari*.ttf",
+        "/usr/share/fonts/noto/NotoSansDevanagari*.ttf",
     ]
 
     for candidate in [*windows_candidates, *linux_candidates]:
         try:
             if candidate.exists():
                 return str(candidate)
+        except OSError:
+            continue
+    for pattern in linux_globs:
+        try:
+            for matched in Path("/").glob(pattern.lstrip("/")):
+                if matched.exists():
+                    return str(matched)
         except OSError:
             continue
     return ""
@@ -719,6 +737,16 @@ def _resolve_font_file_for_text(
         return _resolve_arabic_font_file(prefer_bold)
 
     return _resolve_latin_font_file(prefer_bold)
+
+
+def _fallback_font_family_for_text(text: str) -> str:
+    if _contains_devanagari(text):
+        return "Noto Sans Devanagari"
+    if _contains_hangul(text) or _contains_cjk_or_kana(text):
+        return "Noto Sans CJK KR"
+    if _contains_arabic(text):
+        return "Noto Sans Arabic"
+    return ""
 
 
 def _wrap_text_by_visual_width(text: str, max_units: float) -> list[str]:
@@ -831,6 +859,12 @@ def _build_title_template_filter(
         )
         if resolved_font_file:
             font_file = resolved_font_file
+        else:
+            # Safety net: if script-specific font file is not resolved, at least
+            # force a script-capable family name instead of user-selected Latin/KR-only fonts.
+            fallback_family = _fallback_font_family_for_text(text)
+            if fallback_family:
+                font_name = fallback_family
 
     # Approximate wrapping by template width.
     # Keep coefficients aligned with web/lib/template-text-wrap.ts so editor preview
