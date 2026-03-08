@@ -947,6 +947,7 @@ export function TemplatesClient(): React.JSX.Element {
   const [localFontNames, setLocalFontNames] = useState<string[]>([]);
   const [localFontLoading, setLocalFontLoading] = useState(false);
   const [localFontMessage, setLocalFontMessage] = useState<string>();
+  const [templateFontQuery, setTemplateFontQuery] = useState("");
   const previewCanvasRef = useRef<HTMLDivElement | null>(null);
   const templateLayoutRef = useRef<HTMLDivElement | null>(null);
   const previewFollowRef = useRef<HTMLDivElement | null>(null);
@@ -1178,6 +1179,13 @@ export function TemplatesClient(): React.JSX.Element {
     () => mergeFontOptions(templateFontOptions, localFontNames),
     [localFontNames]
   );
+  const filteredTemplateFonts = useMemo(() => {
+    const q = templateFontQuery.trim().toLowerCase();
+    if (!q) {
+      return availableTemplateFonts;
+    }
+    return availableTemplateFonts.filter((name) => name.toLowerCase().includes(q));
+  }, [availableTemplateFonts, templateFontQuery]);
   const notifyFontLanguageSupport = useCallback(
     (fontName: string): void => {
       const notice = buildFontUnsupportedLanguageNotice(fontName, readySheetRowsForFontCheck);
@@ -2078,22 +2086,36 @@ export function TemplatesClient(): React.JSX.Element {
               </div>
               <Select
                 value={detectTemplateFontPreset(editor.fontName, availableTemplateFonts)}
-                onValueChange={(value) =>
+                onValueChange={(value) => {
                   setEditor((prev) => ({
                     ...prev,
                     fontName: value === customTemplateFontOption ? prev.fontName : value
-                  }))
-                }
+                  }));
+                  setTemplateFontQuery("");
+                }}
               >
                 <SelectTrigger className="bg-card dark:bg-zinc-900">
                   <SelectValue placeholder="폰트 선택" />
                 </SelectTrigger>
                 <SelectContent>
-                  {availableTemplateFonts.map((name) => (
+                  <div className="p-2">
+                    <Input
+                      value={templateFontQuery}
+                      onChange={(event) => setTemplateFontQuery(event.target.value)}
+                      placeholder="폰트 검색"
+                      className="h-8"
+                    />
+                  </div>
+                  {filteredTemplateFonts.map((name) => (
                     <SelectItem key={name} value={name}>
                       {name}
                     </SelectItem>
                   ))}
+                  {filteredTemplateFonts.length === 0 ? (
+                    <SelectItem value="__font_no_match__" disabled>
+                      검색 결과 없음
+                    </SelectItem>
+                  ) : null}
                   <SelectItem value={customTemplateFontOption}>직접 입력</SelectItem>
                 </SelectContent>
               </Select>
