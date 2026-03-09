@@ -518,7 +518,7 @@ function buildPrompt(
   const hardSpecificity = requiresHardSpecificity(topic);
   const specificityRule =
     "- Avoid vague placeholders with no concrete referent (e.g. 'innovative new material' alone).\n" +
-    "- Each idea must include at least one concrete anchor noun relevant to the topic in both Subject and Narration.\n" +
+    "- Prefer including at least one concrete anchor noun relevant to the topic in Subject or Narration.\n" +
     "  Concrete anchors include: person/team/organization/material/technology/product/event/competition/zodiac sign/place.\n";
   const hardSpecificityRule = hardSpecificity
     ? "- Because this topic implies recency/news, every idea must name at least one specific real-world anchor\n" +
@@ -529,7 +529,7 @@ function buildPrompt(
     topicAnchors.length > 0
       ? "[Topic Anchors]\n" +
         `- Preferred anchor terms extracted from user topic: ${topicAnchors.join(", ")}\n` +
-        "- Every idea should explicitly include at least one anchor term (or exact inflection) in Subject or Narration.\n\n"
+        "- Prefer including at least one anchor term (or close inflection) in Subject or Narration.\n\n"
       : "";
   const latestNewsContextBlock =
     latestNewsItems.length > 0
@@ -641,6 +641,7 @@ function enforceRules(args: {
   specificityRejectedCount: number;
 } {
   const output: IdeaDraftRow[] = [];
+  const relaxedCandidates: IdeaDraftRow[] = [];
   const seenInBatch = new Set<string>();
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
@@ -660,20 +661,28 @@ function enforceRules(args: {
     if (args.blockedKeywords.has(keywordKey) || seenInBatch.has(keywordKey)) {
       return;
     }
-    if (!rowIncludesTopicAnchor(row, args.topicAnchors)) {
-      specificityRejectedCount += 1;
-      return;
-    }
-    seenInBatch.add(keywordKey);
-    output.push({
+    const normalized: IdeaDraftRow = {
       Status: "준비",
       Keyword: keyword,
       Subject: normalizeField(row.Subject),
       Description: normalizeField(row.Description),
       Narration: normalizeNarrationForIdeas(normalizeField(row.Narration), args.language),
       publish: "대기중"
-    });
+    };
+    if (rowIncludesTopicAnchor(normalized, args.topicAnchors)) {
+      seenInBatch.add(keywordKey);
+      output.push(normalized);
+      return;
+    }
+    if (args.topicAnchors.length > 0) {
+      specificityRejectedCount += 1;
+    }
+    seenInBatch.add(keywordKey);
+    relaxedCandidates.push(normalized);
   });
+  if (output.length < args.count && relaxedCandidates.length > 0) {
+    output.push(...relaxedCandidates.slice(0, args.count - output.length));
+  }
   return { rows: output, languageRejectedCount, specificityRejectedCount };
 }
 
@@ -805,7 +814,7 @@ export async function generateIdeas(args: {
       .filter(Boolean)
   );
   const collected: IdeaDraftRow[] = [];
-  const maxAttempts = 4;
+  const maxAttempts = Math.max(3, Math.min(8, parsePositiveInt(process.env.IDEA_GENERATION_MAX_ATTEMPTS, 6)));
   let parseFailureCount = 0;
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
@@ -853,7 +862,7 @@ export async function generateIdeas(args: {
   }
   if (collected.length === 0 && specificityRejectedCount > 0) {
     throw new Error(
-      `주제 핵심어를 직접 언급하는 결과가 부족했습니다. 주제를 조금 더 구체화해서 다시 시도해 주세요.`
+      `아이디어 품질 검증을 통과한 결과가 부족했습니다. 잠시 후 다시 시도해 주세요.`
     );
   }
   if (collected.length < count) {
@@ -864,7 +873,7 @@ export async function generateIdeas(args: {
     }
     if (specificityRejectedCount > 0) {
       throw new Error(
-        `주제 핵심어를 직접 언급하는 아이디어만 유지하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+        `품질 기준을 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
       );
     }
     throw new Error(
