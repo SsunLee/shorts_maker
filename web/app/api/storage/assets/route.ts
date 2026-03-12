@@ -19,7 +19,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const id = String(request.nextUrl.searchParams.get("id") || "").trim();
   if (!id) {
     try {
-      const summary = await listAllStorageJobAssets();
+      const summary = await listAllStorageJobAssets(userId);
       return NextResponse.json({
         ok: true,
         ...summary
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    const result = await listJobAssetsFromStorage(id);
+    const result = await listJobAssetsFromStorage(id, userId);
     return NextResponse.json({
       id,
       ...result
@@ -56,7 +56,7 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
   const id = String(request.nextUrl.searchParams.get("id") || "").trim();
   if (id) {
     try {
-      await cleanupJobAssetsFromStorage(id);
+      await cleanupJobAssetsFromStorage(id, userId);
       return NextResponse.json({
         ok: true,
         id
@@ -78,7 +78,7 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
       ? Array.from(new Set(payload.jobIds.map((item) => String(item || "").trim()).filter(Boolean)))
       : [];
     if (Boolean(payload.all)) {
-      await cleanupAllAssetsFromStorage();
+      await cleanupAllAssetsFromStorage(userId);
       return NextResponse.json({
         ok: true,
         cleanedAll: true
@@ -90,7 +90,7 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
         { status: 400 }
       );
     }
-    const cleanedJobIds = await cleanupSelectedJobAssetsFromStorage(jobIds);
+    const cleanedJobIds = await cleanupSelectedJobAssetsFromStorage(jobIds, userId);
     return NextResponse.json({
       ok: true,
       cleanedAll: false,

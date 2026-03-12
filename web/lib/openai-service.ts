@@ -962,7 +962,8 @@ export async function generateImages(
         jobId,
         fileName,
         body: imageBuffer,
-        contentType: inline.mimeType || `image/${extension}`
+        contentType: inline.mimeType || `image/${extension}`,
+        userId
       });
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
@@ -995,7 +996,8 @@ export async function generateImages(
         jobId,
         fileName,
         body: imageBuffer,
-        contentType: "image/png"
+        contentType: "image/png",
+        userId
       });
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
@@ -1010,7 +1012,8 @@ export async function generateImages(
         jobId,
         fileName,
         sourceUrl: imageData.url,
-        contentType: "image/png"
+        contentType: "image/png",
+        userId
       });
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
@@ -1174,7 +1177,8 @@ export async function generateTtsAudio(args: {
     fileName,
     body: audio.buffer,
     contentType: audio.mimeType || "audio/mpeg",
-    cacheControl: "public, max-age=31536000, immutable"
+    cacheControl: "public, max-age=31536000, immutable",
+    userId
   });
 
   return {

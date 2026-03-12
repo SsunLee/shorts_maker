@@ -644,7 +644,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         useSfx: workflow.input.useSfx,
         targetDurationSec: workflow.input.videoLengthSec,
         renderOptions: renderOptionsForVideo
-      });
+      }, userId);
 
       const updated = withTimestamps(
         {
@@ -695,7 +695,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
           useSfx: workflow.input.useSfx,
           targetDurationSec: workflow.input.videoLengthSec,
           renderOptions: normalizedRenderOptions
-        });
+        }, userId);
         finalVideoUrl = finalVideo.outputUrl || finalVideo.outputPath;
       }
 

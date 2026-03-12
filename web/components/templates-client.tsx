@@ -1820,11 +1820,11 @@ export function TemplatesClient(): React.JSX.Element {
         }
       }
       await refreshTemplates();
-      setTemplateImportMessage(`${payloads.length}개 템플릿을 가져왔습니다.`);
-      setSuccess(`${payloads.length}개 템플릿을 가져왔습니다.`);
+      setTemplateImportMessage(`${payloads.length}개 템플릿을 추가했습니다.`);
+      setSuccess(`${payloads.length}개 템플릿을 추가했습니다.`);
     } catch (importError) {
       const message =
-        importError instanceof Error ? importError.message : "템플릿 가져오기에 실패했습니다.";
+        importError instanceof Error ? importError.message : "템플릿 추가에 실패했습니다.";
       setTemplateImportError(message);
       setError(message);
     } finally {
@@ -3215,9 +3215,9 @@ export function TemplatesClient(): React.JSX.Element {
           </div>
 
           <div className="rounded-md border p-3">
-            <Label className="text-sm font-semibold">템플릿 가져오기(JSON)</Label>
+            <Label className="text-sm font-semibold">템플릿 JSON 추가</Label>
             <p className="mt-1 text-xs text-muted-foreground">
-              JSON 텍스트를 붙여넣거나 파일을 선택해 템플릿을 일괄 가져올 수 있습니다.
+              JSON 텍스트를 붙여넣거나 파일을 선택해 템플릿을 일괄 추가할 수 있습니다.
             </p>
             <div className="mt-3 space-y-2">
               <Textarea
@@ -3253,7 +3253,7 @@ export function TemplatesClient(): React.JSX.Element {
                   onClick={() => void importTemplatesFromJsonText(templateImportJson)}
                   disabled={busy}
                 >
-                  JSON 텍스트 가져오기
+                  JSON 텍스트로 추가
                 </Button>
               </div>
               {templateImportError ? (

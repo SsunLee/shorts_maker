@@ -89,7 +89,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       topicText: payload.topic,
       useSfx: payload.useSfx,
       targetDurationSec: payload.videoLengthSec
-    });
+    }, userId);
 
     await upsertRow({
       id,

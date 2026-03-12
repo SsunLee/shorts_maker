@@ -29,7 +29,7 @@ export async function DELETE(
     const { id } = await context.params;
     const deletedRow = await deleteRow(id, userId);
     await deleteWorkflow(id, userId);
-    await cleanupJobAssetsFromStorage(id);
+    await cleanupJobAssetsFromStorage(id, userId);
 
     // Clean web-generated assets.
     await removeDirectoryIfExists(path.join(process.cwd(), "public", "generated", id));

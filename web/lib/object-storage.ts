@@ -51,6 +51,28 @@ function normalizePrefix(raw: string | undefined): string {
     .replace(/\/+$/, "");
 }
 
+function normalizeUserScope(raw: string | undefined): string | undefined {
+  const normalized = String(raw || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._@-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.slice(0, 120);
+}
+
+function withUserScope(relativePath: string, userId?: string): string {
+  const normalizedPath = String(relativePath || "")
+    .trim()
+    .replace(/^\/+/, "");
+  const scope = normalizeUserScope(userId);
+  if (!scope) {
+    return normalizedPath;
+  }
+  return `${scope}/${normalizedPath}`;
+}
+
 function getS3Config(): S3Config {
   const bucket = String(process.env.S3_BUCKET || "").trim();
   const region = String(process.env.S3_REGION || "").trim() || "us-east-1";
@@ -158,9 +180,10 @@ export async function storeGeneratedAsset(args: {
   body: Uint8Array;
   contentType?: string;
   cacheControl?: string;
+  userId?: string;
 }): Promise<StorageResult> {
   const config = getS3Config();
-  const relativePath = `generated/${args.jobId}/${args.fileName}`;
+  const relativePath = withUserScope(`generated/${args.jobId}/${args.fileName}`, args.userId);
 
   if (!config.enabled) {
     const outputDir = path.join(process.cwd(), "public", "generated", args.jobId);
@@ -196,6 +219,7 @@ export async function storeGeneratedAssetFromRemote(args: {
   sourceUrl: string;
   contentType?: string;
   cacheControl?: string;
+  userId?: string;
 }): Promise<StorageResult> {
   const response = await fetch(args.sourceUrl);
   if (!response.ok) {
@@ -208,13 +232,15 @@ export async function storeGeneratedAssetFromRemote(args: {
     fileName: args.fileName,
     body,
     contentType: args.contentType || responseContentType,
-    cacheControl: args.cacheControl
+    cacheControl: args.cacheControl,
+    userId: args.userId
   });
 }
 
 export async function mirrorRenderedVideoToStorage(args: {
   jobId: string;
   sourceUrl?: string;
+  userId?: string;
 }): Promise<string | undefined> {
   const sourceUrl = String(args.sourceUrl || "").trim();
   if (!sourceUrl) {
@@ -226,7 +252,7 @@ export async function mirrorRenderedVideoToStorage(args: {
     return sourceUrl;
   }
 
-  const relativePath = `rendered/${args.jobId}/final.mp4`;
+  const relativePath = withUserScope(`rendered/${args.jobId}/final.mp4`, args.userId);
   const objectKey = joinKey(config, relativePath);
   const targetUrl = toPublicUrl(config, objectKey);
   if (sourceUrl === targetUrl) {
@@ -341,7 +367,7 @@ async function listByPrefix(config: S3Config, relativePrefix: string): Promise<S
   return items;
 }
 
-export async function listJobAssetsFromStorage(jobId: string): Promise<{
+export async function listJobAssetsFromStorage(jobId: string, userId?: string): Promise<{
   enabled: boolean;
   bucket?: string;
   assets: S3StoredAsset[];
@@ -365,13 +391,15 @@ export async function listJobAssetsFromStorage(jobId: string): Promise<{
     };
   }
 
+  const generatedBase = withUserScope("generated", userId);
+  const renderedBase = withUserScope("rendered", userId);
   const grouped = await Promise.all([
-    listByPrefix(config, `generated/${normalizedJobId}`),
-    listByPrefix(config, `generated/${normalizedJobId}-preview`),
-    listByPrefix(config, `generated/${normalizedJobId}-final`),
-    listByPrefix(config, `rendered/${normalizedJobId}`),
-    listByPrefix(config, `rendered/${normalizedJobId}-preview`),
-    listByPrefix(config, `rendered/${normalizedJobId}-final`)
+    listByPrefix(config, `${generatedBase}/${normalizedJobId}`),
+    listByPrefix(config, `${generatedBase}/${normalizedJobId}-preview`),
+    listByPrefix(config, `${generatedBase}/${normalizedJobId}-final`),
+    listByPrefix(config, `${renderedBase}/${normalizedJobId}`),
+    listByPrefix(config, `${renderedBase}/${normalizedJobId}-preview`),
+    listByPrefix(config, `${renderedBase}/${normalizedJobId}-final`)
   ]);
   const dedup = new Map<string, S3StoredAsset>();
   grouped.flat().forEach((item) => dedup.set(item.key, item));
@@ -395,11 +423,20 @@ function parseStorageJobFromRelativeKey(
   if (parts.length < 2) {
     return undefined;
   }
-  const category = parts[0];
+  const categoryIndex =
+    parts[0] === "generated" || parts[0] === "rendered"
+      ? 0
+      : parts.length >= 3 && (parts[1] === "generated" || parts[1] === "rendered")
+        ? 1
+        : -1;
+  if (categoryIndex < 0) {
+    return undefined;
+  }
+  const category = parts[categoryIndex];
   if (category !== "generated" && category !== "rendered") {
     return undefined;
   }
-  const rawToken = String(parts[1] || "").trim();
+  const rawToken = String(parts[categoryIndex + 1] || "").trim();
   if (!rawToken) {
     return undefined;
   }
@@ -413,7 +450,7 @@ function parseStorageJobFromRelativeKey(
   };
 }
 
-export async function listAllStorageJobAssets(): Promise<{
+export async function listAllStorageJobAssets(userId?: string): Promise<{
   enabled: boolean;
   bucket?: string;
   jobs: S3JobAssetSummary[];
@@ -430,9 +467,11 @@ export async function listAllStorageJobAssets(): Promise<{
     };
   }
 
+  const generatedBase = withUserScope("generated", userId);
+  const renderedBase = withUserScope("rendered", userId);
   const [generatedAssets, renderedAssets] = await Promise.all([
-    listByPrefix(config, "generated"),
-    listByPrefix(config, "rendered")
+    listByPrefix(config, generatedBase),
+    listByPrefix(config, renderedBase)
   ]);
   const dedup = new Map<string, S3StoredAsset>();
   [...generatedAssets, ...renderedAssets].forEach((asset) => {
@@ -496,7 +535,7 @@ export async function listAllStorageJobAssets(): Promise<{
   };
 }
 
-export async function cleanupJobAssetsFromStorage(jobId: string): Promise<void> {
+export async function cleanupJobAssetsFromStorage(jobId: string, userId?: string): Promise<void> {
   if (!jobId.trim()) {
     return;
   }
@@ -505,31 +544,40 @@ export async function cleanupJobAssetsFromStorage(jobId: string): Promise<void> 
     return;
   }
 
+  const generatedBase = withUserScope("generated", userId);
+  const renderedBase = withUserScope("rendered", userId);
+
   await Promise.all([
-    deleteByPrefix(config, `generated/${jobId}`),
-    deleteByPrefix(config, `generated/${jobId}-preview`),
-    deleteByPrefix(config, `generated/${jobId}-final`),
-    deleteByPrefix(config, `rendered/${jobId}`),
-    deleteByPrefix(config, `rendered/${jobId}-preview`),
-    deleteByPrefix(config, `rendered/${jobId}-final`)
+    deleteByPrefix(config, `${generatedBase}/${jobId}`),
+    deleteByPrefix(config, `${generatedBase}/${jobId}-preview`),
+    deleteByPrefix(config, `${generatedBase}/${jobId}-final`),
+    deleteByPrefix(config, `${renderedBase}/${jobId}`),
+    deleteByPrefix(config, `${renderedBase}/${jobId}-preview`),
+    deleteByPrefix(config, `${renderedBase}/${jobId}-final`)
   ]);
 }
 
-export async function cleanupSelectedJobAssetsFromStorage(jobIds: string[]): Promise<string[]> {
+export async function cleanupSelectedJobAssetsFromStorage(
+  jobIds: string[],
+  userId?: string
+): Promise<string[]> {
   const normalized = Array.from(
     new Set(jobIds.map((item) => String(item || "").trim()).filter(Boolean))
   );
   if (normalized.length === 0) {
     return [];
   }
-  await Promise.all(normalized.map((jobId) => cleanupJobAssetsFromStorage(jobId)));
+  await Promise.all(normalized.map((jobId) => cleanupJobAssetsFromStorage(jobId, userId)));
   return normalized;
 }
 
-export async function cleanupAllAssetsFromStorage(): Promise<void> {
+export async function cleanupAllAssetsFromStorage(userId?: string): Promise<void> {
   const config = getS3Config();
   if (!config.enabled) {
     return;
   }
-  await Promise.all([deleteByPrefix(config, "generated"), deleteByPrefix(config, "rendered")]);
+  await Promise.all([
+    deleteByPrefix(config, withUserScope("generated", userId)),
+    deleteByPrefix(config, withUserScope("rendered", userId))
+  ]);
 }

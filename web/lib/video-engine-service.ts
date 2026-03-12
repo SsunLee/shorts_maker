@@ -337,7 +337,8 @@ async function toEngineReadableAsset(source: string): Promise<string> {
 
 /** Send render instructions to the external FastAPI video engine. */
 export async function buildVideoWithEngine(
-  payload: BuildVideoPayload
+  payload: BuildVideoPayload,
+  userId?: string
 ): Promise<BuildVideoResult> {
   const baseUrls = resolveVideoEngineBaseUrls();
   const timeoutMs = resolveVideoEngineTimeoutMs();
@@ -384,7 +385,8 @@ export async function buildVideoWithEngine(
         const result = (await response.json()) as BuildVideoResult;
         result.outputUrl = await mirrorRenderedVideoToStorage({
           jobId: payload.jobId,
-          sourceUrl: result.outputUrl
+          sourceUrl: result.outputUrl,
+          userId
         });
         return result;
       }
