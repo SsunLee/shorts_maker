@@ -3,6 +3,7 @@ import os from "os";
 import path from "path";
 import { google } from "googleapis";
 import { getSettings } from "@/lib/settings-store";
+import { toSignedStorageReadUrl } from "@/lib/object-storage";
 import type { AppSettings } from "@/lib/types";
 
 interface UploadArgs {
@@ -78,9 +79,15 @@ function createYoutubeClientFromCreds(creds: {
 }
 
 async function downloadRemoteVideo(videoUrl: string): Promise<string> {
-  const response = await fetch(videoUrl);
+  const expiresInSec = Number.parseInt(
+    String(process.env.YOUTUBE_UPLOAD_ASSET_SIGNED_URL_EXPIRES_SEC || "3600"),
+    10
+  );
+  const safeExpires = Number.isFinite(expiresInSec) ? expiresInSec : 3600;
+  const readableUrl = await toSignedStorageReadUrl(videoUrl, safeExpires);
+  const response = await fetch(readableUrl);
   if (!response.ok) {
-    throw new Error(`Unable to download video from ${videoUrl}`);
+    throw new Error(`Unable to download video from ${videoUrl} (HTTP ${response.status})`);
   }
   const bytes = Buffer.from(await response.arrayBuffer());
   const tempPath = path.join(os.tmpdir(), `shorts-maker-${crypto.randomUUID()}.mp4`);
