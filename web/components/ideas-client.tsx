@@ -24,6 +24,8 @@ interface GenerateIdeasResponse {
   items: IdeaDraftRow[];
   relatedKeywords?: string[];
   error?: string;
+  code?: string;
+  debug?: Record<string, unknown>;
 }
 
 interface ApplyIdeasResponse {
@@ -57,6 +59,49 @@ function getPreviewRowKey(row: IdeaDraftRow, index: number): string {
   }
   const keyword = String(row.Keyword || "").trim();
   return `${keyword || "row"}-${index}`;
+}
+
+function formatDebugForUi(debug?: Record<string, unknown>): string {
+  if (!debug) {
+    return "";
+  }
+  const preferredOrder = [
+    "code",
+    "language",
+    "provider",
+    "requestedCount",
+    "generatedCount",
+    "maxAttempts",
+    "attemptsTried",
+    "latestNewsItemCount",
+    "parseFailureCount",
+    "languageRejectedCount",
+    "specificityRejectedCount",
+    "narrationRejectedCount",
+    "placeholderRejectedCount",
+    "topicAnchors"
+  ];
+
+  const keys = Array.from(
+    new Set([...preferredOrder.filter((key) => key in debug), ...Object.keys(debug)])
+  );
+
+  const lines = keys
+    .map((key) => {
+      const value = debug[key];
+      if (value === undefined) {
+        return "";
+      }
+      const rendered =
+        typeof value === "string"
+          ? value
+          : Array.isArray(value)
+            ? value.join(", ")
+            : JSON.stringify(value);
+      return `${key}: ${rendered}`;
+    })
+    .filter(Boolean);
+  return lines.join("\n");
 }
 
 export function IdeasClient(): React.JSX.Element {
@@ -281,7 +326,10 @@ export function IdeasClient(): React.JSX.Element {
       });
       const data = (await response.json()) as GenerateIdeasResponse;
       if (!response.ok) {
-        throw new Error(data.error || "Failed to generate ideas.");
+        const codeText = data.code ? `\ncode: ${data.code}` : "";
+        const debugText = formatDebugForUi(data.debug);
+        const detail = debugText ? `\n\n[실패 상세]\n${debugText}` : "";
+        throw new Error((data.error || "Failed to generate ideas.") + codeText + detail);
       }
       const nextRows = data.items || [];
       setGeneratedRows(nextRows);
@@ -467,7 +515,7 @@ export function IdeasClient(): React.JSX.Element {
             </div>
           ) : null}
 
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error ? <p className="text-sm text-destructive whitespace-pre-wrap break-words">{error}</p> : null}
           {success ? <p className="text-sm text-muted-foreground">{success}</p> : null}
         </CardContent>
       </Card>

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { generateIdeas, generateRelatedIdeaKeywords } from "@/lib/idea-generator";
+import {
+  generateIdeas,
+  generateRelatedIdeaKeywords,
+  IdeaGenerationError
+} from "@/lib/idea-generator";
 import { loadIdeasSheetTable } from "@/lib/ideas-sheet";
 import { IdeaDraftRow, IdeaLanguage } from "@/lib/types";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
@@ -117,6 +121,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ items: withIds, relatedKeywords });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to generate ideas";
+    if (error instanceof IdeaGenerationError) {
+      return NextResponse.json(
+        {
+          error: message,
+          code: error.code,
+          debug: error.debug
+        },
+        { status: 400 }
+      );
+    }
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

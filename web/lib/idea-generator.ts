@@ -11,6 +11,43 @@ type LatestNewsItem = {
   link: string;
 };
 
+type IdeaGenerationFailureCode =
+  | "TOPIC_REQUIRED"
+  | "JSON_PARSE_FAILED"
+  | "LANGUAGE_REJECTED"
+  | "SPECIFICITY_REJECTED"
+  | "PLACEHOLDER_REJECTED"
+  | "NARRATION_REJECTED"
+  | "INSUFFICIENT_UNIQUE_RESULTS";
+
+type IdeaGenerationDebug = {
+  provider?: Provider;
+  language: IdeaLanguage;
+  topicAnchors: string[];
+  latestNewsItemCount: number;
+  maxAttempts: number;
+  attemptsTried: number;
+  requestedCount: number;
+  generatedCount: number;
+  parseFailureCount: number;
+  languageRejectedCount: number;
+  specificityRejectedCount: number;
+  narrationRejectedCount: number;
+  placeholderRejectedCount: number;
+};
+
+export class IdeaGenerationError extends Error {
+  code: IdeaGenerationFailureCode;
+  debug: IdeaGenerationDebug;
+
+  constructor(message: string, code: IdeaGenerationFailureCode, debug: IdeaGenerationDebug) {
+    super(message);
+    this.name = "IdeaGenerationError";
+    this.code = code;
+    this.debug = debug;
+  }
+}
+
 function stripJsonFence(raw: string): string {
   const trimmed = String(raw || "").trim();
   if (!trimmed.startsWith("```")) {
@@ -988,8 +1025,23 @@ export async function generateIdeas(args: {
     args.language === "hi"
       ? args.language
       : "ko";
+  const baseDebug: IdeaGenerationDebug = {
+    provider: undefined,
+    language,
+    topicAnchors: [],
+    latestNewsItemCount: 0,
+    maxAttempts: 0,
+    attemptsTried: 0,
+    requestedCount: Math.max(1, Math.min(10, Math.floor(args.count))),
+    generatedCount: 0,
+    parseFailureCount: 0,
+    languageRejectedCount: 0,
+    specificityRejectedCount: 0,
+    narrationRejectedCount: 0,
+    placeholderRejectedCount: 0
+  };
   if (!topic) {
-    throw new Error("주제를 입력해 주세요.");
+    throw new IdeaGenerationError("주제를 입력해 주세요.", "TOPIC_REQUIRED", baseDebug);
   }
   const provider = await resolveProvider(args.userId);
   const blockedKeywords = new Set(
@@ -1006,8 +1058,26 @@ export async function generateIdeas(args: {
   let placeholderRejectedCount = 0;
   const topicAnchors = extractTopicAnchors(topic);
   const latestNewsItems = await fetchLatestNewsContext(topic, language);
+  let attemptsTried = 0;
+
+  const snapshotDebug = (): IdeaGenerationDebug => ({
+    provider,
+    language,
+    topicAnchors,
+    latestNewsItemCount: latestNewsItems.length,
+    maxAttempts,
+    attemptsTried,
+    requestedCount: count,
+    generatedCount: collected.length,
+    parseFailureCount,
+    languageRejectedCount,
+    specificityRejectedCount,
+    narrationRejectedCount,
+    placeholderRejectedCount
+  });
 
   for (let attempt = 1; attempt <= maxAttempts && collected.length < count; attempt += 1) {
+    attemptsTried = attempt;
     const remaining = count - collected.length;
     const prompt = buildPrompt(
       topic,
@@ -1041,49 +1111,73 @@ export async function generateIdeas(args: {
   }
 
   if (collected.length === 0 && parseFailureCount > 0) {
-    throw new Error("아이디어 JSON 파싱에 실패했습니다. 다시 시도해 주세요.");
+    throw new IdeaGenerationError(
+      "아이디어 JSON 파싱에 실패했습니다. 다시 시도해 주세요.",
+      "JSON_PARSE_FAILED",
+      snapshotDebug()
+    );
   }
   if (collected.length === 0 && languageRejectedCount > 0) {
-    throw new Error(
-      `선택한 ${describeLanguageForError(language)} 결과가 안정적으로 생성되지 않았습니다. 다시 시도해 주세요.`
+    throw new IdeaGenerationError(
+      `선택한 ${describeLanguageForError(language)} 결과가 안정적으로 생성되지 않았습니다. 다시 시도해 주세요.`,
+      "LANGUAGE_REJECTED",
+      snapshotDebug()
     );
   }
   if (collected.length === 0 && specificityRejectedCount > 0) {
-    throw new Error(
-      `아이디어 품질 검증을 통과한 결과가 부족했습니다. 잠시 후 다시 시도해 주세요.`
+    throw new IdeaGenerationError(
+      `아이디어 품질 검증을 통과한 결과가 부족했습니다. 잠시 후 다시 시도해 주세요.`,
+      "SPECIFICITY_REJECTED",
+      snapshotDebug()
     );
   }
   if (collected.length === 0 && placeholderRejectedCount > 0) {
-    throw new Error("플레이스홀더(예: 〇〇/XX)가 포함된 결과가 감지되어 차단되었습니다. 다시 시도해 주세요.");
+    throw new IdeaGenerationError(
+      "플레이스홀더(예: 〇〇/XX)가 포함된 결과가 감지되어 차단되었습니다. 다시 시도해 주세요.",
+      "PLACEHOLDER_REJECTED",
+      snapshotDebug()
+    );
   }
   if (collected.length === 0 && narrationRejectedCount > 0) {
-    throw new Error(
-      `실질적인 스토리 내용을 포함한 나레이션 결과가 부족했습니다. 주제를 조금 더 구체화해 다시 시도해 주세요.`
+    throw new IdeaGenerationError(
+      `실질적인 스토리 내용을 포함한 나레이션 결과가 부족했습니다. 주제를 조금 더 구체화해 다시 시도해 주세요.`,
+      "NARRATION_REJECTED",
+      snapshotDebug()
     );
   }
   if (collected.length < count) {
     if (languageRejectedCount > 0) {
-      throw new Error(
-        `선택한 ${describeLanguageForError(language)} 결과만 유지하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      throw new IdeaGenerationError(
+        `선택한 ${describeLanguageForError(language)} 결과만 유지하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
+        "LANGUAGE_REJECTED",
+        snapshotDebug()
       );
     }
     if (specificityRejectedCount > 0) {
-      throw new Error(
-        `품질 기준을 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      throw new IdeaGenerationError(
+        `품질 기준을 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
+        "SPECIFICITY_REJECTED",
+        snapshotDebug()
       );
     }
     if (narrationRejectedCount > 0) {
-      throw new Error(
-        `스토리 밀도를 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      throw new IdeaGenerationError(
+        `스토리 밀도를 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
+        "NARRATION_REJECTED",
+        snapshotDebug()
       );
     }
     if (placeholderRejectedCount > 0) {
-      throw new Error(
-        `플레이스홀더(예: 〇〇/XX)를 제거하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      throw new IdeaGenerationError(
+        `플레이스홀더(예: 〇〇/XX)를 제거하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
+        "PLACEHOLDER_REJECTED",
+        snapshotDebug()
       );
     }
-    throw new Error(
-      `기존 keyword와 중복되지 않는 아이디어를 ${count}개 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+    throw new IdeaGenerationError(
+      `기존 keyword와 중복되지 않는 아이디어를 ${count}개 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
+      "INSUFFICIENT_UNIQUE_RESULTS",
+      snapshotDebug()
     );
   }
   return collected;
