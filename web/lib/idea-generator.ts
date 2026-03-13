@@ -559,20 +559,53 @@ function requiresHardSpecificity(topic: string): boolean {
   );
 }
 
-function resolveNewsLocale(language: IdeaLanguage): { hl: string; gl: string; ceid: string } {
-  if (language === "ja") {
-    return { hl: "ja-JP", gl: "JP", ceid: "JP:ja" };
+type NewsLocale = { hl: string; gl: string; ceid: string };
+
+function isGlobalSportsTopic(topic: string): boolean {
+  const normalized = String(topic || "").toLowerCase();
+  return (
+    /(wbc|world cup|olympic|fifa|uefa|mlb|npb|kbo|champions league|premier league)/.test(
+      normalized
+    ) || /(월드컵|올림픽|국제대회|세계대회|대표팀|ワールドカップ|オリンピック|国際大会|世界大会|代表戦)/u.test(topic)
+  );
+}
+
+function resolveNewsLocales(language: IdeaLanguage, topic: string): NewsLocale[] {
+  const primary =
+    language === "ja"
+      ? { hl: "ja-JP", gl: "JP", ceid: "JP:ja" }
+      : language === "ko"
+        ? { hl: "ko-KR", gl: "KR", ceid: "KR:ko" }
+        : language === "es"
+          ? { hl: "es-ES", gl: "ES", ceid: "ES:es" }
+          : language === "hi"
+            ? { hl: "hi-IN", gl: "IN", ceid: "IN:hi" }
+            : { hl: "en-US", gl: "US", ceid: "US:en" };
+
+  if (language !== "ja") {
+    return [primary];
   }
-  if (language === "ko") {
-    return { hl: "ko-KR", gl: "KR", ceid: "KR:ko" };
+
+  const globalEnglish = { hl: "en-US", gl: "US", ceid: "US:en" };
+  const globalFirst = isGlobalSportsTopic(topic);
+  return globalFirst ? [globalEnglish, primary] : [primary, globalEnglish];
+}
+
+function dedupeLatestNewsItems(items: LatestNewsItem[], limit: number): LatestNewsItem[] {
+  const seen = new Set<string>();
+  const output: LatestNewsItem[] = [];
+  for (const item of items) {
+    if (output.length >= limit) {
+      break;
+    }
+    const key = `${item.title}`.trim().toLowerCase();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(item);
   }
-  if (language === "es") {
-    return { hl: "es-ES", gl: "ES", ceid: "ES:es" };
-  }
-  if (language === "hi") {
-    return { hl: "hi-IN", gl: "IN", ceid: "IN:hi" };
-  }
-  return { hl: "en-US", gl: "US", ceid: "US:en" };
+  return output;
 }
 
 async function fetchLatestNewsContext(topic: string, language: IdeaLanguage): Promise<LatestNewsItem[]> {
@@ -581,29 +614,41 @@ async function fetchLatestNewsContext(topic: string, language: IdeaLanguage): Pr
   }
 
   const timeoutMs = parsePositiveInt(process.env.IDEA_NEWS_TIMEOUT_MS, 3500);
-  const { hl, gl, ceid } = resolveNewsLocale(language);
+  const locales = resolveNewsLocales(language, topic);
   const query = `${topic} when:7d`;
-  const endpoint =
-    `https://news.google.com/rss/search?q=${encodeURIComponent(query)}` +
-    `&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(gl)}&ceid=${encodeURIComponent(ceid)}`;
+  const perLocaleLimit = parsePositiveInt(process.env.IDEA_NEWS_PER_LOCALE_LIMIT, 4);
+  const mergedLimit = parsePositiveInt(process.env.IDEA_NEWS_MERGED_LIMIT, 6);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(endpoint, {
-      method: "GET",
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      return [];
-    }
-    const xml = await response.text();
-    return parseLatestNewsItemsFromRss(xml, 4);
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timer);
+  const fetched = await Promise.all(
+    locales.map(async ({ hl, gl, ceid }) => {
+      const endpoint =
+        `https://news.google.com/rss/search?q=${encodeURIComponent(query)}` +
+        `&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(gl)}&ceid=${encodeURIComponent(ceid)}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(endpoint, {
+          method: "GET",
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          return [];
+        }
+        const xml = await response.text();
+        return parseLatestNewsItemsFromRss(xml, perLocaleLimit);
+      } catch {
+        return [];
+      } finally {
+        clearTimeout(timer);
+      }
+    })
+  );
+
+  const merged = dedupeLatestNewsItems(fetched.flat(), mergedLimit);
+  if (merged.length > 0) {
+    return merged;
   }
+  return [];
 }
 
 function buildPrompt(
