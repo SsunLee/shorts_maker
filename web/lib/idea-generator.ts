@@ -151,6 +151,26 @@ function hasGenericNarrationFiller(text: string): boolean {
   );
 }
 
+function containsPlaceholderToken(text: string): boolean {
+  const raw = String(text || "");
+  const lowered = raw.toLowerCase();
+  return (
+    /〇{2,}|○{2,}/u.test(raw) ||
+    /\b(?:xx|xxx|tbd|n\/a)\b/i.test(lowered) ||
+    /\[redacted\]/i.test(lowered) ||
+    /미정|未定|某/u.test(raw)
+  );
+}
+
+function rowContainsPlaceholder(row: IdeaDraftRow): boolean {
+  return (
+    containsPlaceholderToken(row.Keyword) ||
+    containsPlaceholderToken(row.Subject) ||
+    containsPlaceholderToken(row.Description) ||
+    containsPlaceholderToken(row.Narration)
+  );
+}
+
 function minimumNarrationLength(language: IdeaLanguage): number {
   if (language === "en" || language === "es") {
     return 220;
@@ -664,6 +684,7 @@ function buildPrompt(
     "- Narration: story-driven voiceover script, around 160-240 words, with concrete details\n" +
     "- Narration body must include at least 3 concrete points (facts/examples/scenes) tied to the topic\n" +
     "- Avoid empty filler lines such as generic hype or 'we will explore this' with no details\n" +
+    "- Never use placeholders like 〇〇, ○○, XX, TBD, N/A in any field\n" +
     "- Narration must NOT contain hashtags (#...) anywhere, especially at the end\n" +
     `- Narration must end with this exact CTA sentence: "${subscribeCtaByLanguage(language)}"\n` +
     `- Language: ${resolveLanguageInstruction(language)}\n` +
@@ -734,6 +755,7 @@ function enforceRules(args: {
   languageRejectedCount: number;
   specificityRejectedCount: number;
   narrationRejectedCount: number;
+  placeholderRejectedCount: number;
 } {
   const output: IdeaDraftRow[] = [];
   const relaxedCandidates: IdeaDraftRow[] = [];
@@ -741,6 +763,7 @@ function enforceRules(args: {
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
   let narrationRejectedCount = 0;
+  let placeholderRejectedCount = 0;
   args.rows.forEach((row) => {
     if (output.length >= args.count) {
       return;
@@ -765,6 +788,10 @@ function enforceRules(args: {
       Narration: normalizeNarrationForIdeas(normalizeField(row.Narration), args.language),
       publish: "대기중"
     };
+    if (rowContainsPlaceholder(normalized)) {
+      placeholderRejectedCount += 1;
+      return;
+    }
     if (
       !meetsNarrationQuality({
         narration: normalized.Narration,
@@ -789,7 +816,13 @@ function enforceRules(args: {
   if (output.length < args.count && relaxedCandidates.length > 0) {
     output.push(...relaxedCandidates.slice(0, args.count - output.length));
   }
-  return { rows: output, languageRejectedCount, specificityRejectedCount, narrationRejectedCount };
+  return {
+    rows: output,
+    languageRejectedCount,
+    specificityRejectedCount,
+    narrationRejectedCount,
+    placeholderRejectedCount
+  };
 }
 
 async function requestIdeaRows(
@@ -925,6 +958,7 @@ export async function generateIdeas(args: {
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
   let narrationRejectedCount = 0;
+  let placeholderRejectedCount = 0;
   const topicAnchors = extractTopicAnchors(topic);
   const latestNewsItems = await fetchLatestNewsContext(topic, language);
 
@@ -953,6 +987,7 @@ export async function generateIdeas(args: {
     languageRejectedCount += accepted.languageRejectedCount;
     specificityRejectedCount += accepted.specificityRejectedCount;
     narrationRejectedCount += accepted.narrationRejectedCount;
+    placeholderRejectedCount += accepted.placeholderRejectedCount;
     accepted.rows.forEach((item) => {
       const key = normalizeKeywordKey(item.Keyword);
       blockedKeywords.add(key);
@@ -973,6 +1008,9 @@ export async function generateIdeas(args: {
       `아이디어 품질 검증을 통과한 결과가 부족했습니다. 잠시 후 다시 시도해 주세요.`
     );
   }
+  if (collected.length === 0 && placeholderRejectedCount > 0) {
+    throw new Error("플레이스홀더(예: 〇〇/XX)가 포함된 결과가 감지되어 차단되었습니다. 다시 시도해 주세요.");
+  }
   if (collected.length === 0 && narrationRejectedCount > 0) {
     throw new Error(
       `실질적인 스토리 내용을 포함한 나레이션 결과가 부족했습니다. 주제를 조금 더 구체화해 다시 시도해 주세요.`
@@ -992,6 +1030,11 @@ export async function generateIdeas(args: {
     if (narrationRejectedCount > 0) {
       throw new Error(
         `스토리 밀도를 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      );
+    }
+    if (placeholderRejectedCount > 0) {
+      throw new Error(
+        `플레이스홀더(예: 〇〇/XX)를 제거하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
       );
     }
     throw new Error(
