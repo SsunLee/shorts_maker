@@ -1,7 +1,7 @@
 import { BuildVideoPayload, RenderOptions } from "@/lib/types";
 import { promises as fs } from "fs";
 import path from "path";
-import { mirrorRenderedVideoToStorage } from "@/lib/object-storage";
+import { mirrorRenderedVideoToStorage, toSignedStorageReadUrl } from "@/lib/object-storage";
 import {
   resolveVideoEngineBaseUrls,
   resolveVideoEngineTimeoutMs
@@ -318,7 +318,12 @@ async function buildVideoAtEndpoint(args: {
 async function toEngineReadableAsset(source: string): Promise<string> {
   const pathname = parsePathname(source);
   if (!pathname || !pathname.startsWith("/generated/")) {
-    return source;
+    const expiresInSec = Number.parseInt(
+      String(process.env.VIDEO_ENGINE_ASSET_SIGNED_URL_EXPIRES_SEC || "3600"),
+      10
+    );
+    const safeExpires = Number.isFinite(expiresInSec) ? expiresInSec : 3600;
+    return toSignedStorageReadUrl(source, safeExpires);
   }
 
   const localPath = path.join(
@@ -331,7 +336,12 @@ async function toEngineReadableAsset(source: string): Promise<string> {
     await fs.access(localPath);
     return localPath;
   } catch {
-    return source;
+    const expiresInSec = Number.parseInt(
+      String(process.env.VIDEO_ENGINE_ASSET_SIGNED_URL_EXPIRES_SEC || "3600"),
+      10
+    );
+    const safeExpires = Number.isFinite(expiresInSec) ? expiresInSec : 3600;
+    return toSignedStorageReadUrl(source, safeExpires);
   }
 }
 

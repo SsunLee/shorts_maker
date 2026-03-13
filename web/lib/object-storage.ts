@@ -1,9 +1,11 @@
 import {
+  GetObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -100,6 +102,46 @@ function getS3Client(config: S3Config): S3Client {
   return cachedClient;
 }
 
+function trimLeadingSlash(value: string): string {
+  return String(value || "").replace(/^\/+/, "");
+}
+
+function extractObjectKeyFromPublicUrl(config: S3Config, sourceUrl: string): string | undefined {
+  const raw = String(sourceUrl || "").trim();
+  if (!raw || !config.enabled || !config.publicBaseUrl) {
+    return undefined;
+  }
+
+  try {
+    const source = new URL(raw);
+    const base = new URL(config.publicBaseUrl);
+    if (source.origin !== base.origin) {
+      return undefined;
+    }
+
+    const basePath = trimLeadingSlash(base.pathname).replace(/\/+$/, "");
+    const sourcePath = trimLeadingSlash(source.pathname);
+    const remainder = basePath
+      ? sourcePath.startsWith(`${basePath}/`)
+        ? sourcePath.slice(basePath.length + 1)
+        : sourcePath === basePath
+          ? ""
+          : undefined
+      : sourcePath;
+    if (!remainder) {
+      return undefined;
+    }
+
+    return remainder
+      .split("/")
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part))
+      .join("/");
+  } catch {
+    return undefined;
+  }
+}
+
 function joinKey(config: S3Config, key: string): string {
   const normalized = String(key || "")
     .replace(/^\/+/, "")
@@ -172,6 +214,30 @@ function guessContentType(fileName: string, fallback = "application/octet-stream
 
 export function isS3StorageEnabled(): boolean {
   return getS3Config().enabled;
+}
+
+export async function toSignedStorageReadUrl(
+  sourceUrl: string,
+  expiresInSec = 3600
+): Promise<string> {
+  const config = getS3Config();
+  if (!config.enabled || !config.bucket) {
+    return sourceUrl;
+  }
+  const objectKey = extractObjectKeyFromPublicUrl(config, sourceUrl);
+  if (!objectKey) {
+    return sourceUrl;
+  }
+  const client = getS3Client(config);
+  const safeExpires = Math.max(60, Math.min(60 * 60 * 12, Math.floor(expiresInSec)));
+  return getSignedUrl(
+    client,
+    new GetObjectCommand({
+      Bucket: config.bucket,
+      Key: objectKey
+    }),
+    { expiresIn: safeExpires }
+  );
 }
 
 export async function storeGeneratedAsset(args: {
