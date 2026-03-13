@@ -112,6 +112,89 @@ function rowIncludesTopicAnchor(row: IdeaDraftRow, anchors: string[]): boolean {
   });
 }
 
+function countAnchorHits(text: string, anchors: string[]): number {
+  if (anchors.length === 0) {
+    return 0;
+  }
+  const raw = String(text || "");
+  const lowered = raw.toLowerCase();
+  let hits = 0;
+  anchors.forEach((anchor) => {
+    const value = String(anchor || "").trim();
+    if (!value) {
+      return;
+    }
+    const lower = value.toLowerCase();
+    if (raw.includes(value) || lowered.includes(lower)) {
+      hits += 1;
+    }
+  });
+  return hits;
+}
+
+function splitMeaningfulSentences(text: string): string[] {
+  return String(text || "")
+    .split(/[.!?。！？\n]+/u)
+    .map((item) => item.trim())
+    .filter((item) => Array.from(item).length >= 6);
+}
+
+function hasGenericNarrationFiller(text: string): boolean {
+  const raw = String(text || "");
+  const lowered = raw.toLowerCase();
+  return (
+    /파헤쳐|함께해|함께 하|알아보(?:겠|죠|자)|살펴보(?:겠|죠|자)|끝까지 시청|지금 바로/u.test(raw) ||
+    /深掘り|一緒に見ていきましょう|詳しく見ていきましょう|ぜひチャンネル登録|気になる方は/u.test(raw) ||
+    /let'?s dive in|stay tuned|subscribe for more|you won'?t believe/i.test(lowered) ||
+    /vamos a ver|suscr[ií]bete para más/i.test(lowered) ||
+    /आइए जानते हैं|अंत तक देखें|सब्सक्राइब/i.test(raw)
+  );
+}
+
+function minimumNarrationLength(language: IdeaLanguage): number {
+  if (language === "en" || language === "es") {
+    return 220;
+  }
+  if (language === "hi") {
+    return 180;
+  }
+  return 130;
+}
+
+function meetsNarrationQuality(args: {
+  narration: string;
+  topicAnchors: string[];
+  language: IdeaLanguage;
+}): boolean {
+  const cleaned = removeTrailingHashtags(args.narration).replace(/\s+/g, " ").trim();
+  if (!cleaned) {
+    return false;
+  }
+
+  const cta = subscribeCtaByLanguage(args.language);
+  const body = cleaned.replace(cta, "").trim();
+  const bodyLength = Array.from(body).length;
+  if (bodyLength < minimumNarrationLength(args.language)) {
+    return false;
+  }
+
+  const sentenceCount = splitMeaningfulSentences(body).length;
+  if (sentenceCount < 3) {
+    return false;
+  }
+
+  const anchorHits = countAnchorHits(body, args.topicAnchors);
+  const fillerHeavy = hasGenericNarrationFiller(body);
+  if (args.topicAnchors.length > 0 && anchorHits === 0 && fillerHeavy) {
+    return false;
+  }
+  if (fillerHeavy && bodyLength < minimumNarrationLength(args.language) + 40) {
+    return false;
+  }
+
+  return true;
+}
+
 function stripCdata(value: string): string {
   return String(value || "").replace(/^<!\[CDATA\[/i, "").replace(/\]\]>$/i, "");
 }
@@ -372,7 +455,7 @@ function matchesRequestedLanguageText(
     if (field === "keyword") {
       return containsJapaneseKana(cleaned) || containsHan(cleaned);
     }
-    return containsJapaneseKana(cleaned);
+    return containsJapaneseKana(cleaned) || containsHan(cleaned);
   }
   if (language === "hi") {
     return containsDevanagari(cleaned);
@@ -578,7 +661,9 @@ function buildPrompt(
     "- Keyword: concise core keyword for the idea\n" +
     "- Subject: one strong hook sentence\n" +
     "- Description: YouTube-ready summary + hashtags (#shorts + topic-related tags)\n" +
-    "- Narration: smooth story-driven voiceover script, around 200-250 words\n" +
+    "- Narration: story-driven voiceover script, around 160-240 words, with concrete details\n" +
+    "- Narration body must include at least 3 concrete points (facts/examples/scenes) tied to the topic\n" +
+    "- Avoid empty filler lines such as generic hype or 'we will explore this' with no details\n" +
     "- Narration must NOT contain hashtags (#...) anywhere, especially at the end\n" +
     `- Narration must end with this exact CTA sentence: "${subscribeCtaByLanguage(language)}"\n` +
     `- Language: ${resolveLanguageInstruction(language)}\n` +
@@ -598,7 +683,8 @@ function buildRelatedKeywordPrompt(
   excludedKeywords: string[],
   language: IdeaLanguage,
   limit: number,
-  topicAnchors: string[] = []
+  topicAnchors: string[] = [],
+  hardSpecificity = false
 ): string {
   const excludedText = formatExcludedKeywords(excludedKeywords);
   const duplicateRule = excludedText
@@ -609,16 +695,24 @@ function buildRelatedKeywordPrompt(
       ? `- Prefer terms closely connected to these anchors: ${topicAnchors.join(", ")}\n`
       : "";
 
+  const strategistRole = hardSpecificity
+    ? "short-video trend strategist"
+    : "short-video content strategist";
+  const topicDirection = hardSpecificity
+    ? `- Suggest ${limit} adjacent or faster-growing subtopic keywords related to "${topic}"\n` +
+      "- Prioritize topics that feel current, clickable, and specific for short-form videos\n"
+    : `- Suggest ${limit} adjacent subtopic keywords related to "${topic}"\n` +
+      "- Balance evergreen + searchable + specific angles (not only breaking-news angles)\n";
+
   return (
-    `You are a short-video trend strategist for topic "${topic}".\n\n` +
+    `You are a ${strategistRole} for topic "${topic}".\n\n` +
     "Return a JSON array of related keyword strings only.\n\n" +
     "[Output Format]\n" +
     '- Output must be a JSON array only: ["keyword1", "keyword2"]\n' +
     `- Array length must be exactly ${limit}\n` +
     "- Every item must be a short string keyword, not a sentence\n\n" +
     "[Rules]\n" +
-    `- Suggest ${limit} adjacent or faster-growing subtopic keywords related to "${topic}"\n` +
-    "- Prioritize topics that feel more current, clickable, and specific for short-form videos\n" +
+    topicDirection +
     anchorRule +
     "- Do not output the exact same phrase as the input topic\n" +
     duplicateRule +
@@ -639,12 +733,14 @@ function enforceRules(args: {
   rows: IdeaDraftRow[];
   languageRejectedCount: number;
   specificityRejectedCount: number;
+  narrationRejectedCount: number;
 } {
   const output: IdeaDraftRow[] = [];
   const relaxedCandidates: IdeaDraftRow[] = [];
   const seenInBatch = new Set<string>();
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
+  let narrationRejectedCount = 0;
   args.rows.forEach((row) => {
     if (output.length >= args.count) {
       return;
@@ -669,6 +765,16 @@ function enforceRules(args: {
       Narration: normalizeNarrationForIdeas(normalizeField(row.Narration), args.language),
       publish: "대기중"
     };
+    if (
+      !meetsNarrationQuality({
+        narration: normalized.Narration,
+        topicAnchors: args.topicAnchors,
+        language: args.language
+      })
+    ) {
+      narrationRejectedCount += 1;
+      return;
+    }
     if (rowIncludesTopicAnchor(normalized, args.topicAnchors)) {
       seenInBatch.add(keywordKey);
       output.push(normalized);
@@ -683,7 +789,7 @@ function enforceRules(args: {
   if (output.length < args.count && relaxedCandidates.length > 0) {
     output.push(...relaxedCandidates.slice(0, args.count - output.length));
   }
-  return { rows: output, languageRejectedCount, specificityRejectedCount };
+  return { rows: output, languageRejectedCount, specificityRejectedCount, narrationRejectedCount };
 }
 
 async function requestIdeaRows(
@@ -818,6 +924,7 @@ export async function generateIdeas(args: {
   let parseFailureCount = 0;
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
+  let narrationRejectedCount = 0;
   const topicAnchors = extractTopicAnchors(topic);
   const latestNewsItems = await fetchLatestNewsContext(topic, language);
 
@@ -845,6 +952,7 @@ export async function generateIdeas(args: {
     });
     languageRejectedCount += accepted.languageRejectedCount;
     specificityRejectedCount += accepted.specificityRejectedCount;
+    narrationRejectedCount += accepted.narrationRejectedCount;
     accepted.rows.forEach((item) => {
       const key = normalizeKeywordKey(item.Keyword);
       blockedKeywords.add(key);
@@ -865,6 +973,11 @@ export async function generateIdeas(args: {
       `아이디어 품질 검증을 통과한 결과가 부족했습니다. 잠시 후 다시 시도해 주세요.`
     );
   }
+  if (collected.length === 0 && narrationRejectedCount > 0) {
+    throw new Error(
+      `실질적인 스토리 내용을 포함한 나레이션 결과가 부족했습니다. 주제를 조금 더 구체화해 다시 시도해 주세요.`
+    );
+  }
   if (collected.length < count) {
     if (languageRejectedCount > 0) {
       throw new Error(
@@ -874,6 +987,11 @@ export async function generateIdeas(args: {
     if (specificityRejectedCount > 0) {
       throw new Error(
         `품질 기준을 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
+      );
+    }
+    if (narrationRejectedCount > 0) {
+      throw new Error(
+        `스토리 밀도를 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`
       );
     }
     throw new Error(
@@ -919,7 +1037,8 @@ export async function generateRelatedIdeaKeywords(args: {
       Array.from(blockedKeywords),
       language,
       limit,
-      topicAnchors
+      topicAnchors,
+      requiresHardSpecificity(topic)
     );
     const keywords = await requestRelatedKeywords(provider, prompt, args.userId);
     const accepted = fallbackRelatedKeywords({
