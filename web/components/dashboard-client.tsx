@@ -367,8 +367,11 @@ export function DashboardClient(): React.JSX.Element {
     });
   }, []);
 
-  async function refresh(): Promise<void> {
-    const response = await fetch("/api/rows", { cache: "no-store" });
+  async function refresh(withWorkflowHydration = false): Promise<void> {
+    const response = await fetch(
+      withWorkflowHydration ? "/api/rows?withWorkflow=1" : "/api/rows",
+      { cache: "no-store" }
+    );
     const data = await readJsonResponse<RowsResponse>(response);
     if (!response.ok) {
       throw new Error(`Failed to load rows (HTTP ${response.status}).`);
@@ -381,7 +384,7 @@ export function DashboardClient(): React.JSX.Element {
     const load = async () => {
       try {
         await Promise.all([
-          refresh(),
+          refresh(true),
           refreshAutomation(),
           refreshSchedule(),
           refreshAutomationTemplates()
@@ -410,7 +413,10 @@ export function DashboardClient(): React.JSX.Element {
         return;
       }
       pollTickRef.current += 1;
-      void refresh();
+      const shouldRefreshHydratedRows = isAutomationActive
+        ? pollTickRef.current % 6 === 0
+        : pollTickRef.current % 4 === 0;
+      void refresh(shouldRefreshHydratedRows);
       void refreshAutomation().catch(() => {
         // Keep dashboard polling resilient even if automation endpoint is temporarily unavailable.
       });
@@ -640,7 +646,7 @@ export function DashboardClient(): React.JSX.Element {
         throw new Error(data.error || `Automation start failed (HTTP ${response.status}).`);
       }
       setAutomation(data.state);
-      await Promise.all([refresh(), refreshAutomation(), refreshSchedule()]);
+      await Promise.all([refresh(true), refreshAutomation(), refreshSchedule()]);
     } catch (startError) {
       setAutomationError(startError instanceof Error ? startError.message : "Unknown error");
       await refreshAutomation().catch(() => {
@@ -930,7 +936,7 @@ export function DashboardClient(): React.JSX.Element {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
         <h1 className="min-w-0 break-words text-xl font-semibold">Generated Videos</h1>
-        <Button variant="outline" onClick={() => void refresh()}>
+        <Button variant="outline" onClick={() => void refresh(true)}>
           Refresh
         </Button>
       </div>

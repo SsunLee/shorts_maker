@@ -260,9 +260,31 @@ export async function getUserAccessStatus(args: {
 
   try {
     await ensureUserAccount(args);
+    return getUserAccessStatusReadOnly(args);
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return { allowed: true };
+    }
+    throw error;
+  }
+}
+
+export async function getUserAccessStatusReadOnly(args: {
+  userId: string;
+  email?: string;
+}): Promise<UserAccessStatus> {
+  if (!prisma) {
+    return { allowed: true };
+  }
+
+  try {
     const row = await prisma.userAccount.findUnique({
       where: { userId: args.userId }
-    });
+    }) ?? (args.email
+      ? await prisma.userAccount.findFirst({
+          where: { email: String(args.email).trim().toLowerCase() }
+        })
+      : null);
     if (!row) {
       return { allowed: true };
     }

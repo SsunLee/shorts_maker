@@ -7,6 +7,17 @@ import { scopedUserId } from "@/lib/user-storage-namespace";
 
 const SETTINGS_DB_RETRY_MAX = 3;
 const SETTINGS_DB_RETRY_DELAYS_MS = [200, 600];
+const SETTINGS_CACHE_TTL_MS = Math.max(
+  1000,
+  Number.parseInt(String(process.env.SETTINGS_CACHE_TTL_MS || "15000"), 10) || 15000
+);
+
+type SettingsCacheEntry = {
+  value: AppSettings;
+  expiresAtMs: number;
+};
+
+const settingsCache = new Map<string, SettingsCacheEntry>();
 
 function isReadOnlyServerlessRuntime(): boolean {
   return (
@@ -122,6 +133,32 @@ function readSettingsFromEnv(): AppSettings {
   };
 }
 
+function resolveSettingsCacheKey(storageUserId: string | undefined): string {
+  if (storageUserId) {
+    return `db:${storageUserId}`;
+  }
+  return `file:${resolveSettingsFile()}`;
+}
+
+function readSettingsCache(key: string): AppSettings | undefined {
+  const cached = settingsCache.get(key);
+  if (!cached) {
+    return undefined;
+  }
+  if (cached.expiresAtMs <= Date.now()) {
+    settingsCache.delete(key);
+    return undefined;
+  }
+  return cached.value;
+}
+
+function writeSettingsCache(key: string, value: AppSettings): void {
+  settingsCache.set(key, {
+    value,
+    expiresAtMs: Date.now() + SETTINGS_CACHE_TTL_MS
+  });
+}
+
 async function readSettingsFromFile(): Promise<AppSettings> {
   if (isReadOnlyServerlessRuntime()) {
     return {};
@@ -140,6 +177,14 @@ async function readSettingsFromFile(): Promise<AppSettings> {
 export async function getSettings(userId?: string): Promise<AppSettings> {
   const envSettings = readSettingsFromEnv();
   const storageUserId = scopedUserId(userId, "settings");
+  const cacheKey = resolveSettingsCacheKey(storageUserId);
+  const cached = readSettingsCache(cacheKey);
+  if (cached) {
+    return {
+      ...envSettings,
+      ...cached
+    };
+  }
 
   if (storageUserId && prisma) {
     const db = prisma;
@@ -150,13 +195,16 @@ export async function getSettings(userId?: string): Promise<AppSettings> {
     );
     const parsed = row?.data;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const persisted = parsed as AppSettings;
+      writeSettingsCache(cacheKey, persisted);
       return {
         ...envSettings,
-        ...(parsed as AppSettings)
+        ...persisted
       };
     }
 
     const fileSettings = await readSettingsFromFile();
+    writeSettingsCache(cacheKey, fileSettings);
     return {
       ...envSettings,
       ...fileSettings
@@ -164,6 +212,7 @@ export async function getSettings(userId?: string): Promise<AppSettings> {
   }
 
   const fileSettings = await readSettingsFromFile();
+  writeSettingsCache(cacheKey, fileSettings);
   return {
     ...envSettings,
     ...fileSettings
@@ -173,6 +222,7 @@ export async function getSettings(userId?: string): Promise<AppSettings> {
 /** Persist settings to local disk for development and self-hosted usage. */
 export async function saveSettings(settings: AppSettings, userId?: string): Promise<AppSettings> {
   const storageUserId = scopedUserId(userId, "settings");
+  const cacheKey = resolveSettingsCacheKey(storageUserId);
   if (storageUserId && prisma) {
     const db = prisma;
     await withSettingsDbRetry("saveSettings.upsert", () =>
@@ -182,6 +232,7 @@ export async function saveSettings(settings: AppSettings, userId?: string): Prom
         create: { userId: storageUserId, data: settings as unknown as Prisma.InputJsonValue }
       })
     );
+    writeSettingsCache(cacheKey, settings);
     return settings;
   }
 
@@ -194,5 +245,6 @@ export async function saveSettings(settings: AppSettings, userId?: string): Prom
   const settingsFile = resolveSettingsFile();
   await ensureSettingsFile();
   await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2), "utf8");
+  writeSettingsCache(cacheKey, settings);
   return settings;
 }

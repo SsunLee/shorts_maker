@@ -22,6 +22,17 @@ const WORKFLOW_ARCHIVE_NARRATION_MAX_CHARS = parsePositiveInt(
   process.env.WORKFLOW_ARCHIVE_NARRATION_MAX_CHARS,
   240
 );
+const WORKFLOW_CACHE_TTL_MS = Math.max(
+  1000,
+  parsePositiveInt(process.env.WORKFLOW_CACHE_TTL_MS, 12000)
+);
+
+type WorkflowCacheEntry = {
+  items: VideoWorkflow[];
+  expiresAtMs: number;
+};
+
+const workflowCache = new Map<string, WorkflowCacheEntry>();
 
 function isReadOnlyServerlessRuntime(): boolean {
   return (
@@ -113,6 +124,33 @@ function normalizeWorkflowCatalog(items: VideoWorkflow[]): {
   };
 }
 
+function resolveWorkflowCacheKey(userId?: string): string {
+  const storageUserId = scopedUserId(userId, "automation");
+  if (storageUserId) {
+    return `db:${storageUserId}`;
+  }
+  return `file:${workflowFile}`;
+}
+
+function readWorkflowCache(cacheKey: string): VideoWorkflow[] | undefined {
+  const cached = workflowCache.get(cacheKey);
+  if (!cached) {
+    return undefined;
+  }
+  if (cached.expiresAtMs <= Date.now()) {
+    workflowCache.delete(cacheKey);
+    return undefined;
+  }
+  return cached.items;
+}
+
+function writeWorkflowCache(cacheKey: string, items: VideoWorkflow[]): void {
+  workflowCache.set(cacheKey, {
+    items,
+    expiresAtMs: Date.now() + WORKFLOW_CACHE_TTL_MS
+  });
+}
+
 async function readAllFromDb(userId?: string): Promise<VideoWorkflow[] | undefined> {
   const storageUserId = scopedUserId(userId, "automation");
   if (!storageUserId || !prisma) {
@@ -160,6 +198,11 @@ async function writeAllToFile(items: VideoWorkflow[]): Promise<void> {
 
 async function readAll(userId?: string): Promise<VideoWorkflow[]> {
   const canUseFileFallback = !isReadOnlyServerlessRuntime();
+  const cacheKey = resolveWorkflowCacheKey(userId);
+  const cached = readWorkflowCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
   if (prisma && scopedUserId(userId, "automation")) {
     try {
@@ -179,6 +222,7 @@ async function readAll(userId?: string): Promise<VideoWorkflow[]> {
             );
           }
         }
+        writeWorkflowCache(cacheKey, normalized.items);
         return normalized.items;
       }
     } catch (error) {
@@ -191,7 +235,13 @@ async function readAll(userId?: string): Promise<VideoWorkflow[]> {
   }
 
   if (canUseFileFallback) {
-    return readAllFromFile();
+    const fromFile = await readAllFromFile();
+    const normalized = normalizeWorkflowCatalog(fromFile);
+    if (normalized.changed) {
+      await writeAllToFile(normalized.items);
+    }
+    writeWorkflowCache(cacheKey, normalized.items);
+    return normalized.items;
   }
 
   throw new Error("Workflow storage is unavailable in serverless runtime without a database.");
@@ -201,11 +251,13 @@ async function writeAll(items: VideoWorkflow[], userId?: string): Promise<void> 
   const normalized = normalizeWorkflowCatalog(items);
   const itemsToWrite = normalized.items;
   const canUseFileFallback = !isReadOnlyServerlessRuntime();
+  const cacheKey = resolveWorkflowCacheKey(userId);
 
   if (prisma && scopedUserId(userId, "automation")) {
     try {
       const savedToDb = await writeAllToDb(itemsToWrite, userId);
       if (savedToDb) {
+        writeWorkflowCache(cacheKey, itemsToWrite);
         return;
       }
     } catch (error) {
@@ -219,6 +271,7 @@ async function writeAll(items: VideoWorkflow[], userId?: string): Promise<void> 
 
   if (canUseFileFallback) {
     await writeAllToFile(itemsToWrite);
+    writeWorkflowCache(cacheKey, itemsToWrite);
     return;
   }
 
@@ -234,7 +287,7 @@ export async function upsertWorkflow(
   workflow: VideoWorkflow,
   userId?: string
 ): Promise<VideoWorkflow> {
-  const items = await readAll(userId);
+  const items = [...(await readAll(userId))];
   const index = items.findIndex((item) => item.id === workflow.id);
   if (index >= 0) {
     items[index] = workflow;
@@ -248,12 +301,12 @@ export async function upsertWorkflow(
 /** List workflows sorted by most recently updated first. */
 export async function listWorkflows(userId?: string): Promise<VideoWorkflow[]> {
   const items = await readAll(userId);
-  return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return [...items].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 /** Delete workflow by ID. Returns true when deleted. */
 export async function deleteWorkflow(id: string, userId?: string): Promise<boolean> {
-  const items = await readAll(userId);
+  const items = [...(await readAll(userId))];
   const next = items.filter((item) => item.id !== id);
   if (next.length === items.length) {
     return false;

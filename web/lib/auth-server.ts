@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
-import { getUserAccessStatus, isSuperAdminUser } from "@/lib/user-access";
+import { getUserAccessStatusReadOnly, isSuperAdminUser } from "@/lib/user-access";
 
 export async function getAuthenticatedUserId(): Promise<string | undefined> {
   const session = await getServerSession(authOptions);
@@ -12,10 +12,9 @@ export async function getAuthenticatedUserId(): Promise<string | undefined> {
     return undefined;
   }
 
-  const access = await getUserAccessStatus({
+  const access = await getUserAccessStatusReadOnly({
     userId: normalizedUserId,
-    email: session?.user?.email || undefined,
-    name: session?.user?.name || undefined
+    email: session?.user?.email || undefined
   });
   if (!access.allowed) {
     return undefined;
@@ -32,10 +31,9 @@ export async function requireAuthenticatedUserId(): Promise<string> {
     redirect("/auth/signin");
   }
 
-  const access = await getUserAccessStatus({
+  const access = await getUserAccessStatusReadOnly({
     userId: normalizedUserId,
-    email: session?.user?.email || undefined,
-    name: session?.user?.name || undefined
+    email: session?.user?.email || undefined
   });
   if (!access.allowed) {
     redirect("/auth/blocked");

@@ -870,6 +870,22 @@ function isWorkflowPayload(value: unknown): value is VideoWorkflow {
   );
 }
 
+type WorkflowSummaryPayload = Pick<
+  VideoWorkflow,
+  "id" | "stage" | "status" | "updatedAt" | "error" | "previewVideoUrl" | "finalVideoUrl"
+>;
+
+function isWorkflowSummaryPayload(value: unknown): value is WorkflowSummaryPayload {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "id" in value &&
+      "stage" in value &&
+      "status" in value &&
+      "updatedAt" in value
+  );
+}
+
 interface CreateDraft {
   title: string;
   topic: string;
@@ -1711,14 +1727,43 @@ export function CreateVideoForm(): React.JSX.Element {
 
   const fetchWorkflowSnapshot = useCallback(
     async (workflowId: string): Promise<void> => {
-      const response = await fetch(workflowApiPath(workflowId), { cache: "no-store" });
+      const response = await fetch(workflowApiPath(workflowId, "?summary=1"), {
+        cache: "no-store"
+      });
       if (!response.ok) {
         return;
       }
-      const data = (await response.json()) as VideoWorkflow | { error?: string };
-      if (isWorkflowPayload(data)) {
-        setWorkflow(data);
-        setRenderOptions(ensureRenderOptions(data.renderOptions));
+
+      const summary = (await response.json()) as WorkflowSummaryPayload | { error?: string };
+      if (!isWorkflowSummaryPayload(summary)) {
+        return;
+      }
+
+      setWorkflow((prev) => {
+        if (!prev || prev.id !== summary.id) {
+          return prev;
+        }
+        return {
+          ...prev,
+          stage: summary.stage,
+          status: summary.status,
+          updatedAt: summary.updatedAt,
+          error: summary.error,
+          previewVideoUrl: summary.previewVideoUrl || prev.previewVideoUrl,
+          finalVideoUrl: summary.finalVideoUrl || prev.finalVideoUrl
+        };
+      });
+
+      if (summary.status !== "processing") {
+        const fullResponse = await fetch(workflowApiPath(workflowId), { cache: "no-store" });
+        if (!fullResponse.ok) {
+          return;
+        }
+        const fullData = (await fullResponse.json()) as VideoWorkflow | { error?: string };
+        if (isWorkflowPayload(fullData)) {
+          setWorkflow(fullData);
+          setRenderOptions(ensureRenderOptions(fullData.renderOptions));
+        }
       }
     },
     []
@@ -2009,7 +2054,7 @@ export function CreateVideoForm(): React.JSX.Element {
         return;
       }
       void fetchWorkflowSnapshot(workflow.id);
-    }, 2500);
+    }, 5000);
     return () => clearInterval(interval);
   }, [workflow?.id, workflow?.status, fetchWorkflowSnapshot]);
 

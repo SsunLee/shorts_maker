@@ -1,7 +1,11 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
-import { authenticateWithAccessCode, ensureUserAccount, getUserAccessStatus } from "@/lib/user-access";
+import {
+  authenticateWithAccessCode,
+  ensureUserAccount,
+  getUserAccessStatusReadOnly
+} from "@/lib/user-access";
 
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
@@ -76,10 +80,9 @@ export const authOptions: NextAuthOptions = {
           email: user.email || undefined,
           name: user.name || undefined
         });
-        const access = await getUserAccessStatus({
+        const access = await getUserAccessStatusReadOnly({
           userId,
-          email: user.email || undefined,
-          name: user.name || undefined
+          email: user.email || undefined
         });
         if (!access.allowed) {
           return "/auth/blocked";

@@ -108,7 +108,7 @@ const patchSchema = z.object({
 
 /** Fetch workflow detail by ID. */
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   const userId = await getAuthenticatedUserId();
@@ -119,6 +119,18 @@ export async function GET(
   const workflow = await getWorkflow(id, userId);
   if (!workflow) {
     return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
+  }
+  const summaryOnly = new URL(request.url).searchParams.get("summary") === "1";
+  if (summaryOnly) {
+    return NextResponse.json({
+      id: workflow.id,
+      stage: workflow.stage,
+      status: workflow.status,
+      updatedAt: workflow.updatedAt,
+      error: workflow.error,
+      previewVideoUrl: workflow.previewVideoUrl,
+      finalVideoUrl: workflow.finalVideoUrl
+    });
   }
   return NextResponse.json(workflow);
 }
