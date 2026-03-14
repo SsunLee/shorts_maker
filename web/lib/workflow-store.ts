@@ -7,6 +7,22 @@ import { VideoWorkflow } from "@/lib/types";
 
 const workflowFile = path.join(process.cwd(), "data", "workflows.json");
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value || "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const WORKFLOW_MAX_TOTAL = parsePositiveInt(process.env.WORKFLOW_MAX_TOTAL, 120);
+const WORKFLOW_MAX_FINAL_READY = parsePositiveInt(process.env.WORKFLOW_MAX_FINAL_READY, 30);
+const WORKFLOW_FINAL_READY_FULL_KEEP = parsePositiveInt(
+  process.env.WORKFLOW_FINAL_READY_FULL_KEEP,
+  8
+);
+const WORKFLOW_ARCHIVE_NARRATION_MAX_CHARS = parsePositiveInt(
+  process.env.WORKFLOW_ARCHIVE_NARRATION_MAX_CHARS,
+  240
+);
+
 function isReadOnlyServerlessRuntime(): boolean {
   return (
     process.env.VERCEL === "1" ||
@@ -38,6 +54,63 @@ function parseWorkflows(value: unknown): VideoWorkflow[] {
     const row = item as Partial<VideoWorkflow>;
     return Boolean(typeof row.id === "string" && row.id.trim());
   });
+}
+
+function compactWorkflowForArchive(item: VideoWorkflow): VideoWorkflow {
+  const compactNarration = String(item.narration || "").trim();
+  const limitedNarration =
+    compactNarration.length > WORKFLOW_ARCHIVE_NARRATION_MAX_CHARS
+      ? `${compactNarration.slice(0, WORKFLOW_ARCHIVE_NARRATION_MAX_CHARS)}...`
+      : compactNarration;
+  return {
+    ...item,
+    input: {
+      ...item.input,
+      narration: undefined
+    },
+    narration: limitedNarration,
+    scenes: []
+  };
+}
+
+function normalizeWorkflowCatalog(items: VideoWorkflow[]): {
+  items: VideoWorkflow[];
+  changed: boolean;
+  beforeBytes: number;
+  afterBytes: number;
+} {
+  const before = JSON.stringify(items);
+  const sorted = [...items].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const finalReady = sorted.filter(
+    (item) => item.stage === "final_ready" && item.status !== "processing"
+  );
+  const finalReadyKept = finalReady.slice(0, WORKFLOW_MAX_FINAL_READY);
+  const finalReadyKeepFullIds = new Set(
+    finalReadyKept.slice(0, WORKFLOW_FINAL_READY_FULL_KEEP).map((item) => item.id)
+  );
+  const finalReadyKeptIds = new Set(finalReadyKept.map((item) => item.id));
+
+  const normalized = sorted
+    .filter((item) => item.stage !== "final_ready" || item.status === "processing" || finalReadyKeptIds.has(item.id))
+    .map((item) => {
+      if (
+        item.stage === "final_ready" &&
+        item.status !== "processing" &&
+        !finalReadyKeepFullIds.has(item.id)
+      ) {
+        return compactWorkflowForArchive(item);
+      }
+      return item;
+    })
+    .slice(0, WORKFLOW_MAX_TOTAL);
+
+  const after = JSON.stringify(normalized);
+  return {
+    items: normalized,
+    changed: before !== after,
+    beforeBytes: Buffer.byteLength(before, "utf8"),
+    afterBytes: Buffer.byteLength(after, "utf8")
+  };
 }
 
 async function readAllFromDb(userId?: string): Promise<VideoWorkflow[] | undefined> {
@@ -92,7 +165,21 @@ async function readAll(userId?: string): Promise<VideoWorkflow[]> {
     try {
       const dbRows = await readAllFromDb(userId);
       if (dbRows) {
-        return dbRows;
+        const normalized = normalizeWorkflowCatalog(dbRows);
+        if (normalized.changed) {
+          try {
+            await writeAllToDb(normalized.items, userId);
+            console.info(
+              `[workflow-store] compacted catalog for user=${String(userId || "")}: ${normalized.beforeBytes} -> ${normalized.afterBytes} bytes`
+            );
+          } catch (writeError) {
+            const message = writeError instanceof Error ? writeError.message : String(writeError);
+            console.error(
+              `[workflow-store] compact writeback failed (user=${String(userId || "")}): ${message}`
+            );
+          }
+        }
+        return normalized.items;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -111,11 +198,13 @@ async function readAll(userId?: string): Promise<VideoWorkflow[]> {
 }
 
 async function writeAll(items: VideoWorkflow[], userId?: string): Promise<void> {
+  const normalized = normalizeWorkflowCatalog(items);
+  const itemsToWrite = normalized.items;
   const canUseFileFallback = !isReadOnlyServerlessRuntime();
 
   if (prisma && scopedUserId(userId, "automation")) {
     try {
-      const savedToDb = await writeAllToDb(items, userId);
+      const savedToDb = await writeAllToDb(itemsToWrite, userId);
       if (savedToDb) {
         return;
       }
@@ -129,7 +218,7 @@ async function writeAll(items: VideoWorkflow[], userId?: string): Promise<void> 
   }
 
   if (canUseFileFallback) {
-    await writeAllToFile(items);
+    await writeAllToFile(itemsToWrite);
     return;
   }
 

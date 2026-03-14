@@ -261,6 +261,10 @@ export function DashboardClient(): React.JSX.Element {
     }
     return automationTemplates.find((item) => item.id === scheduleTemplateId);
   }, [automationTemplates, scheduleTemplateId, activeTemplate]);
+  const usesLatestWorkflowTemplateMode = useMemo(
+    () => automationTemplateMode === "latest_workflow" || scheduleTemplateMode === "latest_workflow",
+    [automationTemplateMode, scheduleTemplateMode]
+  );
   const deletableScheduleTemplateId = useMemo(() => {
     if (!scheduleTemplateId || scheduleTemplateId === ACTIVE_TEMPLATE_VALUE) {
       return undefined;
@@ -380,9 +384,13 @@ export function DashboardClient(): React.JSX.Element {
           refresh(),
           refreshAutomation(),
           refreshSchedule(),
-          refreshAutomationTemplates(),
-          refreshLatestWorkflowTemplateInfo()
+          refreshAutomationTemplates()
         ]);
+        if (usesLatestWorkflowTemplateMode) {
+          await refreshLatestWorkflowTemplateInfo();
+        } else if (mounted) {
+          setLatestWorkflowTemplateInfo(undefined);
+        }
       } catch (loadError) {
         if (mounted) {
           setError(loadError instanceof Error ? loadError.message : "Unknown error");
@@ -416,6 +424,11 @@ export function DashboardClient(): React.JSX.Element {
         void refreshSchedule().catch(() => {
           // Keep dashboard polling resilient even if schedule endpoint is temporarily unavailable.
         });
+      }
+      const shouldRefreshWorkflowMeta =
+        usesLatestWorkflowTemplateMode &&
+        (isAutomationActive ? pollTickRef.current % 6 === 0 : pollTickRef.current % 4 === 0);
+      if (shouldRefreshWorkflowMeta) {
         void refreshLatestWorkflowTemplateInfo().catch(() => {
           // Keep dashboard polling resilient even if workflow endpoint is temporarily unavailable.
         });
@@ -430,8 +443,17 @@ export function DashboardClient(): React.JSX.Element {
     refreshAutomationTemplates,
     refreshLatestWorkflowTemplateInfo,
     refreshSchedule,
-    automation?.phase
+    automation?.phase,
+    usesLatestWorkflowTemplateMode
   ]);
+
+  useEffect(() => {
+    if (!usesLatestWorkflowTemplateMode) {
+      setLatestWorkflowTemplateInfo(undefined);
+      return;
+    }
+    void refreshLatestWorkflowTemplateInfo().catch(() => undefined);
+  }, [usesLatestWorkflowTemplateMode, refreshLatestWorkflowTemplateInfo]);
 
   async function setActiveTemplate(templateId: string): Promise<void> {
     setAutomationTemplateBusy(true);
