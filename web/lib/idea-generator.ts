@@ -24,6 +24,7 @@ type IdeaGenerationDebug = {
   provider?: Provider;
   language: IdeaLanguage;
   topicAnchors: string[];
+  appliedTopicAnchors?: string[];
   latestNewsItemCount: number;
   maxAttempts: number;
   attemptsTried: number;
@@ -63,6 +64,10 @@ function normalizeField(value: unknown): string {
 
 function normalizeKeywordKey(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function extractTopicAnchors(topic: string): string[] {
@@ -493,42 +498,112 @@ function containsDevanagari(text: string): boolean {
   return /[\u0900-\u097F]/u.test(text);
 }
 
+function normalizeTopicAnchorsForLanguage(anchors: string[], language: IdeaLanguage): string[] {
+  if (anchors.length === 0) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const output: string[] = [];
+  anchors.forEach((anchor) => {
+    const value = String(anchor || "").trim();
+    if (!value) {
+      return;
+    }
+    const lower = value.toLowerCase();
+    if (seen.has(lower)) {
+      return;
+    }
+
+    const hasLatinOrDigit = /[a-z0-9]/i.test(value);
+    if (language === "ja") {
+      if (!containsHangul(value) && (containsJapaneseKana(value) || containsHan(value) || hasLatinOrDigit)) {
+        seen.add(lower);
+        output.push(value);
+      }
+      return;
+    }
+    if (language === "hi") {
+      if (containsDevanagari(value) || hasLatinOrDigit) {
+        seen.add(lower);
+        output.push(value);
+      }
+      return;
+    }
+    if (language === "ko") {
+      if (containsHangul(value) || containsHan(value) || hasLatinOrDigit) {
+        seen.add(lower);
+        output.push(value);
+      }
+      return;
+    }
+
+    seen.add(lower);
+    output.push(value);
+  });
+
+  return output;
+}
+
+function stripAllowedAnchorsForLanguageCheck(text: string, allowedAnchors: string[]): string {
+  let output = String(text || "");
+  allowedAnchors.forEach((anchor) => {
+    const value = String(anchor || "").trim();
+    if (!value || Array.from(value).length < 2) {
+      return;
+    }
+    const pattern = new RegExp(escapeRegExp(value), "giu");
+    output = output.replace(pattern, " ");
+  });
+  return output.replace(/\s+/g, " ").trim();
+}
+
 function matchesRequestedLanguageText(
   text: string,
   language: IdeaLanguage,
-  field: "keyword" | "longform"
+  field: "keyword" | "longform",
+  languageExemptAnchors: string[] = []
 ): boolean {
   const cleaned = stripDecorationsForLanguageCheck(text);
   if (!cleaned) {
     return false;
   }
+  const cleanedWithoutExemptAnchors = stripAllowedAnchorsForLanguageCheck(
+    cleaned,
+    languageExemptAnchors
+  );
+  const candidate = cleanedWithoutExemptAnchors || cleaned;
   if (language === "ko") {
-    return /[가-힣]/u.test(cleaned);
+    return /[가-힣]/u.test(candidate);
   }
   if (language === "ja") {
-    if (containsHangul(cleaned)) {
+    if (containsHangul(candidate)) {
       return false;
     }
     if (field === "keyword") {
-      return containsJapaneseKana(cleaned) || containsHan(cleaned);
+      return containsJapaneseKana(candidate) || containsHan(candidate);
     }
-    return containsJapaneseKana(cleaned) || containsHan(cleaned);
+    return containsJapaneseKana(candidate) || containsHan(candidate);
   }
   if (language === "hi") {
-    return containsDevanagari(cleaned);
+    return containsDevanagari(candidate);
   }
   return true;
 }
 
-function rowMatchesRequestedLanguage(row: IdeaDraftRow, language: IdeaLanguage): boolean {
+function rowMatchesRequestedLanguage(
+  row: IdeaDraftRow,
+  language: IdeaLanguage,
+  languageExemptAnchors: string[] = []
+): boolean {
   if (language === "en" || language === "es") {
     return true;
   }
   return (
-    matchesRequestedLanguageText(row.Keyword, language, "keyword") &&
-    matchesRequestedLanguageText(row.Subject, language, "longform") &&
-    matchesRequestedLanguageText(row.Description, language, "longform") &&
-    matchesRequestedLanguageText(row.Narration, language, "longform")
+    matchesRequestedLanguageText(row.Keyword, language, "keyword", languageExemptAnchors) &&
+    matchesRequestedLanguageText(row.Subject, language, "longform", languageExemptAnchors) &&
+    matchesRequestedLanguageText(row.Description, language, "longform", languageExemptAnchors) &&
+    matchesRequestedLanguageText(row.Narration, language, "longform", languageExemptAnchors)
   );
 }
 
@@ -694,7 +769,8 @@ function buildPrompt(
   excludedKeywords: string[],
   language: IdeaLanguage,
   latestNewsItems: LatestNewsItem[] = [],
-  topicAnchors: string[] = []
+  topicAnchors: string[] = [],
+  rawTopicAnchors: string[] = []
 ): string {
   const excludedText = formatExcludedKeywords(excludedKeywords);
   const duplicateRule = excludedText
@@ -715,6 +791,12 @@ function buildPrompt(
       ? "[Topic Anchors]\n" +
         `- Preferred anchor terms extracted from user topic: ${topicAnchors.join(", ")}\n` +
         "- Prefer including at least one anchor term (or close inflection) in Subject or Narration.\n\n"
+      : "";
+  const crossLanguageAnchorGuidanceBlock =
+    topicAnchors.length === 0 && rawTopicAnchors.length > 0
+      ? "[Topic Anchors]\n" +
+        "- User topic includes anchors in a different script/language.\n" +
+        "- Keep the same entity meaning, but express anchor terms naturally in the requested output language.\n\n"
       : "";
   const latestNewsContextBlock =
     latestNewsItems.length > 0
@@ -771,6 +853,7 @@ function buildPrompt(
     `- Narration must end with this exact CTA sentence: "${subscribeCtaByLanguage(language)}"\n` +
     `- Language: ${resolveLanguageInstruction(language)}\n` +
     topicAnchorBlock +
+    crossLanguageAnchorGuidanceBlock +
     latestNewsContextBlock +
     domainSpecificityRule +
     specificityRule +
@@ -832,6 +915,7 @@ function enforceRules(args: {
   blockedKeywords: Set<string>;
   language: IdeaLanguage;
   topicAnchors: string[];
+  languageExemptAnchors: string[];
   strictNarrationQuality: boolean;
 }): {
   rows: IdeaDraftRow[];
@@ -851,7 +935,7 @@ function enforceRules(args: {
     if (output.length >= args.count) {
       return;
     }
-    if (!rowMatchesRequestedLanguage(row, args.language)) {
+    if (!rowMatchesRequestedLanguage(row, args.language, args.languageExemptAnchors)) {
       languageRejectedCount += 1;
       return;
     }
@@ -1063,6 +1147,7 @@ export async function generateIdeas(args: {
   let narrationRejectedCount = 0;
   let placeholderRejectedCount = 0;
   const topicAnchors = extractTopicAnchors(topic);
+  const appliedTopicAnchors = normalizeTopicAnchorsForLanguage(topicAnchors, language);
   const latestNewsItems = await fetchLatestNewsContext(topic, language);
   let attemptsTried = 0;
 
@@ -1070,6 +1155,7 @@ export async function generateIdeas(args: {
     provider,
     language,
     topicAnchors,
+    appliedTopicAnchors,
     latestNewsItemCount: latestNewsItems.length,
     maxAttempts,
     attemptsTried,
@@ -1091,6 +1177,7 @@ export async function generateIdeas(args: {
       Array.from(blockedKeywords),
       language,
       latestNewsItems,
+      appliedTopicAnchors,
       topicAnchors
     );
     const rows = await requestIdeaRows(provider, prompt, args.userId);
@@ -1103,7 +1190,8 @@ export async function generateIdeas(args: {
       count: remaining,
       blockedKeywords,
       language,
-      topicAnchors,
+      topicAnchors: appliedTopicAnchors,
+      languageExemptAnchors: topicAnchors,
       strictNarrationQuality: hardSpecificityTopic
     });
     languageRejectedCount += accepted.languageRejectedCount;
@@ -1220,7 +1308,7 @@ export async function generateRelatedIdeaKeywords(args: {
 
   try {
     const provider = await resolveProvider(args.userId);
-    const topicAnchors = extractTopicAnchors(topic);
+    const topicAnchors = normalizeTopicAnchorsForLanguage(extractTopicAnchors(topic), language);
     const prompt = buildRelatedKeywordPrompt(
       topic,
       Array.from(blockedKeywords),
