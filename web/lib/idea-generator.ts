@@ -210,12 +210,12 @@ function rowContainsPlaceholder(row: IdeaDraftRow): boolean {
 
 function minimumNarrationLength(language: IdeaLanguage): number {
   if (language === "en" || language === "es") {
-    return 220;
+    return 140;
   }
   if (language === "hi") {
-    return 180;
+    return 120;
   }
-  return 130;
+  return 90;
 }
 
 function meetsNarrationQuality(args: {
@@ -236,16 +236,16 @@ function meetsNarrationQuality(args: {
   }
 
   const sentenceCount = splitMeaningfulSentences(body).length;
-  if (sentenceCount < 3) {
+  if (sentenceCount < 2) {
     return false;
   }
 
   const anchorHits = countAnchorHits(body, args.topicAnchors);
   const fillerHeavy = hasGenericNarrationFiller(body);
-  if (args.topicAnchors.length > 0 && anchorHits === 0 && fillerHeavy) {
+  if (args.topicAnchors.length > 0 && anchorHits === 0 && fillerHeavy && bodyLength < 120) {
     return false;
   }
-  if (fillerHeavy && bodyLength < minimumNarrationLength(args.language) + 40) {
+  if (fillerHeavy && bodyLength < minimumNarrationLength(args.language) + 20) {
     return false;
   }
 
@@ -763,8 +763,8 @@ function buildPrompt(
     "- Keyword: concise core keyword for the idea\n" +
     "- Subject: one strong hook sentence\n" +
     "- Description: YouTube-ready summary + hashtags (#shorts + topic-related tags)\n" +
-    "- Narration: story-driven voiceover script, around 160-240 words, with concrete details\n" +
-    "- Narration body must include at least 3 concrete points (facts/examples/scenes) tied to the topic\n" +
+    "- Narration: story-driven voiceover script, around 120-220 words, with concrete details\n" +
+    "- Narration should include at least 2 concrete points (facts/examples/scenes) tied to the topic\n" +
     "- Avoid empty filler lines such as generic hype or 'we will explore this' with no details\n" +
     "- Never use placeholders like 〇〇, ○○, XX, TBD, N/A in any field\n" +
     "- Narration must NOT contain hashtags (#...) anywhere, especially at the end\n" +
@@ -832,6 +832,7 @@ function enforceRules(args: {
   blockedKeywords: Set<string>;
   language: IdeaLanguage;
   topicAnchors: string[];
+  strictNarrationQuality: boolean;
 }): {
   rows: IdeaDraftRow[];
   languageRejectedCount: number;
@@ -882,7 +883,11 @@ function enforceRules(args: {
       })
     ) {
       narrationRejectedCount += 1;
-      return;
+      if (args.strictNarrationQuality) {
+        seenInBatch.add(keywordKey);
+        relaxedCandidates.push(normalized);
+        return;
+      }
     }
     if (rowIncludesTopicAnchor(normalized, args.topicAnchors)) {
       seenInBatch.add(keywordKey);
@@ -1051,6 +1056,7 @@ export async function generateIdeas(args: {
   );
   const collected: IdeaDraftRow[] = [];
   const maxAttempts = Math.max(3, Math.min(8, parsePositiveInt(process.env.IDEA_GENERATION_MAX_ATTEMPTS, 6)));
+  const hardSpecificityTopic = requiresHardSpecificity(topic);
   let parseFailureCount = 0;
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
@@ -1097,7 +1103,8 @@ export async function generateIdeas(args: {
       count: remaining,
       blockedKeywords,
       language,
-      topicAnchors
+      topicAnchors,
+      strictNarrationQuality: hardSpecificityTopic
     });
     languageRejectedCount += accepted.languageRejectedCount;
     specificityRejectedCount += accepted.specificityRejectedCount;
@@ -1138,7 +1145,7 @@ export async function generateIdeas(args: {
       snapshotDebug()
     );
   }
-  if (collected.length === 0 && narrationRejectedCount > 0) {
+  if (collected.length === 0 && narrationRejectedCount > 0 && hardSpecificityTopic) {
     throw new IdeaGenerationError(
       `실질적인 스토리 내용을 포함한 나레이션 결과가 부족했습니다. 주제를 조금 더 구체화해 다시 시도해 주세요.`,
       "NARRATION_REJECTED",
@@ -1160,7 +1167,7 @@ export async function generateIdeas(args: {
         snapshotDebug()
       );
     }
-    if (narrationRejectedCount > 0) {
+    if (narrationRejectedCount > 0 && hardSpecificityTopic) {
       throw new IdeaGenerationError(
         `스토리 밀도를 유지하면서 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
         "NARRATION_REJECTED",
