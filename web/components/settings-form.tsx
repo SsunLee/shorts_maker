@@ -48,6 +48,7 @@ interface LocalCleanupTargetSummary {
 }
 
 type LocalCleanupTargetKey = "web_generated" | "video_engine_outputs";
+type GoogleOAuthScope = "youtube" | "sheets" | "both";
 
 interface LocalCleanupResponse {
   ok?: boolean;
@@ -287,6 +288,7 @@ export function SettingsForm(): React.JSX.Element {
   const [settingsJsonLoading, setSettingsJsonLoading] = useState(false);
   const [settingsJsonError, setSettingsJsonError] = useState<string>();
   const [settingsJsonMessage, setSettingsJsonMessage] = useState<string>();
+  const [googleOAuthLoading, setGoogleOAuthLoading] = useState(false);
   const [theme, setTheme] = useState<AppTheme>("light");
   const settingsJsonFileRef = useRef<HTMLInputElement | null>(null);
   const currentTextProvider = useMemo(
@@ -326,6 +328,25 @@ export function SettingsForm(): React.JSX.Element {
     const initialTheme = getStoredTheme();
     setTheme(initialTheme);
     applyTheme(initialTheme);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const oauthState = String(params.get("google_oauth") || "").trim().toLowerCase();
+    if (!oauthState) {
+      return;
+    }
+    const oauthMessage = String(params.get("google_oauth_message") || "").trim();
+    if (oauthState === "success") {
+      setMessage(oauthMessage || "Google OAuth 연동이 완료되었습니다.");
+    } else {
+      setMessage(oauthMessage || "Google OAuth 연동에 실패했습니다.");
+    }
+    const cleaned = `${window.location.pathname}${window.location.hash || ""}`;
+    window.history.replaceState(null, "", cleaned);
   }, []);
 
   useEffect(() => {
@@ -653,6 +674,41 @@ export function SettingsForm(): React.JSX.Element {
       setMessage(submitError instanceof Error ? submitError.message : "Unknown error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function startGoogleOAuth(scope: GoogleOAuthScope): Promise<void> {
+    setGoogleOAuthLoading(true);
+    setMessage(undefined);
+    try {
+      const merged = { ...settings };
+      if (!String(merged.youtubeRedirectUri || "").trim() && typeof window !== "undefined") {
+        merged.youtubeRedirectUri = `${window.location.origin}/oauth2callback`;
+        setSettings((prev) => ({ ...prev, youtubeRedirectUri: merged.youtubeRedirectUri }));
+      }
+
+      const saveResponse = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(merged)
+      });
+      if (!saveResponse.ok) {
+        const error = (await saveResponse.json()) as { error?: string };
+        throw new Error(error.error || "OAuth 시작 전 설정 저장에 실패했습니다.");
+      }
+
+      const response = await fetch(`/api/google/oauth/start?scope=${scope}`, {
+        method: "GET",
+        cache: "no-store"
+      });
+      const data = (await response.json()) as { url?: string; error?: string };
+      if (!response.ok || !data.url) {
+        throw new Error(data.error || "Google OAuth 시작 URL을 만들지 못했습니다.");
+      }
+      window.location.href = data.url;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Google OAuth 시작에 실패했습니다.");
+      setGoogleOAuthLoading(false);
     }
   }
 
@@ -1094,6 +1150,31 @@ export function SettingsForm(): React.JSX.Element {
           <CardDescription>워크플로우 결과를 시트에 저장할 때 사용합니다.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="rounded-lg border p-3">
+            <p className="text-sm font-medium">앱 내 Google 연동 (권장)</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              아래 버튼으로 Google 동의 화면을 열어 Sheets + YouTube 토큰을 한 번에 연동할 수 있습니다.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void startGoogleOAuth("both")}
+                disabled={googleOAuthLoading}
+              >
+                {googleOAuthLoading ? "연동 준비 중..." : "Google 연동 시작 (Sheets + YouTube)"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void startGoogleOAuth("sheets")}
+                disabled={googleOAuthLoading}
+              >
+                Sheets만 재연동
+              </Button>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <HelpLabel
               htmlFor="gsheetSpreadsheetId"
@@ -1378,6 +1459,23 @@ export function SettingsForm(): React.JSX.Element {
           <CardDescription>업로드 기능(`POST /api/upload-youtube`)에 필요합니다.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="rounded-lg border p-3">
+            <p className="text-sm font-medium">OAuth 빠른 연동</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Client ID/Secret 저장 후 버튼을 누르면 Refresh Token을 앱에 자동 저장합니다.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void startGoogleOAuth("youtube")}
+                disabled={googleOAuthLoading}
+              >
+                {googleOAuthLoading ? "연동 준비 중..." : "YouTube OAuth 연동"}
+              </Button>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <HelpLabel
               htmlFor="youtubeClientId"

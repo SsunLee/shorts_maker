@@ -19,21 +19,47 @@ export async function getSheetsContext(
     settings.gsheetClientEmail || process.env.GSHEETS_CLIENT_EMAIL || "";
   const privateKeyRaw =
     settings.gsheetPrivateKey || process.env.GSHEETS_PRIVATE_KEY || "";
+  const oauthClientId =
+    settings.youtubeClientId || process.env.YOUTUBE_CLIENT_ID || "";
+  const oauthClientSecret =
+    settings.youtubeClientSecret || process.env.YOUTUBE_CLIENT_SECRET || "";
+  const oauthRedirectUri =
+    settings.youtubeRedirectUri ||
+    process.env.YOUTUBE_REDIRECT_URI ||
+    "http://localhost:3000/oauth2callback";
+  const oauthRefreshToken =
+    settings.youtubeRefreshToken || process.env.YOUTUBE_REFRESH_TOKEN || "";
   const sheetName =
     overrideSheetName ||
     settings.gsheetSheetName ||
     process.env.GSHEETS_SHEET_NAME ||
     "Shorts";
 
-  if (!spreadsheetId || !clientEmail || !privateKeyRaw) {
+  if (!spreadsheetId) {
     return null;
   }
 
-  const auth = new google.auth.JWT({
-    email: clientEmail,
-    key: privateKeyRaw.replace(/\\n/g, "\n"),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"]
-  });
+  let auth: InstanceType<typeof google.auth.JWT> | InstanceType<typeof google.auth.OAuth2> | null =
+    null;
+  if (clientEmail && privateKeyRaw) {
+    auth = new google.auth.JWT({
+      email: clientEmail,
+      key: privateKeyRaw.replace(/\\n/g, "\n"),
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+    });
+  } else if (oauthClientId && oauthClientSecret && oauthRefreshToken) {
+    const oauth2 = new google.auth.OAuth2(
+      oauthClientId,
+      oauthClientSecret,
+      oauthRedirectUri
+    );
+    oauth2.setCredentials({ refresh_token: oauthRefreshToken });
+    auth = oauth2;
+  }
+
+  if (!auth) {
+    return null;
+  }
 
   return {
     spreadsheetId,
