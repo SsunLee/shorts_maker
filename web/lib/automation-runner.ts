@@ -1,4 +1,6 @@
 import { listSheetContentRows } from "@/lib/sheet-content";
+import { generateIdeas } from "@/lib/idea-generator";
+import { appendIdeaRowsToSheet, loadIdeasSheetTable } from "@/lib/ideas-sheet";
 import { upsertRow } from "@/lib/repository";
 import {
   runNextWorkflowStage,
@@ -15,6 +17,7 @@ import {
   AutomationRunState,
   AutomationTemplateMode,
   CreateVideoRequest,
+  IdeaLanguage,
   ImageAspectRatio,
   RenderOptions
 } from "@/lib/types";
@@ -43,6 +46,10 @@ export interface StartAutomationArgs {
   templateMode?: AutomationTemplateMode;
   templateId?: string;
   maxItems?: number;
+  autoIdeaEnabled?: boolean;
+  autoIdeaTopic?: string;
+  autoIdeaLanguage?: IdeaLanguage;
+  autoIdeaIdBase?: string;
 }
 
 type StopReason = "requested" | "completed" | "failed";
@@ -135,6 +142,52 @@ function logServer(
     return;
   }
   console.log(`[automation-runner] ${payload}`);
+}
+
+function normalizeAutoIdeaLanguage(value: IdeaLanguage | undefined): IdeaLanguage {
+  if (value === "en" || value === "ja" || value === "es" || value === "hi") {
+    return value;
+  }
+  return "ko";
+}
+
+function normalizeAutoIdeaCount(raw: number | undefined, fallback: number): number {
+  const value = Number.isFinite(raw) ? Math.floor(Number(raw)) : fallback;
+  return Math.max(1, Math.min(10, Number.isFinite(value) ? value : fallback));
+}
+
+function findRowValue(row: Record<string, string>, aliases: string[]): string {
+  const aliasSet = new Set(aliases.map((item) => item.trim().toLowerCase()));
+  const key = Object.keys(row).find((item) => aliasSet.has(item.trim().toLowerCase()));
+  return key ? String(row[key] || "").trim() : "";
+}
+
+async function generateIdeasForAutomation(args: {
+  userId?: string;
+  sheetName?: string;
+  topic: string;
+  language: IdeaLanguage;
+  idBase?: string;
+  count: number;
+}): Promise<string[]> {
+  const sheetTable = await loadIdeasSheetTable(args.sheetName, args.userId);
+  const existingKeywords = sheetTable.rows
+    .map((row) => findRowValue(row, ["keyword"]))
+    .filter(Boolean);
+  const items = await generateIdeas({
+    topic: args.topic,
+    count: args.count,
+    existingKeywords,
+    language: args.language,
+    userId: args.userId
+  });
+  const result = await appendIdeaRowsToSheet({
+    sheetName: args.sheetName,
+    idBase: args.idBase || args.topic,
+    items,
+    userId: args.userId
+  });
+  return result.insertedIds;
 }
 
 function extractHashTags(text: string | undefined): string[] {
@@ -664,6 +717,10 @@ async function runAutomationLoop(args: {
   templateMode: AutomationTemplateMode;
   templateId?: string;
   maxItems?: number;
+  autoIdeaEnabled?: boolean;
+  autoIdeaTopic?: string;
+  autoIdeaLanguage?: IdeaLanguage;
+  autoIdeaIdBase?: string;
 }): Promise<void> {
   const state = getStateRef(args.userId);
   try {
@@ -673,7 +730,8 @@ async function runAutomationLoop(args: {
       uploadMode: args.uploadMode,
       templateMode: args.templateMode,
       templateId: args.templateId || "",
-      maxItems: args.maxItems || null
+      maxItems: args.maxItems || null,
+      autoIdeaEnabled: Boolean(args.autoIdeaEnabled)
     });
     const defaults = await resolveDefaultsFromLatestWorkflow(
       args.userId,
@@ -709,9 +767,41 @@ async function runAutomationLoop(args: {
     }
 
     const maxItems = typeof args.maxItems === "number" && args.maxItems > 0 ? args.maxItems : undefined;
+    let autoIdeaRunLimit: number | undefined;
     let processedThisRun = 0;
+    const prioritizedRowIds = new Set<string>();
+
+    if (args.autoIdeaEnabled) {
+      const topic = String(args.autoIdeaTopic || "").trim();
+      if (!topic) {
+        throw new Error("자동 아이디어 생성이 켜져 있지만 키워드가 비어 있습니다.");
+      }
+      const generationCount = normalizeAutoIdeaCount(args.maxItems, maxItems || 1);
+      const language = normalizeAutoIdeaLanguage(args.autoIdeaLanguage);
+      pushLog(
+        args.userId,
+        "info",
+        `[자동 아이디어] 키워드 '${topic}' 기반으로 ${generationCount}개 생성 시작 (${language})`
+      );
+      const insertedIds = await generateIdeasForAutomation({
+        userId: args.userId,
+        sheetName: args.sheetName,
+        topic,
+        language,
+        idBase: args.autoIdeaIdBase,
+        count: generationCount
+      });
+      autoIdeaRunLimit = insertedIds.length;
+      insertedIds.forEach((id) => prioritizedRowIds.add(id));
+      pushLog(
+        args.userId,
+        "info",
+        `[자동 아이디어] ${insertedIds.length}개 생성/적용 완료 (${insertedIds.join(", ")})`
+      );
+    }
 
     while (!state.stopRequested) {
+      const effectiveMaxItems = args.autoIdeaEnabled ? autoIdeaRunLimit : maxItems;
       const rows = await listSheetContentRows(args.sheetName, args.userId);
       state.remaining = rows.length;
       state.totalDiscovered = Math.max(state.totalDiscovered, state.processed + rows.length);
@@ -722,17 +812,18 @@ async function runAutomationLoop(args: {
         requestStopInternal(args.userId, "completed");
         return;
       }
-      if (maxItems && processedThisRun >= maxItems) {
+      if (effectiveMaxItems && processedThisRun >= effectiveMaxItems) {
         logServer("info", "run:completed-max-items", {
           userId: args.userId || "",
-          maxItems
+          maxItems: effectiveMaxItems
         });
-        pushLog(args.userId, "info", `maxItems(${maxItems})에 도달하여 자동화를 종료합니다.`);
+        pushLog(args.userId, "info", `maxItems(${effectiveMaxItems})에 도달하여 자동화를 종료합니다.`);
         requestStopInternal(args.userId, "completed");
         return;
       }
 
-      const row = rows[0];
+      const prioritizedRow = rows.find((item) => prioritizedRowIds.has(item.id));
+      const row = prioritizedRow || rows[0];
       state.currentRowId = row.id;
       state.currentRowTitle = row.subject || row.keyword || row.id;
       pushLog(args.userId, "info", `[${row.id}] 처리 시작 (${state.currentRowTitle})`);
@@ -744,6 +835,7 @@ async function runAutomationLoop(args: {
         privacyStatus: args.privacyStatus,
         uploadMode: args.uploadMode
       });
+      prioritizedRowIds.delete(row.id);
       processedThisRun += 1;
       if (result.fatal) {
         requestStopInternal(args.userId, "failed", state.lastError || "Fatal automation error");
@@ -826,7 +918,11 @@ export function startAutomationRun(userId: string | undefined, args: StartAutoma
         ? args.templateMode
         : "applied_template",
     templateId: args.templateId?.trim() || undefined,
-    maxItems: args.maxItems
+    maxItems: args.maxItems,
+    autoIdeaEnabled: Boolean(args.autoIdeaEnabled),
+    autoIdeaTopic: args.autoIdeaTopic?.trim() || undefined,
+    autoIdeaLanguage: normalizeAutoIdeaLanguage(args.autoIdeaLanguage),
+    autoIdeaIdBase: args.autoIdeaIdBase?.trim() || undefined
   }).finally(() => {
     delete getPromiseStore()[key];
   });

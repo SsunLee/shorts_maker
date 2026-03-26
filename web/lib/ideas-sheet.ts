@@ -111,7 +111,7 @@ export async function appendIdeaRowsToSheet(args: {
   idBase?: string;
   items: IdeaDraftRow[];
   userId?: string;
-}): Promise<{ inserted: number; sheetName: string }> {
+}): Promise<{ inserted: number; sheetName: string; insertedIds: string[] }> {
   const context = await getSheetsContext(args.sheetName, args.userId);
   if (!context) {
     throw new Error(
@@ -182,6 +182,7 @@ export async function appendIdeaRowsToSheet(args: {
     return generated;
   }
 
+  const insertedIds: string[] = [];
   const appendRows = args.items.map((item) => {
     const row = Array(headers.length).fill("");
     const keyword = String(item.Keyword || "").trim();
@@ -193,7 +194,9 @@ export async function appendIdeaRowsToSheet(args: {
       pendingKeywordKeys.add(keywordKey);
     }
 
-    row[idColumnIndex] = takeUniqueId(item.id);
+    const nextId = takeUniqueId(item.id);
+    row[idColumnIndex] = nextId;
+    insertedIds.push(nextId);
     if (indexes.status !== undefined) {
       row[indexes.status] = "준비";
     }
@@ -216,7 +219,7 @@ export async function appendIdeaRowsToSheet(args: {
   });
 
   if (appendRows.length === 0) {
-    return { inserted: 0, sheetName: context.sheetName };
+    return { inserted: 0, sheetName: context.sheetName, insertedIds: [] };
   }
 
   await context.sheets.spreadsheets.values.append({
@@ -230,6 +233,7 @@ export async function appendIdeaRowsToSheet(args: {
 
   return {
     inserted: appendRows.length,
-    sheetName: context.sheetName
+    sheetName: context.sheetName,
+    insertedIds
   };
 }

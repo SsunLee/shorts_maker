@@ -21,6 +21,10 @@ const DEFAULT_CONFIG: AutomationScheduleConfig = {
   timeZone: "Asia/Seoul",
   itemsPerRun: 1,
   uploadMode: "youtube",
+  autoIdeaEnabled: false,
+  autoIdeaTopic: "",
+  autoIdeaLanguage: "ko",
+  autoIdeaIdBase: "",
   privacyStatus: "private",
   templateMode: "applied_template",
   templateId: undefined
@@ -197,6 +201,16 @@ function normalizeConfig(input?: Partial<AutomationScheduleConfig>): AutomationS
     timeZone: normalizeTimeZone(input?.timeZone),
     itemsPerRun: clampInt(Number(input?.itemsPerRun), 1, 20, DEFAULT_CONFIG.itemsPerRun),
     sheetName: input?.sheetName?.trim() || undefined,
+    autoIdeaEnabled: Boolean(input?.autoIdeaEnabled),
+    autoIdeaTopic: String(input?.autoIdeaTopic || "").trim(),
+    autoIdeaLanguage:
+      input?.autoIdeaLanguage === "en" ||
+      input?.autoIdeaLanguage === "ja" ||
+      input?.autoIdeaLanguage === "es" ||
+      input?.autoIdeaLanguage === "hi"
+        ? input.autoIdeaLanguage
+        : "ko",
+    autoIdeaIdBase: String(input?.autoIdeaIdBase || "").trim(),
     uploadMode: input?.uploadMode === "pre_upload" ? "pre_upload" : "youtube",
     privacyStatus:
       input?.privacyStatus === "public" || input?.privacyStatus === "unlisted"
@@ -372,7 +386,11 @@ export async function runAutomationScheduleTick(
         uploadMode: state.config.uploadMode,
         templateMode: state.config.templateMode,
         templateId: state.config.templateId,
-        maxItems: state.config.itemsPerRun
+        maxItems: state.config.itemsPerRun,
+        autoIdeaEnabled: state.config.autoIdeaEnabled,
+        autoIdeaTopic: state.config.autoIdeaTopic,
+        autoIdeaLanguage: state.config.autoIdeaLanguage,
+        autoIdeaIdBase: state.config.autoIdeaIdBase
       });
       if (options?.waitForCompletion) {
         const finalState = await waitForAutomationRunCompletion(userId);
@@ -482,6 +500,9 @@ export async function updateAutomationScheduleConfig(
     ...state.config,
     ...patch
   });
+  if (config.enabled && config.autoIdeaEnabled && !String(config.autoIdeaTopic || "").trim()) {
+    throw new Error("자동 아이디어 생성 키워드를 입력해 주세요.");
+  }
   const nextRunAt = config.enabled ? computeNextRunAt(config, new Date()).toISOString() : undefined;
   const next = await persistState(userId, {
     ...state,

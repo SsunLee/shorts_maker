@@ -65,11 +65,19 @@ export interface AppSettings {
   gsheetClientEmail?: string;
   gsheetPrivateKey?: string;
   gsheetSheetName?: string;
+  gsheetInstagramSheetName?: string;
   youtubeClientId?: string;
   youtubeClientSecret?: string;
   youtubeRedirectUri?: string;
   youtubeRefreshToken?: string;
   youtubeChannelName?: string;
+  metaAccessToken?: string;
+  metaInstagramAccountId?: string;
+  metaFacebookPageId?: string;
+  metaAppId?: string;
+  metaAppSecret?: string;
+  metaGraphVersion?: string;
+  instagramIdeaPromptTemplate?: string;
 }
 
 export interface BuildVideoPayload {
@@ -272,6 +280,10 @@ export interface AutomationScheduleConfig {
   timeZone?: string;
   itemsPerRun: number;
   sheetName?: string;
+  autoIdeaEnabled: boolean;
+  autoIdeaTopic?: string;
+  autoIdeaLanguage?: IdeaLanguage;
+  autoIdeaIdBase?: string;
   uploadMode: "youtube" | "pre_upload";
   privacyStatus: "private" | "public" | "unlisted";
   templateMode: AutomationTemplateMode;

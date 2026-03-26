@@ -18,7 +18,11 @@ const startSchema = z.object({
   uploadMode: z.enum(["youtube", "pre_upload"]).optional(),
   templateMode: z.enum(["applied_template", "latest_workflow", "none"]).optional(),
   templateId: z.string().optional(),
-  maxItems: z.number().int().min(1).max(1000).optional()
+  maxItems: z.number().int().min(1).max(1000).optional(),
+  autoIdeaEnabled: z.boolean().optional(),
+  autoIdeaTopic: z.string().optional(),
+  autoIdeaLanguage: z.enum(["ko", "en", "ja", "es", "hi"]).optional(),
+  autoIdeaIdBase: z.string().optional()
 });
 
 /** Get current automation run status. */

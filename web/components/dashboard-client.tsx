@@ -215,6 +215,12 @@ export function DashboardClient(): React.JSX.Element {
   const [automationPrivacyStatus, setAutomationPrivacyStatus] = useState<
     "private" | "public" | "unlisted"
   >("private");
+  const [automationAutoIdeaEnabled, setAutomationAutoIdeaEnabled] = useState(false);
+  const [automationAutoIdeaTopic, setAutomationAutoIdeaTopic] = useState("");
+  const [automationAutoIdeaLanguage, setAutomationAutoIdeaLanguage] = useState<
+    "ko" | "en" | "ja" | "es" | "hi"
+  >("ko");
+  const [automationAutoIdeaIdBase, setAutomationAutoIdeaIdBase] = useState("");
   const [automationError, setAutomationError] = useState<string>();
   const [automationTemplateError, setAutomationTemplateError] = useState<string>();
   const [automationTemplates, setAutomationTemplates] = useState<AutomationTemplateItem[]>([]);
@@ -249,6 +255,12 @@ export function DashboardClient(): React.JSX.Element {
   const [schedulePrivacyStatus, setSchedulePrivacyStatus] = useState<
     "private" | "public" | "unlisted"
   >("private");
+  const [scheduleAutoIdeaEnabled, setScheduleAutoIdeaEnabled] = useState(false);
+  const [scheduleAutoIdeaTopic, setScheduleAutoIdeaTopic] = useState("");
+  const [scheduleAutoIdeaLanguage, setScheduleAutoIdeaLanguage] = useState<
+    "ko" | "en" | "ja" | "es" | "hi"
+  >("ko");
+  const [scheduleAutoIdeaIdBase, setScheduleAutoIdeaIdBase] = useState("");
   const pollTickRef = useRef(0);
 
   const activeTemplate = useMemo(
@@ -286,6 +298,10 @@ export function DashboardClient(): React.JSX.Element {
     setScheduleTemplateMode(next.config.templateMode);
     setScheduleTemplateId(next.config.templateId || ACTIVE_TEMPLATE_VALUE);
     setSchedulePrivacyStatus(next.config.privacyStatus);
+    setScheduleAutoIdeaEnabled(Boolean(next.config.autoIdeaEnabled));
+    setScheduleAutoIdeaTopic(next.config.autoIdeaTopic || "");
+    setScheduleAutoIdeaLanguage(next.config.autoIdeaLanguage || "ko");
+    setScheduleAutoIdeaIdBase(next.config.autoIdeaIdBase || "");
     setScheduleDraftDirty(false);
   }
 
@@ -539,6 +555,10 @@ export function DashboardClient(): React.JSX.Element {
       templateMode: "applied_template" | "latest_workflow" | "none";
       templateId: string;
       privacyStatus: "private" | "public" | "unlisted";
+      autoIdeaEnabled: boolean;
+      autoIdeaTopic: string;
+      autoIdeaLanguage: "ko" | "en" | "ja" | "es" | "hi";
+      autoIdeaIdBase: string;
     }>
   ): Promise<void> {
     setScheduleBusy(true);
@@ -555,6 +575,13 @@ export function DashboardClient(): React.JSX.Element {
       const templateMode = overrides?.templateMode ?? scheduleTemplateMode;
       const templateId = overrides?.templateId ?? scheduleTemplateId;
       const privacyStatus = overrides?.privacyStatus ?? schedulePrivacyStatus;
+      const autoIdeaEnabled = overrides?.autoIdeaEnabled ?? scheduleAutoIdeaEnabled;
+      const autoIdeaTopic = overrides?.autoIdeaTopic ?? scheduleAutoIdeaTopic;
+      const autoIdeaLanguage = overrides?.autoIdeaLanguage ?? scheduleAutoIdeaLanguage;
+      const autoIdeaIdBase = overrides?.autoIdeaIdBase ?? scheduleAutoIdeaIdBase;
+      if (enabled && autoIdeaEnabled && !autoIdeaTopic.trim()) {
+        throw new Error("스케줄 자동 아이디어 생성 키워드를 입력해 주세요.");
+      }
 
       const response = await fetch("/api/automation/schedule", {
         method: "POST",
@@ -574,7 +601,11 @@ export function DashboardClient(): React.JSX.Element {
             templateId !== ACTIVE_TEMPLATE_VALUE
               ? templateId
               : undefined,
-          privacyStatus
+          privacyStatus,
+          autoIdeaEnabled,
+          autoIdeaTopic: autoIdeaTopic.trim() || undefined,
+          autoIdeaLanguage,
+          autoIdeaIdBase: autoIdeaIdBase.trim() || undefined
         })
       });
       const data = await readJsonResponse<AutomationScheduleResponse>(response);
@@ -627,6 +658,9 @@ export function DashboardClient(): React.JSX.Element {
       startedAt: new Date().toISOString()
     }));
     try {
+      if (automationAutoIdeaEnabled && !automationAutoIdeaTopic.trim()) {
+        throw new Error("자동 아이디어 생성 키워드를 입력해 주세요.");
+      }
       const response = await fetch("/api/automation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -638,7 +672,11 @@ export function DashboardClient(): React.JSX.Element {
           maxItems:
             automationMaxItems === "all"
               ? undefined
-              : Math.max(1, Number.parseInt(automationMaxItems, 10) || 1)
+              : Math.max(1, Number.parseInt(automationMaxItems, 10) || 1),
+          autoIdeaEnabled: automationAutoIdeaEnabled,
+          autoIdeaTopic: automationAutoIdeaTopic.trim() || undefined,
+          autoIdeaLanguage: automationAutoIdeaLanguage,
+          autoIdeaIdBase: automationAutoIdeaIdBase.trim() || undefined
         })
       });
       const data = await readJsonResponse<AutomationResponse>(response);
@@ -1088,6 +1126,54 @@ export function DashboardClient(): React.JSX.Element {
             중지 요청
           </Button>
         </div>
+        <div className="space-y-2 rounded-md border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-medium">자동 아이디어 생성</p>
+              <p className="text-xs text-muted-foreground">
+                실행 직전에 키워드 기반 아이디어를 먼저 생성한 뒤, 생성된 row를 우선 처리합니다.
+              </p>
+            </div>
+            <Switch checked={automationAutoIdeaEnabled} onCheckedChange={setAutomationAutoIdeaEnabled} />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <Input
+              value={automationAutoIdeaTopic}
+              onChange={(event) => setAutomationAutoIdeaTopic(event.target.value)}
+              placeholder="자동 생성 키워드 (예: 일본 WBC 최신뉴스)"
+              disabled={!automationAutoIdeaEnabled}
+            />
+            <Select
+              value={automationAutoIdeaLanguage}
+              onValueChange={(value) =>
+                setAutomationAutoIdeaLanguage(
+                  value === "en" || value === "ja" || value === "es" || value === "hi" ? value : "ko"
+                )
+              }
+              disabled={!automationAutoIdeaEnabled}
+            >
+              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ko">한국어</SelectItem>
+                <SelectItem value="ja">일본어</SelectItem>
+                <SelectItem value="en">영어</SelectItem>
+                <SelectItem value="es">스페인어</SelectItem>
+                <SelectItem value="hi">힌디어</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              value={automationAutoIdeaIdBase}
+              onChange={(event) => setAutomationAutoIdeaIdBase(event.target.value)}
+              placeholder="ID 접두어(선택) 예: wbc-news"
+              disabled={!automationAutoIdeaEnabled}
+            />
+            <p className="self-center text-xs text-muted-foreground">
+              생성 개수는 처리 개수 설정과 동일하게 적용됩니다.
+            </p>
+          </div>
+        </div>
         <div className="rounded-md border bg-muted/30 p-2 text-xs">
           <p className="font-medium">현재 템플릿 모드: {templateModeLabel(automationTemplateMode)}</p>
           {automationTemplateMode === "applied_template" ? (
@@ -1495,6 +1581,67 @@ export function DashboardClient(): React.JSX.Element {
               }}
               placeholder="비우면 Settings 기본 탭 사용"
             />
+          </div>
+        </div>
+        <div className="space-y-2 rounded-md border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-medium">자동 아이디어 생성 (스케줄)</p>
+              <p className="text-xs text-muted-foreground">
+                스케줄 실행 직전에 키워드로 아이디어를 생성해 시트에 추가합니다.
+              </p>
+            </div>
+            <Switch
+              checked={scheduleAutoIdeaEnabled}
+              onCheckedChange={(checked) => {
+                setScheduleAutoIdeaEnabled(checked);
+                setScheduleDraftDirty(true);
+              }}
+            />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <Input
+              value={scheduleAutoIdeaTopic}
+              onChange={(event) => {
+                setScheduleAutoIdeaTopic(event.target.value);
+                setScheduleDraftDirty(true);
+              }}
+              placeholder="자동 생성 키워드"
+              disabled={!scheduleAutoIdeaEnabled}
+            />
+            <Select
+              value={scheduleAutoIdeaLanguage}
+              onValueChange={(value) => {
+                setScheduleAutoIdeaLanguage(
+                  value === "en" || value === "ja" || value === "es" || value === "hi" ? value : "ko"
+                );
+                setScheduleDraftDirty(true);
+              }}
+              disabled={!scheduleAutoIdeaEnabled}
+            >
+              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ko">한국어</SelectItem>
+                <SelectItem value="ja">일본어</SelectItem>
+                <SelectItem value="en">영어</SelectItem>
+                <SelectItem value="es">스페인어</SelectItem>
+                <SelectItem value="hi">힌디어</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              value={scheduleAutoIdeaIdBase}
+              onChange={(event) => {
+                setScheduleAutoIdeaIdBase(event.target.value);
+                setScheduleDraftDirty(true);
+              }}
+              placeholder="ID 접두어(선택)"
+              disabled={!scheduleAutoIdeaEnabled}
+            />
+            <p className="self-center text-xs text-muted-foreground">
+              생성 개수는 회차당 처리 개수와 동일합니다.
+            </p>
           </div>
         </div>
         <div className="rounded-md border bg-muted/30 p-2 text-xs">
