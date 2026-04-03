@@ -257,11 +257,22 @@ function normalizeCatalog(parsed: unknown): InstagramTemplateCatalog {
 async function readCatalog(userId?: string): Promise<InstagramTemplateCatalog> {
   const storageUserId = resolveInstagramStorageUserId(userId);
   if (storageUserId && prisma) {
-    const row = await prisma.userAutomationTemplateCatalog.findUnique({
-      where: { userId: storageUserId }
-    });
-    if (row?.data) {
-      return normalizeCatalog(row.data);
+    try {
+      const row = await prisma.userAutomationTemplateCatalog.findUnique({
+        where: { userId: storageUserId }
+      });
+      if (row?.data) {
+        return normalizeCatalog(row.data);
+      }
+      // DB is available but no saved template yet.
+      // Do not fallback to filesystem in production/serverless.
+      return { templates: [] };
+    } catch (error) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          `Instagram template storage(DB) read failed: ${error instanceof Error ? error.message : "unknown"}`
+        );
+      }
     }
   }
 
@@ -278,12 +289,20 @@ async function writeCatalog(catalog: InstagramTemplateCatalog, userId?: string):
   const normalized = normalizeCatalog(catalog);
   const storageUserId = resolveInstagramStorageUserId(userId);
   if (storageUserId && prisma) {
-    await prisma.userAutomationTemplateCatalog.upsert({
-      where: { userId: storageUserId },
-      update: { data: normalized as unknown as Prisma.InputJsonValue },
-      create: { userId: storageUserId, data: normalized as unknown as Prisma.InputJsonValue }
-    });
-    return;
+    try {
+      await prisma.userAutomationTemplateCatalog.upsert({
+        where: { userId: storageUserId },
+        update: { data: normalized as unknown as Prisma.InputJsonValue },
+        create: { userId: storageUserId, data: normalized as unknown as Prisma.InputJsonValue }
+      });
+      return;
+    } catch (error) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          `Instagram template storage(DB) write failed: ${error instanceof Error ? error.message : "unknown"}`
+        );
+      }
+    }
   }
 
   await ensureTemplateFile();
