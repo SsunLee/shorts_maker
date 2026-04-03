@@ -4,7 +4,8 @@ import { getAuthenticatedUserId } from "@/lib/auth-server";
 import {
   isS3StorageEnabled,
   storeGeneratedAsset,
-  storeGeneratedAssetFromRemote
+  storeGeneratedAssetFromRemote,
+  toSignedStorageReadUrl
 } from "@/lib/object-storage";
 import {
   metaGet,
@@ -280,7 +281,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // S3 객체가 private인 환경에서도 Meta crawler가 접근할 수 있도록
+    // 업로드 직전에는 signed URL로 변환해 전달합니다.
+    const deliveryMediaUrls: string[] = [];
     for (const mediaUrl of resolvedMediaUrls) {
+      const signed = await toSignedStorageReadUrl(mediaUrl, 60 * 60 * 6);
+      deliveryMediaUrls.push(signed);
+    }
+
+    for (const mediaUrl of deliveryMediaUrls) {
       await assertPublicMediaReachable(mediaUrl);
     }
 
@@ -290,8 +299,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     let publishCreationId = "";
     const childIds: string[] = [];
 
-    if (resolvedMediaUrls.length === 1) {
-      const onlyUrl = resolvedMediaUrls[0];
+    if (deliveryMediaUrls.length === 1) {
+      const onlyUrl = deliveryMediaUrls[0];
       const mediaKind = inferMediaKind(onlyUrl);
       const creation = (await metaPost({
         config,
@@ -328,8 +337,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         );
       }
     } else {
-      for (let index = 0; index < resolvedMediaUrls.length; index += 1) {
-        const mediaUrl = resolvedMediaUrls[index];
+      for (let index = 0; index < deliveryMediaUrls.length; index += 1) {
+        const mediaUrl = deliveryMediaUrls[index];
         const mediaKind = inferMediaKind(mediaUrl);
         const creation = (await metaPost({
           config,
@@ -355,7 +364,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
       for (let index = 0; index < childIds.length; index += 1) {
         const childId = childIds[index];
-        const mediaUrl = resolvedMediaUrls[index];
+        const mediaUrl = deliveryMediaUrls[index];
         try {
           await waitForContainerReady({
             config,
