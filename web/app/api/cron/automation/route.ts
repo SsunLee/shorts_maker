@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDueAutomationSchedules } from "@/lib/automation-scheduler";
+import { runDueInstagramAutomationSchedules } from "@/lib/instagram-automation-scheduler";
 
 export const runtime = "nodejs";
 // Keep cron invocation alive while the due automation run finishes.
@@ -38,10 +39,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   const force = request.nextUrl.searchParams.get("force") === "1";
-  const result = await runDueAutomationSchedules({
+  const youtubeResult = await runDueAutomationSchedules({
     force,
     waitForCompletion: true
   });
+  const instagramResult = await runDueInstagramAutomationSchedules({
+    force
+  });
+  const result = {
+    youtube: youtubeResult,
+    instagram: instagramResult
+  };
   console.log("[cron.automation] result", result);
   return NextResponse.json({
     ok: true,

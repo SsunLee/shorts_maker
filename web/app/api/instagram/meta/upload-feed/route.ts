@@ -14,12 +14,15 @@ import {
   validateMetaConfig,
   waitForContainerReady
 } from "@/lib/instagram-meta-service";
+import { updateInstagramSheetRowAfterUpload } from "@/lib/instagram-sheet";
 
 export const runtime = "nodejs";
 
 const schema = z.object({
   caption: z.string().optional(),
-  mediaUrls: z.array(z.string()).min(1).max(10)
+  mediaUrls: z.array(z.string()).min(1).max(10),
+  rowId: z.string().optional(),
+  sheetName: z.string().optional()
 });
 
 function inferMediaKind(url: string): "image" | "video" {
@@ -439,12 +442,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       media_type?: string;
     };
 
+    const sheetUpdate = await updateInstagramSheetRowAfterUpload({
+      userId,
+      sheetName: payload.sheetName,
+      rowId: payload.rowId,
+      status: "업로드완료",
+      publishValue: "완료",
+      permalink: mediaInfo.permalink || "",
+      mediaId: mediaInfo.id || mediaId
+    });
+
     return NextResponse.json({
       ok: true,
       mediaId: mediaInfo.id || mediaId,
       permalink: mediaInfo.permalink || "",
       mediaType: mediaInfo.media_type || "",
-      childContainerIds: childIds
+      childContainerIds: childIds,
+      sheetUpdate
     });
   } catch (error) {
     const message =

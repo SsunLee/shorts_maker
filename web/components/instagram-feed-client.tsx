@@ -51,6 +51,11 @@ type UploadResponse = {
   ok?: boolean;
   mediaId?: string;
   permalink?: string;
+  sheetUpdate?: {
+    updated?: boolean;
+    reason?: string;
+    sheetName?: string;
+  };
   error?: string;
 };
 
@@ -835,7 +840,9 @@ export function InstagramFeedClient(): React.JSX.Element {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           caption: caption.trim(),
-          mediaUrls: renderedAssets.map((asset) => asset.mediaUrl)
+          mediaUrls: renderedAssets.map((asset) => asset.mediaUrl),
+          rowId: selectedItem.rowId,
+          sheetName: sourceSheetName || undefined
         })
       });
       const data = (await response.json()) as UploadResponse;
@@ -844,7 +851,13 @@ export function InstagramFeedClient(): React.JSX.Element {
       }
       setUploadResult(data);
       setUploadStageMessage("업로드 완료 처리 중...");
-      setSuccess(`Meta 업로드가 완료되었습니다. (${renderedAssets.length}개 페이지)`);
+      const sheetMessage = data.sheetUpdate?.updated
+        ? " · 시트 상태 업데이트 완료"
+        : data.sheetUpdate?.reason
+          ? ` · 시트 업데이트 생략(${data.sheetUpdate.reason})`
+          : "";
+      setSuccess(`Meta 업로드가 완료되었습니다. (${renderedAssets.length}개 페이지)${sheetMessage}`);
+      await loadBuildContext();
       setUploadConfirmOpen(false);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Meta 업로드에 실패했습니다.");
