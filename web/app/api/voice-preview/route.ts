@@ -8,7 +8,8 @@ export const runtime = "nodejs";
 const schema = z.object({
   voice: z.string().min(1),
   speed: z.number().min(0.5).max(2).default(1),
-  text: z.string().min(1).max(320).optional()
+  text: z.string().min(1).max(320).optional(),
+  provider: z.enum(["openai", "gemini", "auto"]).optional()
 });
 
 /** Generate a short TTS clip so users can preview the selected voice. */
@@ -24,6 +25,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       voice: payload.voice,
       speed: payload.speed,
       preferredMimeType: "audio/wav",
+      provider: payload.provider === "openai" || payload.provider === "gemini" ? payload.provider : undefined,
       input:
         payload.text?.trim() ||
         "This is a voice preview for your short-form content."

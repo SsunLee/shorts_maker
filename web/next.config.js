@@ -19,6 +19,10 @@ const isProduction = process.env.NODE_ENV === "production";
 
 const nextConfig = {
   reactStrictMode: true,
+  outputFileTracingIncludes: {
+    "/api/furigana": ["./node_modules/kuromoji/dict/**/*"],
+    "/api/furigana/route": ["./node_modules/kuromoji/dict/**/*"]
+  },
   // Keep per-port dist only in local dev; production (Vercel/Cloud) uses default .next.
   ...(!isProduction && resolvedDistDir ? { distDir: `.next-${resolvedDistDir}` } : {})
 };

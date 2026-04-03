@@ -30,11 +30,18 @@ const emptySettings: AppSettings = {
   gsheetClientEmail: "",
   gsheetPrivateKey: "",
   gsheetSheetName: "Shorts",
+  gsheetInstagramSheetName: "",
   youtubeClientId: "",
   youtubeClientSecret: "",
   youtubeRedirectUri: "",
   youtubeRefreshToken: "",
-  youtubeChannelName: ""
+  youtubeChannelName: "",
+  metaAccessToken: "",
+  metaInstagramAccountId: "",
+  metaFacebookPageId: "",
+  metaAppId: "",
+  metaAppSecret: "",
+  metaGraphVersion: "v23.0"
 };
 
 interface LocalCleanupTargetSummary {
@@ -1224,6 +1231,19 @@ export function SettingsForm(): React.JSX.Element {
               onChange={(e) => update("gsheetSheetName", e.target.value)}
             />
           </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="gsheetInstagramSheetName"
+              label="Instagram Sheet Name"
+              help="인스타 아이디어 탭 기본 탭 이름입니다. 비우면 위 `Sheet Name`을 사용합니다."
+            />
+            <Input
+              id="gsheetInstagramSheetName"
+              value={settings.gsheetInstagramSheetName || ""}
+              onChange={(e) => update("gsheetInstagramSheetName", e.target.value)}
+              placeholder="예: insta_post"
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -1538,6 +1558,95 @@ export function SettingsForm(): React.JSX.Element {
               value={settings.youtubeChannelName}
               onChange={(e) => update("youtubeChannelName", e.target.value)}
               placeholder="예: Sunbae Shorts Main"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Meta / Instagram 업로드 설정</CardTitle>
+          <CardDescription>
+            인스타그램 피드/릴스 업로드 API 연동에 사용할 Meta Graph API 정보입니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="metaAccessToken"
+              label="Access Token"
+              help="Meta Graph API 호출용 장기 토큰입니다. 만료 전 재발급이 필요합니다."
+            />
+            <Input
+              id="metaAccessToken"
+              type="password"
+              value={settings.metaAccessToken}
+              onChange={(e) => update("metaAccessToken", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="metaInstagramAccountId"
+              label="Instagram Account ID"
+              help="업로드 대상 Instagram 비즈니스 계정 ID입니다."
+            />
+            <Input
+              id="metaInstagramAccountId"
+              value={settings.metaInstagramAccountId}
+              onChange={(e) => update("metaInstagramAccountId", e.target.value)}
+              placeholder="예: 1784xxxxxxxxxxxxx"
+            />
+          </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="metaFacebookPageId"
+              label="Facebook Page ID (선택)"
+              help="인스타그램 비즈니스 계정이 연결된 페이스북 페이지 ID입니다."
+            />
+            <Input
+              id="metaFacebookPageId"
+              value={settings.metaFacebookPageId}
+              onChange={(e) => update("metaFacebookPageId", e.target.value)}
+            />
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-2">
+              <HelpLabel
+                htmlFor="metaAppId"
+                label="Meta App ID (선택)"
+                help="운영 추적/검증용으로 저장할 수 있습니다."
+              />
+              <Input
+                id="metaAppId"
+                value={settings.metaAppId}
+                onChange={(e) => update("metaAppId", e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <HelpLabel
+                htmlFor="metaAppSecret"
+                label="Meta App Secret (선택)"
+                help="보안상 가능하면 서버 환경변수로 관리하세요."
+              />
+              <Input
+                id="metaAppSecret"
+                type="password"
+                value={settings.metaAppSecret}
+                onChange={(e) => update("metaAppSecret", e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="metaGraphVersion"
+              label="Graph API Version"
+              help="예: v23.0"
+            />
+            <Input
+              id="metaGraphVersion"
+              value={settings.metaGraphVersion}
+              onChange={(e) => update("metaGraphVersion", e.target.value)}
+              placeholder="v23.0"
             />
           </div>
         </CardContent>

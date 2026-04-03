@@ -43,6 +43,8 @@ class OverlayOptions(BaseModel):
     focusDriftPercent: float = Field(default=6.0, ge=0.0, le=20.0)
     focusZoomPercent: float = Field(default=9.0, ge=3.0, le=20.0)
     outputFps: int = Field(default=30, ge=30, le=60)
+    outputWidth: int = Field(default=1080, ge=320, le=4000)
+    outputHeight: int = Field(default=1920, ge=320, le=4000)
     videoLayout: str = Field(default="fill_9_16")
     panelTopPercent: float = Field(default=34.0, ge=0.0, le=85.0)
     panelWidthPercent: float = Field(default=100.0, ge=60.0, le=100.0)

@@ -1039,9 +1039,13 @@ async function synthesizeSpeechAudio(args: {
   speed?: number;
   input: string;
   preferredMimeType?: string;
+  provider?: "openai" | "gemini";
   userId?: string;
 }): Promise<SynthesizedAudio> {
-  const provider = await resolveProviderForTask("tts", args.userId);
+  const provider =
+    args.provider === "openai" || args.provider === "gemini"
+      ? args.provider
+      : await resolveProviderForTask("tts", args.userId);
   const ttsModel = await resolveModelForTask(provider, "tts", args.userId);
   const speed = Math.max(0.5, Math.min(2, Number(args.speed) || 1));
 
@@ -1147,12 +1151,14 @@ export async function synthesizeSpeech(args: {
   speed?: number;
   input: string;
   preferredMimeType?: string;
+  provider?: "openai" | "gemini";
 }, userId?: string): Promise<SynthesizedAudio> {
   return synthesizeSpeechAudio({
     voice: args.voice,
     speed: args.speed,
     input: args.input,
     preferredMimeType: args.preferredMimeType || "audio/wav",
+    provider: args.provider,
     userId
   });
 }
@@ -1163,12 +1169,14 @@ export async function generateTtsAudio(args: {
   narration: string;
   voice: string;
   speed?: number;
+  provider?: "openai" | "gemini";
 }, userId?: string): Promise<{ localPath: string; publicUrl: string }> {
   const audio = await synthesizeSpeechAudio({
     voice: args.voice,
     speed: args.speed,
     input: args.narration,
     preferredMimeType: "audio/mp3",
+    provider: args.provider,
     userId
   });
   const fileName = `tts.${audio.extension}`;

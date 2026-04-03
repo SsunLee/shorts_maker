@@ -198,6 +198,35 @@ export function IdeasClient(): React.JSX.Element {
     });
   }, [sheetRows, statusFilter, selectedKeywords]);
 
+  const readyRowSummary = useMemo(() => {
+    const requiredColumns = ["id", "keyword", "subject", "description", "narration"];
+    let statusReadyCount = 0;
+    let usableReadyCount = 0;
+    const missingExamples: Array<{ rowNumber: number; missing: string[] }> = [];
+
+    sheetRows.forEach((row, index) => {
+      const statusValue = getColumnValue(row, "status");
+      if (statusValue !== "준비") {
+        return;
+      }
+      statusReadyCount += 1;
+      const missing = requiredColumns.filter((column) => !getColumnValue(row, column));
+      if (missing.length === 0) {
+        usableReadyCount += 1;
+        return;
+      }
+      if (missingExamples.length < 3) {
+        missingExamples.push({ rowNumber: index + 2, missing });
+      }
+    });
+
+    return {
+      statusReadyCount,
+      usableReadyCount,
+      missingExamples
+    };
+  }, [sheetRows]);
+
   const allPreviewRowKeys = useMemo(
     () => generatedRows.map((row, index) => getPreviewRowKey(row, index)),
     [generatedRows]
@@ -717,6 +746,28 @@ export function IdeasClient(): React.JSX.Element {
               <p className="text-xs text-muted-foreground">
                 표시 행: {filteredSheetRows.length} / 전체 {sheetRows.length}
               </p>
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                <p className="font-medium text-amber-300">
+                  준비 row 기준 안내
+                </p>
+                <p className="mt-1 text-amber-200/90">
+                  status가 정확히 <code className="rounded bg-black/20 px-1 py-0.5">준비</code> 이고,
+                  <code className="ml-1 rounded bg-black/20 px-1 py-0.5">id / keyword / subject / description / narration</code>
+                  값이 모두 있어야 실제 생성 대상 row로 사용됩니다.
+                </p>
+                <p className="mt-2 text-amber-100">
+                  status=준비 행: {readyRowSummary.statusReadyCount}개 · 사용 가능한 준비 행: {readyRowSummary.usableReadyCount}개
+                </p>
+                {readyRowSummary.missingExamples.length > 0 ? (
+                  <div className="mt-2 space-y-1 text-amber-100/90">
+                    {readyRowSummary.missingExamples.map((example) => (
+                      <p key={`ready-missing-${example.rowNumber}`}>
+                        행 {example.rowNumber}: 누락 컬럼 ({example.missing.join(", ")})
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <div className="max-h-[56vh] overflow-auto rounded-lg border">
               <table className="min-w-full text-sm">
                 <thead className="sticky top-0 bg-muted/50">

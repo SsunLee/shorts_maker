@@ -22,11 +22,18 @@ const schema = z.object({
   gsheetClientEmail: z.string().optional(),
   gsheetPrivateKey: z.string().optional(),
   gsheetSheetName: z.string().optional(),
+  gsheetInstagramSheetName: z.string().optional(),
   youtubeClientId: z.string().optional(),
   youtubeClientSecret: z.string().optional(),
   youtubeRedirectUri: z.string().optional(),
   youtubeRefreshToken: z.string().optional(),
-  youtubeChannelName: z.string().optional()
+  youtubeChannelName: z.string().optional(),
+  metaAccessToken: z.string().optional(),
+  metaInstagramAccountId: z.string().optional(),
+  metaFacebookPageId: z.string().optional(),
+  metaAppId: z.string().optional(),
+  metaAppSecret: z.string().optional(),
+  metaGraphVersion: z.string().optional()
 });
 
 /** Retrieve saved local integration settings. */

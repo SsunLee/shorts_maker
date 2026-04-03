@@ -293,7 +293,7 @@ def _resolve_scene_motion_preset(
 ) -> str:
     options = overlay_options or {}
     raw = str(options.get("sceneMotionPreset") or "gentle_zoom").strip().lower()
-    allowed = {"gentle_zoom", "up_down", "left_right", "focus_smooth", "random"}
+    allowed = {"gentle_zoom", "up_down", "left_right", "focus_smooth", "random", "none"}
     if raw not in allowed:
         raw = "gentle_zoom"
     if raw == "random":
@@ -321,7 +321,26 @@ def _even(value: int) -> int:
     return value if value % 2 == 0 else value - 1
 
 
-def _panel_geometry(overlay_options: dict[str, Any] | None) -> tuple[int, int, int, int]:
+def _resolve_output_dimensions(overlay_options: dict[str, Any] | None) -> tuple[int, int]:
+    options = overlay_options or {}
+    try:
+        out_w = int(float(options.get("outputWidth")))
+    except (TypeError, ValueError):
+        out_w = 1080
+    try:
+        out_h = int(float(options.get("outputHeight")))
+    except (TypeError, ValueError):
+        out_h = 1920
+    out_w = max(320, min(4000, _even(out_w)))
+    out_h = max(320, min(4000, _even(out_h)))
+    return out_w, out_h
+
+
+def _panel_geometry(
+    overlay_options: dict[str, Any] | None,
+    out_w: int,
+    out_h: int,
+) -> tuple[int, int, int, int]:
     options = overlay_options or {}
     try:
         width_pct = float(options.get("panelWidthPercent"))
@@ -329,19 +348,19 @@ def _panel_geometry(overlay_options: dict[str, Any] | None) -> tuple[int, int, i
         width_pct = 100.0
     width_pct = max(60.0, min(100.0, width_pct))
 
-    panel_w = _even(int(round(1080.0 * (width_pct / 100.0))))
-    panel_w = max(640, min(1080, panel_w))
+    panel_w = _even(int(round(out_w * (width_pct / 100.0))))
+    panel_w = max(max(320, int(out_w * 0.6)), min(out_w, panel_w))
     panel_h = _even(int(round(panel_w * (9.0 / 16.0))))
-    panel_h = max(360, min(1920, panel_h))
+    panel_h = max(180, min(out_h, panel_h))
 
     try:
         top_pct = float(options.get("panelTopPercent"))
     except (TypeError, ValueError):
         top_pct = 34.0
     top_pct = max(0.0, min(85.0, top_pct))
-    top_px = int(round(1920.0 * (top_pct / 100.0)))
-    top_px = max(0, min(1920 - panel_h, top_px))
-    left_px = (1080 - panel_w) // 2
+    top_px = int(round(out_h * (top_pct / 100.0)))
+    top_px = max(0, min(out_h - panel_h, top_px))
+    left_px = (out_w - panel_w) // 2
     return panel_w, panel_h, left_px, top_px
 
 
@@ -354,6 +373,14 @@ def _zoompan_motion_filter(
     out_w: int = 1080,
     out_h: int = 1920,
 ) -> str:
+    if motion_preset == "none":
+        return (
+            f"zoompan=z='1':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            f"d={frame_count}:s={out_w}x{out_h}:fps={fps}"
+        )
+
     options = overlay_options or {}
     def _safe_float(value: Any, fallback: float) -> float:
         try:
@@ -1076,7 +1103,7 @@ def _drawtext_filter_values(
 def render_short_video(
     image_paths: list[Path],
     tts_path: Path,
-    subtitle_path: Path,
+    subtitle_path: Path | None,
     output_dir: Path,
     use_sfx: bool,
     target_duration_sec: float | None,
@@ -1107,8 +1134,9 @@ def render_short_video(
     extra_frames = total_frames % image_count
 
     segments: list[Path] = []
+    out_w, out_h = _resolve_output_dimensions(overlay_options)
     video_layout = _resolve_video_layout(overlay_options)
-    panel_w, panel_h, panel_left, panel_top = _panel_geometry(overlay_options)
+    panel_w, panel_h, panel_left, panel_top = _panel_geometry(overlay_options, out_w, out_h)
     for idx, image_path in enumerate(image_paths, start=1):
         frame_count = base_frames + (1 if idx <= extra_frames else 0)
         segment_path = output_dir / f"segment-{idx}.mp4"
@@ -1127,7 +1155,7 @@ def render_short_video(
                 f"scale={panel_w}:{panel_h}:force_original_aspect_ratio=increase,"
                 f"crop={panel_w}:{panel_h},"
                 f"{motion_filter},"
-                f"pad=1080:1920:{panel_left}:{panel_top}:color=black,"
+                f"pad={out_w}:{out_h}:{panel_left}:{panel_top}:color=black,"
                 "setsar=1"
             )
         else:
@@ -1137,10 +1165,12 @@ def render_short_video(
                 fps,
                 scene_index=idx,
                 overlay_options=overlay_options,
+                out_w=out_w,
+                out_h=out_h,
             )
             vf = (
-                "scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,"
+                f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                f"crop={out_w}:{out_h},"
                 f"{motion_filter},"
                 "setsar=1"
             )
@@ -1176,14 +1206,24 @@ def render_short_video(
     )
 
     final_output = output_dir / "final.mp4"
-    subtitle_filter = _subtitle_filter_value(subtitle_path, subtitle_options)
+    subtitle_filter = ""
+    if subtitle_path is not None and subtitle_path.exists():
+        try:
+            subtitle_raw = subtitle_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            subtitle_raw = ""
+        if subtitle_raw.strip():
+            subtitle_filter = _subtitle_filter_value(subtitle_path, subtitle_options)
     drawtext_filters = _drawtext_filter_values(
         overlay_options,
         title_text,
     )
-    video_filters = subtitle_filter
+    filter_chain: list[str] = []
+    if subtitle_filter:
+        filter_chain.append(subtitle_filter)
     if drawtext_filters:
-        video_filters = f"{video_filters},{','.join(drawtext_filters)}"
+        filter_chain.extend(drawtext_filters)
+    video_filters = ",".join(filter_chain)
 
     sfx_path = _resolve_sfx_path(output_dir) if use_sfx else None
     should_mix_sfx = use_sfx and sfx_path is not None and sfx_path.exists()
@@ -1209,8 +1249,10 @@ def render_short_video(
             "-filter_complex",
             "[1:a]volume=1.0[tts];[2:a]volume=0.13[sfx];"
             "[tts][sfx]amix=inputs=2:duration=first:dropout_transition=2[aout]",
-            "-vf",
-            video_filters,
+        ]
+        if video_filters:
+            final_command.extend(["-vf", video_filters])
+        final_command.extend([
             "-map",
             "0:v",
             "-map",
@@ -1229,7 +1271,7 @@ def render_short_video(
             "-movflags",
             "+faststart",
             str(final_output),
-        ]
+        ])
     else:
         final_command = [
             FFMPEG_BIN,
@@ -1244,8 +1286,10 @@ def render_short_video(
             str(concat_file),
             "-i",
             str(tts_path),
-            "-vf",
-            video_filters,
+        ]
+        if video_filters:
+            final_command.extend(["-vf", video_filters])
+        final_command.extend([
             "-map",
             "0:v",
             "-map",
@@ -1264,16 +1308,17 @@ def render_short_video(
             "-movflags",
             "+faststart",
             str(final_output),
-        ]
+        ])
 
     run_cmd(final_command)
     commands.append(_to_ffmpeg_command_string(final_command))
     dimensions = probe_video_dimensions(final_output)
     if dimensions:
         width, height = dimensions
+        expected_ratio = (out_w / out_h) if out_h else 0.0
         ratio = (width / height) if height else 0.0
-        if abs(ratio - (9.0 / 16.0)) > 0.01:
+        if abs(ratio - expected_ratio) > 0.01:
             raise RuntimeError(
-                f"Output video ratio is not 9:16 (got {width}x{height})."
+                f"Output video ratio mismatch (expected {out_w}x{out_h}, got {width}x{height})."
             )
     return final_output, commands

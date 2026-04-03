@@ -134,6 +134,7 @@ const VOICE_PREVIEW_DEFAULT_TEXT = "This is a voice preview for your short-form 
 const voiceSpeedOptions = ["0.75", "0.9", "1", "1.1", "1.25", "1.5"];
 const templateSceneCountOptions = ["3", "4", "5", "6", "8", "10", "12"];
 const customStyleOption = "__custom__";
+const LAST_USED_TEMPLATE_ID_KEY = "shorts-maker:last-used-template-id";
 const imageStylePresets = [
   "Cinematic photo-real",
   "Ultra photoreal photographer",
@@ -956,8 +957,29 @@ export function TemplatesClient(): React.JSX.Element {
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSaveRequestSeqRef = useRef(0);
   const lastSavedSignatureRef = useRef("");
+  const initialTemplateHydratedRef = useRef(false);
   const previewAudioRef = useRef<HTMLAudioElement>(null);
   const pendingPreviewPlayRef = useRef(false);
+
+  function rememberLastUsedTemplateId(id: string | undefined): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (!id || id === "__new__") {
+      window.localStorage.removeItem(LAST_USED_TEMPLATE_ID_KEY);
+      return;
+    }
+    window.localStorage.setItem(LAST_USED_TEMPLATE_ID_KEY, id);
+  }
+
+  function readLastUsedTemplateId(): string | undefined {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    const raw = window.localStorage.getItem(LAST_USED_TEMPLATE_ID_KEY);
+    const value = String(raw || "").trim();
+    return value || undefined;
+  }
 
   async function refreshTemplates(): Promise<void> {
     const response = await fetch("/api/automation-template", { cache: "no-store" });
@@ -968,6 +990,29 @@ export function TemplatesClient(): React.JSX.Element {
     const list = data.templates || [];
     setTemplates(list);
     setActiveTemplateId(data.activeTemplateId);
+    if (!initialTemplateHydratedRef.current && selectedTemplateId === "__new__") {
+      const lastUsed = readLastUsedTemplateId();
+      const initialTemplateId =
+        (lastUsed && list.some((item) => item.id === lastUsed) ? lastUsed : undefined) ||
+        (data.activeTemplateId && list.some((item) => item.id === data.activeTemplateId)
+          ? data.activeTemplateId
+          : undefined) ||
+        list[0]?.id;
+      if (initialTemplateId) {
+        const initialTemplate = list.find((item) => item.id === initialTemplateId);
+        if (initialTemplate) {
+          setSelectedTemplateId(initialTemplateId);
+          setEditor(editorFromTemplate(initialTemplate));
+          setSelectedPreviewLayerId(null);
+          lastSavedSignatureRef.current = buildTemplateSignature(initialTemplate);
+          setAutoSaveStatus("saved");
+          setAutoSaveMessage("최근 사용 템플릿을 불러왔습니다.");
+          rememberLastUsedTemplateId(initialTemplateId);
+        }
+      }
+      initialTemplateHydratedRef.current = true;
+      return;
+    }
     if (selectedTemplateId !== "__new__") {
       const selected = list.find((item) => item.id === selectedTemplateId);
       if (!selected) {
@@ -979,6 +1024,7 @@ export function TemplatesClient(): React.JSX.Element {
         setAutoSaveMessage(undefined);
       }
     }
+    initialTemplateHydratedRef.current = true;
   }
 
   useEffect(() => {
@@ -1674,6 +1720,7 @@ export function TemplatesClient(): React.JSX.Element {
       const active = data.activeTemplateId;
       if (active) {
         setSelectedTemplateId(active);
+        rememberLastUsedTemplateId(active);
         const item = list.find((template) => template.id === active);
         if (item) {
           lastSavedSignatureRef.current = buildTemplateSignature(item);
@@ -1723,6 +1770,7 @@ export function TemplatesClient(): React.JSX.Element {
       setActiveTemplateId(data.activeTemplateId);
       const updated = list.find((item) => item.id === selectedTemplateId);
       if (updated) {
+        rememberLastUsedTemplateId(selectedTemplateId);
         lastSavedSignatureRef.current = buildTemplateSignature(updated);
         setEditor(editorFromTemplate(updated));
       }
@@ -1783,6 +1831,7 @@ export function TemplatesClient(): React.JSX.Element {
       setActiveTemplateId(data.activeTemplateId);
       if (selectedTemplateId === id) {
         setSelectedTemplateId("__new__");
+        rememberLastUsedTemplateId(undefined);
         setEditor(createInitialEditor());
       }
       setSuccess("템플릿을 삭제했습니다.");
@@ -1832,6 +1881,31 @@ export function TemplatesClient(): React.JSX.Element {
     }
   }
 
+  function loadCurrentTemplateJson(): void {
+    const jsonText = JSON.stringify(currentPayload, null, 2);
+    setTemplateImportJson(jsonText);
+    setTemplateImportError(undefined);
+    setTemplateImportMessage("현재 템플릿 JSON을 불러왔습니다.");
+  }
+
+  async function copyCurrentTemplateJson(): Promise<void> {
+    const jsonText = JSON.stringify(currentPayload, null, 2);
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard) {
+        throw new Error("클립보드 API를 사용할 수 없습니다.");
+      }
+      await navigator.clipboard.writeText(jsonText);
+      setTemplateImportError(undefined);
+      setTemplateImportMessage("현재 템플릿 JSON을 클립보드에 복사했습니다.");
+    } catch (copyError) {
+      setTemplateImportError(
+        copyError instanceof Error
+          ? `JSON 복사 실패: ${copyError.message}`
+          : "JSON 복사에 실패했습니다."
+      );
+    }
+  }
+
   function onTemplateImportFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -1853,6 +1927,7 @@ export function TemplatesClient(): React.JSX.Element {
 
   function onSelectTemplate(value: string): void {
     setSelectedTemplateId(value);
+    rememberLastUsedTemplateId(value === "__new__" ? undefined : value);
     setError(undefined);
     setSuccess(undefined);
     if (value === "__new__") {
@@ -2040,6 +2115,55 @@ export function TemplatesClient(): React.JSX.Element {
                     {autoSaveMessage || "새 템플릿은 수동 저장이 필요합니다."}
                   </p>
                 )}
+                <div className="rounded-md border p-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold">템플릿 기본값 (영상 생성 단건과 동일)</p>
+                    <p className="text-xs text-muted-foreground">
+                      자동화/템플릿 적용 시 사용할 기본 장면 분할 수와 영상 길이입니다.
+                    </p>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label>영상 길이(초)</Label>
+                      <Input
+                        type="number"
+                        min={10}
+                        max={180}
+                        step={1}
+                        value={editor.videoLengthSec}
+                        onChange={(event) =>
+                          setEditor((prev) => ({
+                            ...prev,
+                            videoLengthSec: String(event.target.value ?? "")
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>장면 수(이미지 분할)</Label>
+                      <Select
+                        value={editor.sceneCount}
+                        onValueChange={(value) =>
+                          setEditor((prev) => ({
+                            ...prev,
+                            sceneCount: value
+                          }))
+                        }
+                      >
+                        <SelectTrigger className="bg-card dark:bg-zinc-900">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {templateSceneCountOptions.map((value) => (
+                            <SelectItem key={value} value={value}>
+                              {value}장면
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : null}
           </div>
@@ -2368,56 +2492,6 @@ export function TemplatesClient(): React.JSX.Element {
                 </div>
               </div>
             ) : null}
-          </div>
-
-          <div className="rounded-md border p-3">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold">자동화 생성 기본값</p>
-              <p className="text-xs text-muted-foreground">
-                이 템플릿으로 자동화 실행할 때 기본 분할 장면 수와 영상 길이를 사용합니다.
-              </p>
-            </div>
-            <div className="mt-3 grid gap-2 md:grid-cols-2">
-              <div className="space-y-1">
-                <Label>영상 길이(초)</Label>
-                <Input
-                  type="number"
-                  min={10}
-                  max={180}
-                  step={1}
-                  value={editor.videoLengthSec}
-                  onChange={(event) =>
-                    setEditor((prev) => ({
-                      ...prev,
-                      videoLengthSec: String(event.target.value ?? "")
-                    }))
-                  }
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>장면 수(이미지 분할)</Label>
-                <Select
-                  value={editor.sceneCount}
-                  onValueChange={(value) =>
-                    setEditor((prev) => ({
-                      ...prev,
-                      sceneCount: value
-                    }))
-                  }
-                >
-                  <SelectTrigger className="bg-card dark:bg-zinc-900">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {templateSceneCountOptions.map((value) => (
-                      <SelectItem key={value} value={value}>
-                        {value}장면
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
           </div>
 
           <div className="grid gap-2 md:grid-cols-3">
@@ -3239,6 +3313,22 @@ export function TemplatesClient(): React.JSX.Element {
                 onChange={onTemplateImportFileChange}
               />
               <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={loadCurrentTemplateJson}
+                  disabled={busy}
+                >
+                  현재 템플릿 JSON 불러오기
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void copyCurrentTemplateJson()}
+                  disabled={busy}
+                >
+                  JSON 복사
+                </Button>
                 <Button
                   type="button"
                   variant="outline"

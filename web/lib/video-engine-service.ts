@@ -2,6 +2,7 @@ import { BuildVideoPayload, RenderOptions } from "@/lib/types";
 import { promises as fs } from "fs";
 import path from "path";
 import { mirrorRenderedVideoToStorage, toSignedStorageReadUrl } from "@/lib/object-storage";
+import { appBaseUrl } from "@/lib/utils";
 import {
   resolveVideoEngineBaseUrls,
   resolveVideoEngineTimeoutMs
@@ -239,6 +240,8 @@ function normalizeRenderOptionsForEngine(
       focusDriftPercent: clampNumber(asFiniteNumber(overlayRaw.focusDriftPercent, 6), 0, 20),
       focusZoomPercent: clampNumber(asFiniteNumber(overlayRaw.focusZoomPercent, 9), 3, 20),
       outputFps: (Math.round(asFiniteNumber(overlayRaw.outputFps, 30)) as RenderOptions["overlay"]["outputFps"]),
+      outputWidth: Math.round(clampNumber(asFiniteNumber(overlayRaw.outputWidth, 1080), 320, 4000)),
+      outputHeight: Math.round(clampNumber(asFiniteNumber(overlayRaw.outputHeight, 1920), 320, 4000)),
       videoLayout: asText(overlayRaw.videoLayout, "fill_9_16") as RenderOptions["overlay"]["videoLayout"],
       usePreviewAsFinal: Boolean(overlayRaw.usePreviewAsFinal),
       panelTopPercent: clampNumber(asFiniteNumber(overlayRaw.panelTopPercent, 34), 0, 85),
@@ -315,34 +318,82 @@ async function buildVideoAtEndpoint(args: {
   }
 }
 
-async function toEngineReadableAsset(source: string): Promise<string> {
-  const pathname = parsePathname(source);
-  if (!pathname || !pathname.startsWith("/generated/")) {
-    const expiresInSec = Number.parseInt(
-      String(process.env.VIDEO_ENGINE_ASSET_SIGNED_URL_EXPIRES_SEC || "3600"),
-      10
-    );
-    const safeExpires = Number.isFinite(expiresInSec) ? expiresInSec : 3600;
-    return toSignedStorageReadUrl(source, safeExpires);
-  }
-
-  const localPath = path.join(
-    process.cwd(),
-    "public",
-    ...pathname.replace(/^\/+/, "").split("/").filter(Boolean)
+function resolveSignedAssetExpirySec(): number {
+  const expiresInSec = Number.parseInt(
+    String(process.env.VIDEO_ENGINE_ASSET_SIGNED_URL_EXPIRES_SEC || "3600"),
+    10
   );
+  return Number.isFinite(expiresInSec) ? expiresInSec : 3600;
+}
 
+function isLikelyLocalEndpoint(baseUrl: string): boolean {
   try {
-    await fs.access(localPath);
-    return localPath;
+    const url = new URL(baseUrl);
+    const host = String(url.hostname || "").trim().toLowerCase();
+    if (!host) return false;
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+      return true;
+    }
+    if (host === "host.docker.internal") {
+      return true;
+    }
+    if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
+      return true;
+    }
+    if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) {
+      return true;
+    }
+    const match172 = host.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+    if (match172) {
+      const block = Number(match172[1]);
+      return Number.isFinite(block) && block >= 16 && block <= 31;
+    }
+    return false;
   } catch {
-    const expiresInSec = Number.parseInt(
-      String(process.env.VIDEO_ENGINE_ASSET_SIGNED_URL_EXPIRES_SEC || "3600"),
-      10
-    );
-    const safeExpires = Number.isFinite(expiresInSec) ? expiresInSec : 3600;
+    return false;
+  }
+}
+
+function toAbsoluteGeneratedUrl(pathname: string): string {
+  const base = appBaseUrl().replace(/\/+$/, "");
+  return `${base}${pathname}`;
+}
+
+async function toEngineReadableAsset(
+  source: string,
+  options?: { preferLocalPath?: boolean }
+): Promise<string> {
+  const pathname = parsePathname(source);
+  const preferLocalPath = Boolean(options?.preferLocalPath);
+  const safeExpires = resolveSignedAssetExpirySec();
+
+  if (!pathname || !pathname.startsWith("/generated/")) {
     return toSignedStorageReadUrl(source, safeExpires);
   }
+
+  if (preferLocalPath) {
+    const localPath = path.join(
+      process.cwd(),
+      "public",
+      ...pathname.replace(/^\/+/, "").split("/").filter(Boolean)
+    );
+    try {
+      await fs.access(localPath);
+      return localPath;
+    } catch {
+      // Fall through to signed/public URL resolution below.
+    }
+  }
+
+  const signedOrSource = await toSignedStorageReadUrl(source, safeExpires);
+  if (signedOrSource !== source) {
+    return signedOrSource;
+  }
+
+  if (source.startsWith("/")) {
+    return toAbsoluteGeneratedUrl(pathname);
+  }
+  return source;
 }
 
 /** Send render instructions to the external FastAPI video engine. */
@@ -353,11 +404,6 @@ export async function buildVideoWithEngine(
   const baseUrls = resolveVideoEngineBaseUrls();
   const timeoutMs = resolveVideoEngineTimeoutMs();
   const sharedSecret = String(process.env.VIDEO_ENGINE_SHARED_SECRET || "").trim() || undefined;
-  const imageUrls = await Promise.all(
-    payload.imageUrls.map((source) => toEngineReadableAsset(source))
-  );
-  const normalizedImageUrls = normalizeImageUrlsForEngine(imageUrls);
-  const ttsPath = await toEngineReadableAsset(payload.ttsPath);
   const normalizedRenderOptions = normalizeRenderOptionsForEngine(payload.renderOptions);
   const sanitizedRenderOptions = materializeRenderOptionsForVideo({
     renderOptions: normalizedRenderOptions,
@@ -369,22 +415,27 @@ export async function buildVideoWithEngine(
     sourceTopic: asText(payload.sourceTopic)
   });
 
-  const requestBody: Record<string, unknown> = {
-    ...payload,
-    jobId: asText(payload.jobId, "job"),
-    subtitlesText: asText(payload.subtitlesText),
-    titleText: asText(payload.titleText),
-    renderOptions: sanitizedRenderOptions,
-    imageUrls: normalizedImageUrls,
-    ttsPath
-  };
-
   let lastResponse: Response | undefined;
   let lastNetworkError: string | undefined;
   const endpointErrors: string[] = [];
 
   for (const baseUrl of baseUrls) {
     try {
+      const preferLocalPath = isLikelyLocalEndpoint(baseUrl);
+      const imageUrls = await Promise.all(
+        payload.imageUrls.map((source) => toEngineReadableAsset(source, { preferLocalPath }))
+      );
+      const normalizedImageUrls = normalizeImageUrlsForEngine(imageUrls);
+      const ttsPath = await toEngineReadableAsset(payload.ttsPath, { preferLocalPath });
+      const requestBody: Record<string, unknown> = {
+        ...payload,
+        jobId: asText(payload.jobId, "job"),
+        subtitlesText: asText(payload.subtitlesText),
+        titleText: asText(payload.titleText),
+        renderOptions: sanitizedRenderOptions,
+        imageUrls: normalizedImageUrls,
+        ttsPath
+      };
       const response = await buildVideoAtEndpoint({
         baseUrl,
         body: requestBody,

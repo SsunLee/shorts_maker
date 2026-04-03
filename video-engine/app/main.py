@@ -112,8 +112,10 @@ def build_video(
                 max_chars_per_caption=max_chars_per_caption,
                 subtitle_delay_ms=subtitle_delay_ms,
             )
-        srt_path = assets_dir / "subtitles.srt"
-        srt_path.write_text(srt_text, encoding="utf-8")
+        srt_path: Path | None = None
+        if srt_text.strip():
+            srt_path = assets_dir / "subtitles.srt"
+            srt_path.write_text(srt_text, encoding="utf-8")
 
         output_path, ffmpeg_steps = render_short_video(
             image_paths=local_images,
@@ -140,7 +142,7 @@ def build_video(
         return BuildVideoResponse(
             outputPath=str(output_path),
             outputUrl=output_url,
-            srtPath=str(srt_path),
+            srtPath=str(srt_path) if srt_path is not None else "",
             ffmpegSteps=ffmpeg_steps,
         )
     except Exception as exc:  # pylint: disable=broad-except

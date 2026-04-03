@@ -125,11 +125,19 @@ function readSettingsFromEnv(): AppSettings {
     gsheetClientEmail: process.env.GSHEETS_CLIENT_EMAIL || undefined,
     gsheetPrivateKey: process.env.GSHEETS_PRIVATE_KEY || undefined,
     gsheetSheetName: process.env.GSHEETS_SHEET_NAME || undefined,
+    gsheetInstagramSheetName:
+      process.env.GSHEETS_INSTAGRAM_SHEET_NAME || undefined,
     youtubeClientId: process.env.YOUTUBE_CLIENT_ID || undefined,
     youtubeClientSecret: process.env.YOUTUBE_CLIENT_SECRET || undefined,
     youtubeRedirectUri: process.env.YOUTUBE_REDIRECT_URI || undefined,
     youtubeRefreshToken: process.env.YOUTUBE_REFRESH_TOKEN || undefined,
-    youtubeChannelName: process.env.YOUTUBE_CHANNEL_NAME || undefined
+    youtubeChannelName: process.env.YOUTUBE_CHANNEL_NAME || undefined,
+    metaAccessToken: process.env.META_ACCESS_TOKEN || undefined,
+    metaInstagramAccountId: process.env.META_INSTAGRAM_ACCOUNT_ID || undefined,
+    metaFacebookPageId: process.env.META_FACEBOOK_PAGE_ID || undefined,
+    metaAppId: process.env.META_APP_ID || undefined,
+    metaAppSecret: process.env.META_APP_SECRET || undefined,
+    metaGraphVersion: process.env.META_GRAPH_VERSION || undefined
   };
 }
 

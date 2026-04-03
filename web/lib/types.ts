@@ -153,13 +153,15 @@ export interface OverlayStyleOptions {
   titleFontBold?: boolean;
   titleFontItalic?: boolean;
   titleFontFile?: string;
-  sceneMotionPreset?: "gentle_zoom" | "up_down" | "left_right" | "random" | "focus_smooth";
+  sceneMotionPreset?: "gentle_zoom" | "up_down" | "left_right" | "random" | "focus_smooth" | "none";
   motionSpeedPercent?: number;
   focusXPercent?: number;
   focusYPercent?: number;
   focusDriftPercent?: number;
   focusZoomPercent?: number;
   outputFps?: 30 | 60;
+  outputWidth?: number;
+  outputHeight?: number;
   videoLayout?: VideoCanvasLayout;
   usePreviewAsFinal?: boolean;
   panelTopPercent?: number;
