@@ -35,6 +35,15 @@ function isPublicHttpUrl(url: string): boolean {
   return raw.startsWith("http://") || raw.startsWith("https://");
 }
 
+function redactUrl(raw: string): string {
+  try {
+    const url = new URL(String(raw || "").trim());
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return String(raw || "").split("?")[0].split("#")[0];
+  }
+}
+
 function isS3BackedPublicUrl(raw: string): boolean {
   const source = String(raw || "").trim();
   if (!source) {
@@ -154,7 +163,7 @@ async function assertPublicMediaReachable(mediaUrl: string): Promise<void> {
   }
 
   const status = getResponse?.status || headResponse?.status || 0;
-  throw new Error(`업로드 미디어 접근 실패(HTTP ${status}): ${source}`);
+  throw new Error(`업로드 미디어 접근 실패(HTTP ${status}): ${redactUrl(source)}`);
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -331,7 +340,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         });
       } catch (waitError) {
         throw new Error(
-          `[single:${mediaKind}] 컨테이너 처리 실패 · mediaUrl=${onlyUrl} · ${
+          `[single:${mediaKind}] 컨테이너 처리 실패 · mediaUrl=${redactUrl(onlyUrl)} · ${
             waitError instanceof Error ? waitError.message : String(waitError)
           }`
         );
@@ -374,7 +383,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           });
         } catch (waitError) {
           throw new Error(
-            `[carousel-child:${index + 1}] 처리 실패 · childId=${childId} · mediaUrl=${mediaUrl} · ${
+            `[carousel-child:${index + 1}] 처리 실패 · childId=${childId} · mediaUrl=${redactUrl(mediaUrl)} · ${
               waitError instanceof Error ? waitError.message : String(waitError)
             }`
           );

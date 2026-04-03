@@ -3,7 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 import { generateTtsAudio } from "@/lib/openai-service";
-import { storeGeneratedAsset, storeGeneratedAssetFromRemote } from "@/lib/object-storage";
+import {
+  storeGeneratedAsset,
+  storeGeneratedAssetFromRemote,
+  toSignedStorageReadUrl
+} from "@/lib/object-storage";
 import { buildVideoWithEngine } from "@/lib/video-engine-service";
 import type { BuildVideoPayload, RenderOptions } from "@/lib/types";
 import { GEMINI_VOICE_IDS, OPENAI_VOICE_IDS } from "@/lib/voice-options";
@@ -311,9 +315,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (!result.outputUrl) {
       throw new Error("MP4 출력 URL을 받지 못했습니다.");
     }
+    const signedOutputUrl = await toSignedStorageReadUrl(result.outputUrl, 60 * 60 * 6);
     return NextResponse.json({
       jobId,
-      outputUrl: result.outputUrl,
+      outputUrl: signedOutputUrl,
       ttsProviderUsed: resolvedAudio.providerUsed
     });
   } catch (error) {
