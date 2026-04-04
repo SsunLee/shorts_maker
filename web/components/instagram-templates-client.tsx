@@ -654,6 +654,13 @@ type InstagramBindingState = {
   sheetName: string;
   bindingFields: string[];
   sampleData: Record<string, string>;
+  selectedRowKey: string;
+};
+
+type BindingRowOption = {
+  key: string;
+  label: string;
+  values: Record<string, string>;
 };
 
 function mergeBindingFieldsWithDefaults(fields: string[]): string[] {
@@ -672,6 +679,7 @@ function normalizeBindingState(raw: unknown): InstagramBindingState | undefined 
   if (!raw || typeof raw !== "object") return undefined;
   const item = raw as Partial<InstagramBindingState>;
   const sheetName = String(item.sheetName || "");
+  const selectedRowKey = typeof item.selectedRowKey === "string" ? item.selectedRowKey : "";
   const bindingFields = Array.isArray(item.bindingFields)
     ? item.bindingFields.map((field) => String(field || "").trim()).filter(Boolean)
     : [];
@@ -688,8 +696,55 @@ function normalizeBindingState(raw: unknown): InstagramBindingState | undefined 
       bindingFields.length > 0
         ? mergeBindingFieldsWithDefaults(bindingFields)
         : mergeBindingFieldsWithDefaults(DEFAULT_BINDING_FIELDS),
-    sampleData: Object.keys(sampleData).length > 0 ? sampleData : { ...DEFAULT_SAMPLE_DATA }
+    sampleData: Object.keys(sampleData).length > 0 ? sampleData : { ...DEFAULT_SAMPLE_DATA },
+    selectedRowKey
   };
+}
+
+function normalizeBindingRowValues(row: Record<string, string>): Record<string, string> {
+  const mapped: Record<string, string> = {};
+  Object.entries(row || {}).forEach(([key, value]) => {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return;
+    mapped[normalizedKey] = String(value ?? "");
+  });
+  return mapped;
+}
+
+function readBindingRowValue(values: Record<string, string>, field: string): string {
+  const exact = values[field];
+  if (typeof exact !== "undefined") {
+    return String(exact ?? "").trim();
+  }
+  const matchedKey = Object.keys(values).find((key) => key.toLowerCase() === field.toLowerCase());
+  return matchedKey ? String(values[matchedKey] ?? "").trim() : "";
+}
+
+function createBindingRowOptions(rows: Array<Record<string, string>>): BindingRowOption[] {
+  const usedKeys = new Set<string>();
+  return rows.map((row, index) => {
+    const values = normalizeBindingRowValues(row);
+    const id = readBindingRowValue(values, "id");
+    const subject = readBindingRowValue(values, "subject");
+    const type = readBindingRowValue(values, "type");
+    const status = readBindingRowValue(values, "status");
+    const labelParts = [id, subject, type].filter(Boolean);
+    const labelBase = labelParts.length > 0 ? labelParts.join(" | ") : "row";
+    const label = status ? `${index + 1}. ${labelBase} (${status})` : `${index + 1}. ${labelBase}`;
+    const baseKey = id ? `id:${id}` : `row:${index}`;
+    let key = baseKey;
+    let suffix = 1;
+    while (usedKeys.has(key)) {
+      key = `${baseKey}#${suffix}`;
+      suffix += 1;
+    }
+    usedKeys.add(key);
+    return {
+      key,
+      label,
+      values
+    };
+  });
 }
 
 function resolveCanvasPresetId(width: number, height: number): string {
@@ -1457,6 +1512,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [sheetName, setSheetName] = useState("");
   const [bindingSearch, setBindingSearch] = useState("");
   const [bindingFields, setBindingFields] = useState<string[]>(DEFAULT_BINDING_FIELDS);
+  const [bindingRowOptions, setBindingRowOptions] = useState<BindingRowOption[]>([]);
+  const [bindingSelectedRowKey, setBindingSelectedRowKey] = useState("");
   const [bindingLoading, setBindingLoading] = useState(false);
   const [sampleData, setSampleData] = useState<Record<string, string>>({ ...DEFAULT_SAMPLE_DATA });
   const [defaultTtsVoiceProvider, setDefaultTtsVoiceProvider] = useState<"openai" | "gemini" | "both">("both");
@@ -1588,6 +1645,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setSheetName(parsed.sheetName);
       setBindingFields(parsed.bindingFields);
       setSampleData(parsed.sampleData);
+      setBindingSelectedRowKey(parsed.selectedRowKey || "");
     } catch {
       // noop
     }
@@ -1599,13 +1657,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       const payload: InstagramBindingState = {
         sheetName,
         bindingFields: uniqueValues(bindingFields),
-        sampleData
+        sampleData,
+        selectedRowKey: bindingSelectedRowKey
       };
       window.localStorage.setItem(INSTAGRAM_BINDING_STATE_KEY, JSON.stringify(payload));
     } catch {
       // noop
     }
-  }, [sheetName, bindingFields, sampleData]);
+  }, [sheetName, bindingFields, sampleData, bindingSelectedRowKey]);
 
   useEffect(() => {
     const loadInstagramSheetDefault = async (): Promise<void> => {
@@ -3314,23 +3373,34 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         throw new Error("시트 헤더를 찾지 못했습니다. 첫 번째 행(헤더)을 확인해 주세요.");
       }
       setBindingFields(mergeBindingFieldsWithDefaults(headers));
-      if (rows.length > 0) {
-        const first = rows[0];
-        const mapped: Record<string, string> = {};
-        Object.entries(first).forEach(([key, value]) => {
-          mapped[String(key)] = String(value ?? "");
-        });
-        setSampleData((prev) => ({ ...prev, ...mapped }));
+      const nextRowOptions = createBindingRowOptions(rows);
+      setBindingRowOptions(nextRowOptions);
+      if (nextRowOptions.length > 0) {
+        const preferredKey = nextRowOptions.find((item) => item.key === bindingSelectedRowKey)?.key || nextRowOptions[0].key;
+        const selectedRow = nextRowOptions.find((item) => item.key === preferredKey) || nextRowOptions[0];
+        setBindingSelectedRowKey(preferredKey);
+        setSampleData((prev) => ({ ...prev, ...selectedRow.values }));
+      } else {
+        setBindingSelectedRowKey("");
       }
       if (data.sheetName) {
         setSheetName(data.sheetName);
       }
-      setSuccess(`시트 컬럼 ${headers.length}개를 불러왔습니다.${data.sheetName ? ` (${data.sheetName})` : ""}`);
+      setSuccess(
+        `시트 컬럼 ${headers.length}개, row ${rows.length}개를 불러왔습니다.${data.sheetName ? ` (${data.sheetName})` : ""}`
+      );
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "시트 컬럼을 불러오지 못했습니다.");
     } finally {
       setBindingLoading(false);
     }
+  }
+
+  function onSelectBindingRow(rowKey: string): void {
+    setBindingSelectedRowKey(rowKey);
+    const selectedRow = bindingRowOptions.find((item) => item.key === rowKey);
+    if (!selectedRow) return;
+    setSampleData((prev) => ({ ...prev, ...selectedRow.values }));
   }
 
   function onTemplateJsonFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
@@ -6018,6 +6088,30 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     className="pl-8"
                     placeholder="컬럼 검색"
                   />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">미리보기 row 선택</Label>
+                  {bindingRowOptions.length > 0 ? (
+                    <>
+                      <Select value={bindingSelectedRowKey || bindingRowOptions[0].key} onValueChange={onSelectBindingRow}>
+                        <SelectTrigger className="bg-card dark:bg-zinc-900">
+                          <SelectValue placeholder="row 선택" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {bindingRowOptions.map((rowOption) => (
+                            <SelectItem key={rowOption.key} value={rowOption.key}>
+                              {rowOption.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        총 {bindingRowOptions.length}개 row 중 선택한 row 값을 샘플 미리보기에 반영합니다.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">시트 row를 불러오면 여기서 예시 row를 선택할 수 있습니다.</p>
+                  )}
                 </div>
                 <div className="flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-md border p-2">
                   {filteredBindingFields.map((field) => (
