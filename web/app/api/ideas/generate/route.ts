@@ -94,6 +94,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const existingKeywords = sheetTable.rows
       .map((row) => findRowValue(row, ["keyword"]))
       .filter(Boolean);
+    const existingSubjects = sheetTable.rows
+      .map((row) => findRowValue(row, ["subject"]))
+      .filter(Boolean);
+    const existingNarrations = sheetTable.rows
+      .map((row) => findRowValue(row, ["narration"]))
+      .filter(Boolean);
     const existingIds = sheetTable.rows
       .map((row) => findRowValue(row, ["id"]))
       .filter(Boolean);
@@ -101,6 +107,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       topic: payload.topic,
       count: payload.count,
       existingKeywords,
+      existingSubjects,
+      existingNarrations,
       language: (payload.language || "ko") as IdeaLanguage,
       userId
     });

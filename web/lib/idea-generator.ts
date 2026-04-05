@@ -35,6 +35,7 @@ type IdeaGenerationDebug = {
   specificityRejectedCount: number;
   narrationRejectedCount: number;
   placeholderRejectedCount: number;
+  duplicateRejectedCount: number;
 };
 
 export class IdeaGenerationError extends Error {
@@ -64,6 +65,14 @@ function normalizeField(value: unknown): string {
 
 function normalizeKeywordKey(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeSubjectKey(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/#[\p{L}\p{N}_-]+/gu, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .trim();
 }
 
 function escapeRegExp(value: string): string {
@@ -660,6 +669,17 @@ function normalizeNarrationForIdeas(narration: string, language: IdeaLanguage): 
   return `${cleaned}\n\n${subscribeCtaByLanguage(language)}`;
 }
 
+function normalizeNarrationCoreKey(narration: string, language: IdeaLanguage): string {
+  const cta = subscribeCtaByLanguage(language);
+  const cleaned = removeTrailingHashtags(String(narration || ""));
+  const withoutCta = cleaned.endsWith(cta) ? cleaned.slice(0, -cta.length).trim() : cleaned;
+  return withoutCta
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .trim()
+    .slice(0, 220);
+}
+
 function requiresHardSpecificity(topic: string): boolean {
   const normalized = String(topic || "").toLowerCase();
   return (
@@ -842,6 +862,8 @@ function buildPrompt(
     '- publish must be "대기중"\n' +
     duplicateRule +
     "- Keywords must also be unique within this response\n" +
+    "- Subject and Narration must also be meaningfully distinct across ideas in the same response\n" +
+    "- Do not repeat the same main person/team/organization/event across multiple ideas unless user asked single-focus coverage\n" +
     "- Keyword: concise core keyword for the idea\n" +
     "- Subject: one strong hook sentence\n" +
     "- Description: YouTube-ready summary + hashtags (#shorts + topic-related tags)\n" +
@@ -913,6 +935,8 @@ function enforceRules(args: {
   rows: IdeaDraftRow[];
   count: number;
   blockedKeywords: Set<string>;
+  blockedSubjectKeys: Set<string>;
+  blockedNarrationKeys: Set<string>;
   language: IdeaLanguage;
   topicAnchors: string[];
   languageExemptAnchors: string[];
@@ -923,14 +947,18 @@ function enforceRules(args: {
   specificityRejectedCount: number;
   narrationRejectedCount: number;
   placeholderRejectedCount: number;
+  duplicateRejectedCount: number;
 } {
   const output: IdeaDraftRow[] = [];
   const relaxedCandidates: IdeaDraftRow[] = [];
   const seenInBatch = new Set<string>();
+  const seenSubjectKeysInBatch = new Set<string>();
+  const seenNarrationKeysInBatch = new Set<string>();
   let languageRejectedCount = 0;
   let specificityRejectedCount = 0;
   let narrationRejectedCount = 0;
   let placeholderRejectedCount = 0;
+  let duplicateRejectedCount = 0;
   args.rows.forEach((row) => {
     if (output.length >= args.count) {
       return;
@@ -959,6 +987,18 @@ function enforceRules(args: {
       placeholderRejectedCount += 1;
       return;
     }
+    const subjectKey = normalizeSubjectKey(normalized.Subject);
+    const narrationKey = normalizeNarrationCoreKey(normalized.Narration, args.language);
+    const subjectDuplicated = subjectKey
+      ? args.blockedSubjectKeys.has(subjectKey) || seenSubjectKeysInBatch.has(subjectKey)
+      : false;
+    const narrationDuplicated = narrationKey
+      ? args.blockedNarrationKeys.has(narrationKey) || seenNarrationKeysInBatch.has(narrationKey)
+      : false;
+    if (subjectDuplicated || narrationDuplicated) {
+      duplicateRejectedCount += 1;
+      return;
+    }
     if (
       !meetsNarrationQuality({
         narration: normalized.Narration,
@@ -975,6 +1015,12 @@ function enforceRules(args: {
     }
     if (rowIncludesTopicAnchor(normalized, args.topicAnchors)) {
       seenInBatch.add(keywordKey);
+      if (subjectKey) {
+        seenSubjectKeysInBatch.add(subjectKey);
+      }
+      if (narrationKey) {
+        seenNarrationKeysInBatch.add(narrationKey);
+      }
       output.push(normalized);
       return;
     }
@@ -982,6 +1028,12 @@ function enforceRules(args: {
       specificityRejectedCount += 1;
     }
     seenInBatch.add(keywordKey);
+    if (subjectKey) {
+      seenSubjectKeysInBatch.add(subjectKey);
+    }
+    if (narrationKey) {
+      seenNarrationKeysInBatch.add(narrationKey);
+    }
     relaxedCandidates.push(normalized);
   });
   if (output.length < args.count && relaxedCandidates.length > 0) {
@@ -992,7 +1044,8 @@ function enforceRules(args: {
     languageRejectedCount,
     specificityRejectedCount,
     narrationRejectedCount,
-    placeholderRejectedCount
+    placeholderRejectedCount,
+    duplicateRejectedCount
   };
 }
 
@@ -1102,6 +1155,8 @@ export async function generateIdeas(args: {
   topic: string;
   count: number;
   existingKeywords?: string[];
+  existingSubjects?: string[];
+  existingNarrations?: string[];
   language?: IdeaLanguage;
   userId?: string;
 }): Promise<IdeaDraftRow[]> {
@@ -1127,7 +1182,8 @@ export async function generateIdeas(args: {
     languageRejectedCount: 0,
     specificityRejectedCount: 0,
     narrationRejectedCount: 0,
-    placeholderRejectedCount: 0
+    placeholderRejectedCount: 0,
+    duplicateRejectedCount: 0
   };
   if (!topic) {
     throw new IdeaGenerationError("주제를 입력해 주세요.", "TOPIC_REQUIRED", baseDebug);
@@ -1138,6 +1194,16 @@ export async function generateIdeas(args: {
       .map((value) => normalizeKeywordKey(value))
       .filter(Boolean)
   );
+  const blockedSubjectKeys = new Set(
+    (args.existingSubjects || [])
+      .map((value) => normalizeSubjectKey(value))
+      .filter(Boolean)
+  );
+  const blockedNarrationKeys = new Set(
+    (args.existingNarrations || [])
+      .map((value) => normalizeNarrationCoreKey(String(value || ""), language))
+      .filter(Boolean)
+  );
   const collected: IdeaDraftRow[] = [];
   const maxAttempts = Math.max(3, Math.min(8, parsePositiveInt(process.env.IDEA_GENERATION_MAX_ATTEMPTS, 6)));
   const hardSpecificityTopic = requiresHardSpecificity(topic);
@@ -1146,6 +1212,7 @@ export async function generateIdeas(args: {
   let specificityRejectedCount = 0;
   let narrationRejectedCount = 0;
   let placeholderRejectedCount = 0;
+  let duplicateRejectedCount = 0;
   const topicAnchors = extractTopicAnchors(topic);
   const appliedTopicAnchors = normalizeTopicAnchorsForLanguage(topicAnchors, language);
   const latestNewsItems = await fetchLatestNewsContext(topic, language);
@@ -1165,7 +1232,8 @@ export async function generateIdeas(args: {
     languageRejectedCount,
     specificityRejectedCount,
     narrationRejectedCount,
-    placeholderRejectedCount
+    placeholderRejectedCount,
+    duplicateRejectedCount
   });
 
   for (let attempt = 1; attempt <= maxAttempts && collected.length < count; attempt += 1) {
@@ -1189,6 +1257,8 @@ export async function generateIdeas(args: {
       rows,
       count: remaining,
       blockedKeywords,
+      blockedSubjectKeys,
+      blockedNarrationKeys,
       language,
       topicAnchors: appliedTopicAnchors,
       languageExemptAnchors: topicAnchors,
@@ -1198,9 +1268,18 @@ export async function generateIdeas(args: {
     specificityRejectedCount += accepted.specificityRejectedCount;
     narrationRejectedCount += accepted.narrationRejectedCount;
     placeholderRejectedCount += accepted.placeholderRejectedCount;
+    duplicateRejectedCount += accepted.duplicateRejectedCount;
     accepted.rows.forEach((item) => {
       const key = normalizeKeywordKey(item.Keyword);
       blockedKeywords.add(key);
+      const subjectKey = normalizeSubjectKey(item.Subject);
+      if (subjectKey) {
+        blockedSubjectKeys.add(subjectKey);
+      }
+      const narrationKey = normalizeNarrationCoreKey(item.Narration, language);
+      if (narrationKey) {
+        blockedNarrationKeys.add(narrationKey);
+      }
       collected.push(item);
     });
   }
@@ -1266,6 +1345,13 @@ export async function generateIdeas(args: {
       throw new IdeaGenerationError(
         `플레이스홀더(예: 〇〇/XX)를 제거하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
         "PLACEHOLDER_REJECTED",
+        snapshotDebug()
+      );
+    }
+    if (duplicateRejectedCount > 0) {
+      throw new IdeaGenerationError(
+        `중복되는 주제/서사(Subject/Narration)를 제외하다 보니 ${count}개를 채우지 못했습니다. 현재 ${collected.length}개 생성되었습니다.`,
+        "INSUFFICIENT_UNIQUE_RESULTS",
         snapshotDebug()
       );
     }

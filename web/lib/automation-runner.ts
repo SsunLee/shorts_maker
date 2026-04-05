@@ -174,10 +174,18 @@ async function generateIdeasForAutomation(args: {
   const existingKeywords = sheetTable.rows
     .map((row) => findRowValue(row, ["keyword"]))
     .filter(Boolean);
+  const existingSubjects = sheetTable.rows
+    .map((row) => findRowValue(row, ["subject"]))
+    .filter(Boolean);
+  const existingNarrations = sheetTable.rows
+    .map((row) => findRowValue(row, ["narration"]))
+    .filter(Boolean);
   const items = await generateIdeas({
     topic: args.topic,
     count: args.count,
     existingKeywords,
+    existingSubjects,
+    existingNarrations,
     language: args.language,
     userId: args.userId
   });
