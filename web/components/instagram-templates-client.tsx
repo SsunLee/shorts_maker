@@ -22,12 +22,14 @@ import {
   Move,
   Paintbrush,
   Plus,
+  Redo2,
   RefreshCw,
   Save,
   Search,
   Star,
   Trash2,
   Type,
+  Undo2,
   WrapText
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -1532,6 +1534,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const [fontPickerQuery, setFontPickerQuery] = useState("");
   const [fontPickerAnchorRect, setFontPickerAnchorRect] = useState<PickerAnchorRect | null>(null);
+  const [viewportWidth, setViewportWidth] = useState<number>(typeof window !== "undefined" ? window.innerWidth : 1280);
   const [pagePreviewVisible, setPagePreviewVisible] = useState<Record<string, boolean>>({});
   const [showAdvancedPosition, setShowAdvancedPosition] = useState(false);
   const [importJson, setImportJson] = useState("");
@@ -1589,6 +1592,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         autoSaveTimerRef.current = null;
       }
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const syncViewportWidth = (): void => setViewportWidth(window.innerWidth);
+    syncViewportWidth();
+    window.addEventListener("resize", syncViewportWidth);
+    return () => window.removeEventListener("resize", syncViewportWidth);
   }, []);
 
   useEffect(() => {
@@ -3714,6 +3725,19 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   );
   const selectedPagePreviewVisible = selectedPage ? (pagePreviewVisible[selectedPage.id] ?? true) : true;
   const isDockedTextToolbar = selectedLayer?.type === "text";
+  const isMobileViewport = viewportWidth <= 768;
+  const minObjectToolbarWidth = isMobileViewport ? 260 : 320;
+  const maxObjectToolbarWidth = 1120;
+  const objectToolbarWidthFallback = isMobileViewport ? 320 : 760;
+  const objectToolbarStep = isMobileViewport ? 24 : 40;
+  const objectToolbarClampedWidth = clamp(
+    objectToolbarWidth,
+    minObjectToolbarWidth,
+    maxObjectToolbarWidth,
+    objectToolbarWidthFallback
+  );
+  const canUndo = undoStackRef.current.length > 0;
+  const canRedo = redoStackRef.current.length > 0;
   const resizeHandles: Array<{ key: ResizeHandle; className: string; cursor: string; label: string }> = [
     { key: "n", className: "-top-2 left-1/2 -translate-x-1/2", cursor: "cursor-n-resize", label: "상단 리사이즈" },
     { key: "s", className: "-bottom-2 left-1/2 -translate-x-1/2", cursor: "cursor-s-resize", label: "하단 리사이즈" },
@@ -4239,6 +4263,40 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       </div>
                     ) : null}
                   </div>
+                  <div className="relative group/tool-undo">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 w-9 border-white/25 bg-black/40 p-0 hover:bg-black/60"
+                      onClick={undoEditor}
+                      disabled={!canUndo}
+                      aria-label="Undo"
+                      title="Undo (Ctrl/Cmd+Z)"
+                    >
+                      <Undo2 className="h-4 w-4" />
+                    </Button>
+                    <span className="pointer-events-none invisible absolute left-1/2 top-full z-20 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow transition-opacity group-hover/tool-undo:visible group-hover/tool-undo:opacity-100 lg:left-full lg:top-1/2 lg:ml-2 lg:mt-0 lg:-translate-y-1/2 lg:translate-x-0">
+                      Undo
+                    </span>
+                  </div>
+                  <div className="relative group/tool-redo">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 w-9 border-white/25 bg-black/40 p-0 hover:bg-black/60"
+                      onClick={redoEditor}
+                      disabled={!canRedo}
+                      aria-label="Redo"
+                      title="Redo (Ctrl/Cmd+Shift+Z)"
+                    >
+                      <Redo2 className="h-4 w-4" />
+                    </Button>
+                    <span className="pointer-events-none invisible absolute left-1/2 top-full z-20 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow transition-opacity group-hover/tool-redo:visible group-hover/tool-redo:opacity-100 lg:left-full lg:top-1/2 lg:ml-2 lg:mt-0 lg:-translate-y-1/2 lg:translate-x-0">
+                      Redo
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -4247,19 +4305,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   ref={objectToolbarRef}
                   className={
                     isDockedTextToolbar
-                      ? "absolute top-0 z-30 max-h-[42vh] min-w-[360px] resize overflow-auto rounded-xl border border-white/25 bg-black/70 p-2 text-white shadow-xl backdrop-blur"
+                      ? "absolute top-0 z-30 max-h-[42vh] min-w-[260px] resize overflow-auto rounded-xl border border-white/25 bg-black/70 p-2 text-white shadow-xl backdrop-blur"
                       : "absolute z-30 w-[min(96%,820px)] max-h-[56vh] resize overflow-auto rounded-xl border border-white/25 bg-black/70 p-2 text-white shadow-xl backdrop-blur"
                   }
                   style={
                     isDockedTextToolbar
-                      ? {
-                          left: `calc(8px + ${objectToolbarOffset.x}px)`,
-                          top: `${objectToolbarOffset.y}px`,
-                          width: `min(calc(100% - 16px), ${clamp(objectToolbarWidth, 360, 1120, 760)}px)`,
-                          transform: "translateY(calc(-100% - 10px))"
-                        }
+                      ? isMobileViewport
+                        ? {
+                            left: `calc(6px + ${objectToolbarOffset.x}px)`,
+                            top: `calc(8px + ${objectToolbarOffset.y}px)`,
+                            width: `min(calc(100% - 12px), ${objectToolbarClampedWidth}px)`,
+                            transform: "none"
+                          }
+                        : {
+                            left: `calc(8px + ${objectToolbarOffset.x}px)`,
+                            top: `${objectToolbarOffset.y}px`,
+                            width: `min(calc(100% - 16px), ${objectToolbarClampedWidth}px)`,
+                            transform: "translateY(calc(-100% - 10px))"
+                          }
                       : {
-                          width: `min(96%, ${clamp(objectToolbarWidth, 320, 1120, 760)}px)`,
+                          width: `min(96%, ${objectToolbarClampedWidth}px)`,
                           left: `calc(${selectedLayer.x}% + ${objectToolbarOffset.x}px)`,
                           top: `calc(${clamp(selectedLayer.y - selectedLayer.height / 2 - 4, 4, 92, 4)}% + ${objectToolbarOffset.y}px)`,
                           transform: "translate(-50%, -100%)"
@@ -4282,23 +4347,29 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   onPointerUp={() => {
                     const width = objectToolbarRef.current?.offsetWidth;
                     if (width) {
-                      setObjectToolbarWidth(clamp(width, 360, 1120, 760));
+                      setObjectToolbarWidth(clamp(width, minObjectToolbarWidth, maxObjectToolbarWidth, objectToolbarWidthFallback));
                     }
                   }}
                 >
-                  <div className={`mb-2 flex items-center gap-2 ${isDockedTextToolbar ? "cursor-grab active:cursor-grabbing" : ""}`}>
-                    {isDockedTextToolbar ? null : (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-6 w-8 cursor-grab border-white/25 bg-black/30 p-0 active:cursor-grabbing"
-                        onPointerDown={beginObjectToolbarDrag}
-                        title="오브젝트 툴바 이동"
-                      >
-                        <GripVertical className="h-3.5 w-3.5" />
-                      </Button>
-                    )}
+                  <div
+                    className={`mb-2 flex items-center gap-2 ${isDockedTextToolbar ? "cursor-grab active:cursor-grabbing" : ""}`}
+                    onPointerDown={(event) => {
+                      if (isToolbarInteractiveTarget(event.target)) {
+                        return;
+                      }
+                      beginObjectToolbarDrag(event);
+                    }}
+                  >
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-6 w-8 cursor-grab border-white/25 bg-black/30 p-0 active:cursor-grabbing"
+                      onPointerDown={beginObjectToolbarDrag}
+                      title="오브젝트 툴바 이동"
+                    >
+                      <GripVertical className="h-3.5 w-3.5" />
+                    </Button>
                     <span className="text-[11px] text-zinc-200">{resolveElementName(selectedLayer)}</span>
                     {selectedLayer.type === "text" ? (
                       <div className="ml-auto flex items-center gap-1">
@@ -4358,18 +4429,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           variant="outline"
                           size="sm"
                           className="h-6 w-6 p-0 text-xs"
-                          onClick={() => setObjectToolbarWidth((prev) => clamp(prev - 40, 320, 1120, 760))}
+                          onClick={() =>
+                            setObjectToolbarWidth((prev) =>
+                              clamp(prev - objectToolbarStep, minObjectToolbarWidth, maxObjectToolbarWidth, objectToolbarWidthFallback)
+                            )
+                          }
                           title="툴바 폭 줄이기"
                         >
                           -
                         </Button>
                         <input
                           type="range"
-                          min={320}
-                          max={1120}
-                          step={20}
-                          value={objectToolbarWidth}
-                          onChange={(event) => setObjectToolbarWidth(clamp(Number(event.target.value), 320, 1120, 760))}
+                          min={minObjectToolbarWidth}
+                          max={maxObjectToolbarWidth}
+                          step={isMobileViewport ? 10 : 20}
+                          value={objectToolbarClampedWidth}
+                          onChange={(event) =>
+                            setObjectToolbarWidth(
+                              clamp(Number(event.target.value), minObjectToolbarWidth, maxObjectToolbarWidth, objectToolbarWidthFallback)
+                            )
+                          }
                           className="h-2 w-20 accent-emerald-400 sm:w-28"
                           title="툴바 폭 조절"
                         />
@@ -4378,7 +4457,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           variant="outline"
                           size="sm"
                           className="h-6 w-6 p-0 text-xs"
-                          onClick={() => setObjectToolbarWidth((prev) => clamp(prev + 40, 320, 1120, 760))}
+                          onClick={() =>
+                            setObjectToolbarWidth((prev) =>
+                              clamp(prev + objectToolbarStep, minObjectToolbarWidth, maxObjectToolbarWidth, objectToolbarWidthFallback)
+                            )
+                          }
                           title="툴바 폭 늘리기"
                         >
                           +

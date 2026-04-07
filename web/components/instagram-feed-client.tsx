@@ -1184,13 +1184,20 @@ export function InstagramFeedClient(): React.JSX.Element {
                       <h2 className="text-base font-semibold">{selectedItem.subject}</h2>
                       <p className="text-xs text-muted-foreground">#{selectedItem.keyword} · row {selectedItem.rowId}</p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button type="button" variant="outline" onClick={() => void checkMetaHealth()} disabled={checkingMeta}>
+                    <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-wrap">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full sm:w-auto"
+                        onClick={() => void checkMetaHealth()}
+                        disabled={checkingMeta}
+                      >
                         {checkingMeta ? "검사 중..." : "Meta API 검사"}
                       </Button>
                       <Button
                         type="button"
                         variant="outline"
+                        className="w-full sm:w-auto"
                         onClick={() => void downloadFeedAssets()}
                         disabled={downloading || orderedPages.length === 0}
                       >
@@ -1199,6 +1206,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                       </Button>
                       <Button
                         type="button"
+                        className="w-full sm:w-auto"
                         onClick={() => {
                           setError(undefined);
                           setSuccess(undefined);
@@ -1314,12 +1322,13 @@ export function InstagramFeedClient(): React.JSX.Element {
                         </div>
                       ) : null}
                     </div>
-                    <DialogFooter>
-                      <Button type="button" variant="outline" onClick={() => setUploadConfirmOpen(false)}>
+                    <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                      <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => setUploadConfirmOpen(false)}>
                         취소
                       </Button>
                       <Button
                         type="button"
+                        className="w-full sm:w-auto"
                         onClick={() => void uploadFeed()}
                         disabled={uploading || orderedPages.length === 0}
                       >

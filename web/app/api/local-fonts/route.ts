@@ -151,10 +151,8 @@ export async function GET(): Promise<NextResponse> {
     (await Promise.all(fontDirs.map((dir) => listFontFilesRecursive(dir)))).flat(),
     listWindowsFontDisplayNames()
   ]);
-  const merged =
-    process.platform === "win32" && windowsDisplayNames.length > 0
-      ? windowsDisplayNames
-      : [...fileNames.map((fileName) => normalizeFontNameFromFile(fileName)), ...windowsDisplayNames];
+  const fileStemNames = fileNames.map((fileName) => normalizeFontNameFromFile(fileName));
+  const merged = [...windowsDisplayNames, ...fileStemNames];
   const names = dedupeCaseInsensitive(merged).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
   return NextResponse.json({ fonts: names });
 }

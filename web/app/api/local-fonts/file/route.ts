@@ -16,6 +16,10 @@ function normalizeDisplayName(value: string): string {
     .trim();
 }
 
+function normalizeNameKey(value: string): string {
+  return normalizeDisplayName(value).toLowerCase();
+}
+
 function isSafeFontPath(filePath: string): boolean {
   const normalized = String(filePath || "").toLowerCase();
   if (!normalized) return false;
@@ -106,7 +110,15 @@ export async function GET(request: Request): Promise<Response> {
   ]);
   const allRows = [...userRows, ...machineRows];
 
-  const matched = allRows.find((row) => normalizeDisplayName(row.name).toLowerCase() === name.toLowerCase());
+  const targetKey = normalizeNameKey(name);
+  const matched =
+    allRows.find((row) => normalizeNameKey(row.name) === targetKey) ||
+    allRows.find((row) => {
+      const fontPath = resolveWindowsFontPath(row.value);
+      if (!fontPath) return false;
+      const stem = path.basename(fontPath, path.extname(fontPath));
+      return normalizeNameKey(stem) === targetKey;
+    });
   if (!matched) {
     return NextResponse.json({ error: "Font not found in registry." }, { status: 404 });
   }
@@ -134,4 +146,3 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json({ error: "Unable to read font file." }, { status: 404 });
   }
 }
-
