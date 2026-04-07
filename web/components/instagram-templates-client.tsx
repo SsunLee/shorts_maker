@@ -439,6 +439,12 @@ function normalizeFontName(value: string): string {
   return String(value || "").trim();
 }
 
+function isLocalhostRuntime(): boolean {
+  if (typeof window === "undefined") return false;
+  const host = String(window.location.hostname || "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
 function normalizeStoredFontFamily(value: unknown): string {
   const raw = normalizeFontName(String(value || ""));
   if (!raw) return "Noto Sans KR";
@@ -3608,6 +3614,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
   async function ensureLocalFontFace(fontName: string): Promise<void> {
     if (typeof window === "undefined" || typeof document === "undefined") return;
+    // Local font file API is intended for localhost (developer machine) only.
+    // On production (e.g., Vercel), browser local fonts should be used directly
+    // via font-family without calling /api/local-fonts/file.
+    if (!isLocalhostRuntime()) return;
     const normalized = normalizeFontName(fontName);
     if (!normalized) return;
     const key = normalized.toLowerCase();
