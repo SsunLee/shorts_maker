@@ -29,6 +29,7 @@ import {
   renderInstagramPageToPngDataUrl,
   resolveInstagramTemplateVariables
 } from "@/lib/instagram-page-renderer";
+import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
 import type { AppSettings } from "@/lib/types";
 import type { InstagramFeedPage, InstagramGeneratedFeedItem, InstagramTemplate } from "@/lib/instagram-types";
 
@@ -403,6 +404,7 @@ export function InstagramFeedClient(): React.JSX.Element {
       const canvasWidth = normalizeCanvasWidth(Number(matchedTemplate?.canvasWidth || 1080));
       const canvasHeight = normalizeCanvasHeight(Number(matchedTemplate?.canvasHeight || 1350));
       const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows);
+      await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
       const next: Record<string, string> = {};
       for (const page of orderedPages) {
         try {
@@ -750,6 +752,7 @@ export function InstagramFeedClient(): React.JSX.Element {
     const canvasHeight = normalizeCanvasHeight(Number(matchedTemplate?.canvasHeight || 1350));
 
     const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows);
+    await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
 
     const renderedAssets: Array<{
       pageId: string;

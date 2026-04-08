@@ -209,7 +209,31 @@ function guessContentType(fileName: string, fallback = "application/octet-stream
   if (ext === ".srt") {
     return "application/x-subrip";
   }
+  if (ext === ".ttf") {
+    return "font/ttf";
+  }
+  if (ext === ".otf") {
+    return "font/otf";
+  }
+  if (ext === ".ttc") {
+    return "font/collection";
+  }
+  if (ext === ".woff") {
+    return "font/woff";
+  }
+  if (ext === ".woff2") {
+    return "font/woff2";
+  }
   return fallback;
+}
+
+function sanitizeFileName(fileName: string, fallback: string): string {
+  const normalized = String(fileName || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || fallback;
 }
 
 export function isS3StorageEnabled(): boolean {
@@ -270,6 +294,47 @@ export async function storeGeneratedAsset(args: {
       Key: objectKey,
       Body: Buffer.from(args.body),
       ContentType: args.contentType || guessContentType(args.fileName),
+      CacheControl: args.cacheControl || "public, max-age=31536000, immutable"
+    })
+  );
+
+  return {
+    publicUrl: toPublicUrl(config, objectKey)
+  };
+}
+
+export async function storeInstagramFontAsset(args: {
+  fileName: string;
+  body: Uint8Array;
+  contentType?: string;
+  cacheControl?: string;
+  userId?: string;
+}): Promise<StorageResult> {
+  const config = getS3Config();
+  const safeFileName = sanitizeFileName(args.fileName, "uploaded-font.ttf");
+  const relativePath = withUserScope(
+    `fonts/${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${safeFileName}`,
+    args.userId
+  );
+
+  if (!config.enabled) {
+    const localPath = path.join(process.cwd(), "public", ...relativePath.split("/"));
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, Buffer.from(args.body));
+    return {
+      localPath,
+      publicUrl: `/${encodePathForUrl(relativePath)}`
+    };
+  }
+
+  const objectKey = joinKey(config, relativePath);
+  const client = getS3Client(config);
+  await client.send(
+    new PutObjectCommand({
+      Bucket: config.bucket,
+      Key: objectKey,
+      Body: Buffer.from(args.body),
+      ContentType: args.contentType || guessContentType(safeFileName),
       CacheControl: args.cacheControl || "public, max-age=31536000, immutable"
     })
   );

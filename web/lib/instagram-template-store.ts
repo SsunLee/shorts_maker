@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
+  InstagramCustomFont,
   InstagramFeedPage,
   InstagramPageElement,
   InstagramTemplate,
@@ -66,6 +67,47 @@ function normalizeHex(value: string | undefined, fallback: string): string {
     return normalized.toUpperCase();
   }
   return fallback;
+}
+
+function normalizeCustomFont(font: Partial<InstagramCustomFont>): InstagramCustomFont | undefined {
+  const family = String(font.family || "").trim();
+  const sourceUrl = String(font.sourceUrl || "").trim();
+  if (!family || !sourceUrl) {
+    return undefined;
+  }
+  const fileName = String(font.fileName || family).trim() || family;
+  return {
+    id: String(font.id || randomUUID()),
+    family,
+    fileName,
+    sourceUrl,
+    mimeType: String(font.mimeType || "").trim() || undefined,
+    uploadedAt:
+      typeof font.uploadedAt === "string" && font.uploadedAt.trim()
+        ? font.uploadedAt
+        : new Date().toISOString()
+  };
+}
+
+function normalizeCustomFonts(raw: unknown): InstagramCustomFont[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const normalized = raw
+    .map((item) => normalizeCustomFont((item || {}) as Partial<InstagramCustomFont>))
+    .filter((item): item is InstagramCustomFont => Boolean(item))
+    .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+  const seenByFamily = new Set<string>();
+  const deduped: InstagramCustomFont[] = [];
+  normalized.forEach((font) => {
+    const key = font.family.toLowerCase();
+    if (seenByFamily.has(key)) {
+      return;
+    }
+    seenByFamily.add(key);
+    deduped.push(font);
+  });
+  return deduped;
 }
 
 function createDefaultPage(index: number): InstagramFeedPage {
@@ -214,6 +256,7 @@ function normalizeTemplate(template: Partial<InstagramTemplate>): InstagramTempl
   const normalizedPages = pages.length > 0 ? pages : [createDefaultPage(0)];
   const pageDurationSec = clamp(Number(template.pageDurationSec), 1, 60, 4);
   const pageCount = clamp(Number(template.pageCount), 1, 30, normalizedPages.length);
+  const customFonts = normalizeCustomFonts((template as { customFonts?: unknown }).customFonts);
   return {
     id: String(template.id || randomUUID()),
     templateName,
@@ -225,6 +268,7 @@ function normalizeTemplate(template: Partial<InstagramTemplate>): InstagramTempl
     pageDurationSec,
     pageCount,
     pages: normalizedPages.slice(0, pageCount),
+    customFonts,
     updatedAt:
       typeof template.updatedAt === "string" && template.updatedAt.trim()
         ? template.updatedAt

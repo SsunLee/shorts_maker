@@ -14,6 +14,15 @@ export type InstagramShapeType =
 export type InstagramTextAlign = "left" | "center" | "right";
 export type InstagramTextMode = "variable" | "plain";
 
+export interface InstagramCustomFont {
+  id: string;
+  family: string;
+  fileName: string;
+  sourceUrl: string;
+  mimeType?: string;
+  uploadedAt: string;
+}
+
 export interface InstagramElementBase {
   id: string;
   type: InstagramElementType;
@@ -105,6 +114,7 @@ export interface InstagramTemplate {
   pageDurationSec: number;
   pageCount: number;
   pages: InstagramFeedPage[];
+  customFonts?: InstagramCustomFont[];
   updatedAt: string;
 }
 

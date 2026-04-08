@@ -30,6 +30,7 @@ import {
   Trash2,
   Type,
   Undo2,
+  Upload,
   WrapText
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -38,10 +39,12 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { renderInstagramPageToPngDataUrl } from "@/lib/instagram-page-renderer";
+import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
 import { isLocalFontAccessSupported, mergeFontOptions, queryInstalledFontNames } from "@/lib/local-fonts";
 import type { AppSettings } from "@/lib/types";
 import { filterVoiceOptions, resolveTtsVoiceProvider } from "@/lib/voice-options";
 import type {
+  InstagramCustomFont,
   InstagramFeedPage,
   InstagramImageElement,
   InstagramPageElement,
@@ -189,6 +192,7 @@ const DEFAULT_SAMPLE_DATA: Record<string, string> = {
   keyword: "instagram"
 };
 const DEFAULT_INSTAGRAM_AI_IMAGE_STYLE = "Cinematic photo-real";
+const CUSTOM_FONT_ACCEPT = ".ttf,.otf,.ttc,.woff,.woff2";
 const INSTAGRAM_AI_IMAGE_STYLE_PRESETS = [
   "Cinematic photo-real",
   "Ultra photoreal photographer",
@@ -535,6 +539,44 @@ function uniqueFontNames(names: string[]): string[] {
   return result;
 }
 
+function normalizeCustomTemplateFonts(
+  rawFonts: InstagramTemplate["customFonts"] | unknown
+): InstagramCustomFont[] {
+  if (!Array.isArray(rawFonts)) {
+    return [];
+  }
+  const mapped: InstagramCustomFont[] = [];
+  rawFonts.forEach((item) => {
+    const record = (item || {}) as Partial<InstagramCustomFont>;
+    const family = normalizeFontName(String(record.family || ""));
+    const sourceUrl = String(record.sourceUrl || "").trim();
+    if (!family || !sourceUrl) {
+      return;
+    }
+    mapped.push({
+      id: String(record.id || uid()),
+      family,
+      fileName: String(record.fileName || family).trim() || family,
+      sourceUrl,
+      mimeType: String(record.mimeType || "").trim() || undefined,
+      uploadedAt:
+        typeof record.uploadedAt === "string" && record.uploadedAt.trim()
+          ? record.uploadedAt
+          : new Date().toISOString()
+    });
+  });
+  const normalized = mapped.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+  const seen = new Set<string>();
+  const deduped: InstagramCustomFont[] = [];
+  normalized.forEach((font) => {
+    const key = font.family.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(font);
+  });
+  return deduped;
+}
+
 function uniqueValues(values: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -772,6 +814,7 @@ function buildTemplatePayload(source: InstagramTemplate, templateId: string): In
   payload.canvasPreset = resolveCanvasPresetId(payload.canvasWidth, payload.canvasHeight);
   payload.pageCount = payload.pages.length;
   payload.pageDurationSec = clamp(Number(payload.pageDurationSec), 1, 60, 4);
+  payload.customFonts = normalizeCustomTemplateFonts(payload.customFonts);
   payload.updatedAt = new Date().toISOString();
   payload.pages = payload.pages.map((page) => ({
     ...page,
@@ -956,6 +999,7 @@ function createTemplate(): InstagramTemplate {
     pageDurationSec: 4,
     pageCount: 1,
     pages: [createPage(0)],
+    customFonts: [],
     updatedAt: new Date().toISOString()
   };
 }
@@ -968,6 +1012,7 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
   normalized.canvasHeight = normalizedCanvasHeight;
   normalized.canvasPreset = resolveCanvasPresetId(normalizedCanvasWidth, normalizedCanvasHeight);
   normalized.pageDurationSec = clamp(Number(normalized.pageDurationSec), 1, 60, 4);
+  normalized.customFonts = normalizeCustomTemplateFonts(normalized.customFonts);
   normalized.pages = (normalized.pages || []).map((page, pageIndex) => ({
     ...page,
     id: String(page.id || uid()),
@@ -1530,6 +1575,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [favoriteFontNames, setFavoriteFontNames] = useState<string[]>([]);
   const [localFontLoading, setLocalFontLoading] = useState(false);
   const [localFontMessage, setLocalFontMessage] = useState<string>();
+  const [customFontUploading, setCustomFontUploading] = useState(false);
+  const [customFontMessage, setCustomFontMessage] = useState<string>();
   const [, setFontAliasVersion] = useState(0);
   const [copiedTextStyle, setCopiedTextStyle] = useState<TextStyleSnapshot>();
   const [pendingTextStyleApplyFromLayerId, setPendingTextStyleApplyFromLayerId] = useState<string>();
@@ -1568,6 +1615,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const pageBackgroundImageInputRef = useRef<HTMLInputElement | null>(null);
   const layerImageInputRef = useRef<HTMLInputElement | null>(null);
+  const customFontInputRef = useRef<HTMLInputElement | null>(null);
   const jsonFileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef(editor);
   const selectedPageIdRef = useRef(selectedPageId);
@@ -1755,6 +1803,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (!Array.isArray(editor.customFonts) || editor.customFonts.length === 0) {
+      return;
+    }
+    void ensureInstagramCustomFontsLoaded(editor.customFonts);
+  }, [editor.customFonts]);
+
+  useEffect(() => {
     if (!selectedLayer || selectedLayer.type !== "text") return;
     void ensureLocalFontFace(selectedLayer.fontFamily);
   }, [selectedLayer?.id, selectedLayer?.type === "text" ? selectedLayer.fontFamily : ""]);
@@ -1850,9 +1905,17 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     () => bindingFields.filter((field) => field.toLowerCase().includes(bindingSearch.trim().toLowerCase())),
     [bindingFields, bindingSearch]
   );
+  const customFontFamilies = useMemo(
+    () => uniqueFontNames((editor.customFonts || []).map((font) => String(font.family || ""))),
+    [editor.customFonts]
+  );
   const availableFontOptions = useMemo(
-    () => mergeFontOptions(mergeFontOptions(FONT_OPTIONS, localFontNames), favoriteFontNames),
-    [localFontNames, favoriteFontNames]
+    () =>
+      mergeFontOptions(
+        mergeFontOptions(mergeFontOptions(FONT_OPTIONS, localFontNames), customFontFamilies),
+        favoriteFontNames
+      ),
+    [localFontNames, customFontFamilies, favoriteFontNames]
   );
   const favoriteFontOptions = useMemo(() => {
     const favoriteSet = new Set(favoriteFontNames.map((item) => item.toLowerCase()));
@@ -3614,12 +3677,19 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
   async function ensureLocalFontFace(fontName: string): Promise<void> {
     if (typeof window === "undefined" || typeof document === "undefined") return;
+    const normalized = normalizeFontName(fontName);
+    if (!normalized) return;
+    const customFont = (editorRef.current.customFonts || []).find(
+      (font) => String(font.family || "").trim().toLowerCase() === normalized.toLowerCase()
+    );
+    if (customFont) {
+      await ensureInstagramCustomFontsLoaded([customFont]);
+      return;
+    }
     // Local font file API is intended for localhost (developer machine) only.
     // On production (e.g., Vercel), browser local fonts should be used directly
     // via font-family without calling /api/local-fonts/file.
     if (!isLocalhostRuntime()) return;
-    const normalized = normalizeFontName(fontName);
-    if (!normalized) return;
     const key = normalized.toLowerCase();
     const currentMap = window.__shortsMakerLocalFontAliasMap || {};
     if (currentMap[key]) return;
@@ -3696,6 +3766,70 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     } finally {
       setLocalFontLoading(false);
     }
+  }
+
+  async function uploadCustomFontFile(file: File): Promise<void> {
+    const formData = new FormData();
+    formData.append("file", file);
+    setCustomFontUploading(true);
+    setCustomFontMessage(undefined);
+    setError(undefined);
+    try {
+      const response = await fetch("/api/instagram/fonts", {
+        method: "POST",
+        body: formData
+      });
+      const data = (await response.json()) as {
+        font?: InstagramCustomFont;
+        error?: string;
+      };
+      if (!response.ok || !data.font) {
+        throw new Error(data.error || "커스텀 폰트 업로드에 실패했습니다.");
+      }
+      const uploadedFont = {
+        ...data.font,
+        family: normalizeFontName(data.font.family),
+        fileName: String(data.font.fileName || data.font.family).trim() || data.font.family,
+        sourceUrl: String(data.font.sourceUrl || "").trim()
+      };
+      if (!uploadedFont.family || !uploadedFont.sourceUrl) {
+        throw new Error("업로드된 폰트 메타데이터가 올바르지 않습니다.");
+      }
+      await ensureInstagramCustomFontsLoaded([uploadedFont]);
+      setEditor((current) => {
+        const existing = normalizeCustomTemplateFonts(current.customFonts);
+        const merged = normalizeCustomTemplateFonts([
+          uploadedFont,
+          ...existing.filter((font) => font.family.toLowerCase() !== uploadedFont.family.toLowerCase())
+        ]);
+        return {
+          ...current,
+          customFonts: merged
+        };
+      });
+      setCustomFontMessage(`업로드 완료: ${uploadedFont.family}`);
+      setSuccess(`커스텀 폰트 업로드 완료: ${uploadedFont.family}`);
+      if (selectedLayer?.type === "text") {
+        await applySelectedTextFont(uploadedFont.family);
+      }
+    } catch (fontError) {
+      const message = fontError instanceof Error ? fontError.message : "커스텀 폰트 업로드에 실패했습니다.";
+      setError(message);
+      setCustomFontMessage(message);
+    } finally {
+      setCustomFontUploading(false);
+    }
+  }
+
+  async function handleCustomFontFileChange(
+    event: React.ChangeEvent<HTMLInputElement>
+  ): Promise<void> {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    await uploadCustomFontFile(file);
   }
 
   function toggleFavoriteFont(fontName: string): void {
@@ -4652,6 +4786,25 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       >
                         {localFontLoading ? "불러오는 중..." : "내 PC 폰트"}
                       </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 px-2"
+                        onClick={() => customFontInputRef.current?.click()}
+                        disabled={customFontUploading}
+                        title="커스텀 폰트 파일 업로드"
+                      >
+                        <Upload className="mr-1 h-3.5 w-3.5" />
+                        {customFontUploading ? "업로드 중..." : "폰트 업로드"}
+                      </Button>
+                      <input
+                        ref={customFontInputRef}
+                        type="file"
+                        accept={CUSTOM_FONT_ACCEPT}
+                        className="hidden"
+                        onChange={(event) => void handleCustomFontFileChange(event)}
+                      />
                       <Input
                         type="number"
                         min={8}
@@ -4817,6 +4970,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       />
                       </div>
                       {localFontMessage ? <p className="text-[10px] text-zinc-300">{localFontMessage}</p> : null}
+                      {customFontMessage ? <p className="text-[10px] text-zinc-300">{customFontMessage}</p> : null}
                       {selectedLayerRubyTokens.length > 0 ? (
                         <div className="space-y-2 rounded-md border border-white/15 bg-black/25 p-2">
                           <p className="text-[11px] text-zinc-200">

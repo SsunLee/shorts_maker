@@ -109,6 +109,18 @@ const templateSchema = z.object({
   pageDurationSec: z.number(),
   pageCount: z.number(),
   pages: z.array(pageSchema),
+  customFonts: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        family: z.string().min(1),
+        fileName: z.string().min(1),
+        sourceUrl: z.string().min(1),
+        mimeType: z.string().optional(),
+        uploadedAt: z.string().min(1)
+      })
+    )
+    .optional(),
   updatedAt: z.string()
 });
 
