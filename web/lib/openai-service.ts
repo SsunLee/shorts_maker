@@ -13,6 +13,39 @@ type GeminiInlineData = {
   mimeType?: string;
 };
 
+export type ImageVisualPolicy = "default" | "news_strict";
+
+const NEWS_STRICT_VISUAL_GUARD_CLAUSE =
+  "Strictly avoid holograms, futuristic HUD/UI overlays, transparent projection screens, " +
+  "AR/VR goggles, neon cyberpunk effects, sci-fi control panels, robots/androids, " +
+  "floating digital graphics, and fantasy magic effects. " +
+  "Keep scenes grounded in present-day real-world context with plausible props, attire, and environments. " +
+  "Respect the user-selected art style and composition.";
+
+const NEWS_STRICT_TOKEN_PATTERN =
+  /\b(hologram|holographic|hud|heads?-?up display|futuristic|sci-?fi|cyberpunk|neon ui|ar\/vr|augmented reality|virtual reality|projection screen|floating interface|robot|android|magic aura|glowing panel)\b/gi;
+
+function applyVisualPolicyClause(base: string, policy: ImageVisualPolicy): string {
+  if (policy !== "news_strict") {
+    return base;
+  }
+  return `${base} ${NEWS_STRICT_VISUAL_GUARD_CLAUSE}`;
+}
+
+function sanitizePromptByVisualPolicy(prompt: string, policy: ImageVisualPolicy): string {
+  const source = String(prompt || "").trim();
+  if (!source) {
+    return source;
+  }
+  if (policy !== "news_strict") {
+    return source;
+  }
+
+  const stripped = source.replace(NEWS_STRICT_TOKEN_PATTERN, "").replace(/\s{2,}/g, " ").trim();
+  const guarded = `${stripped}. ${NEWS_STRICT_VISUAL_GUARD_CLAUSE}`;
+  return guarded.replace(/\s{2,}/g, " ").trim();
+}
+
 /** Create an OpenAI client from env/settings and throw if no key exists. */
 export async function getOpenAiClient(userId?: string): Promise<OpenAI> {
   const keys = await resolveApiKeys(userId);
@@ -170,6 +203,13 @@ function normalizeImageStylePreset(style: string): string {
     return "Cinematic photo-real";
   }
   if (
+    raw === "3d pixar-style" ||
+    raw === "3d pixar style" ||
+    raw.includes("pixar")
+  ) {
+    return "3D Pixar-style";
+  }
+  if (
     raw === "완전 실사 포토그래퍼" ||
     raw === "ultra photoreal photographer" ||
     raw.includes("photographer") ||
@@ -183,6 +223,14 @@ function normalizeImageStylePreset(style: string): string {
 
 function buildImageStyleInstruction(style: string): string {
   const preset = normalizeImageStylePreset(style);
+  if (preset === "3D Pixar-style") {
+    return (
+      "3D Pixar-style animated film look. " +
+      "Stylized 3D characters, expressive facial features, clean non-photoreal materials, " +
+      "soft global illumination, polished cinematic color grading, and family-friendly animation tone. " +
+      "Not live-action photo, not documentary photojournalism."
+    );
+  }
   if (preset === "Ultra photoreal photographer") {
     return (
       "Ultra photoreal professional photography style. " +
@@ -192,6 +240,33 @@ function buildImageStyleInstruction(style: string): string {
     );
   }
   return preset;
+}
+
+function ensurePromptContainsStyle(prompt: string, style?: string): string {
+  const source = String(prompt || "").trim();
+  const rawStyle = String(style || "").trim();
+  if (!source || !rawStyle) {
+    return source;
+  }
+
+  const preset = normalizeImageStylePreset(rawStyle);
+  const styleInstruction = buildImageStyleInstruction(rawStyle);
+  const lowered = source.toLowerCase();
+  if (lowered.includes(preset.toLowerCase())) {
+    return source;
+  }
+
+  if (preset === "3D Pixar-style" && /(pixar|3d animation|animated film|non-photoreal)/i.test(source)) {
+    return source;
+  }
+  if (
+    preset === "Ultra photoreal photographer" &&
+    /(photoreal|photo-real|realistic photo|professional photography|documentary)/i.test(source)
+  ) {
+    return source;
+  }
+
+  return `${styleInstruction}. ${source}`.replace(/\s{2,}/g, " ").trim();
 }
 
 function shouldApplyJapaneseVisualHint(args: {
@@ -227,6 +302,7 @@ function fallbackSplitScenes(args: {
   imageAspectRatio: ImageAspectRatio;
   sceneCount: number;
   japaneseVisualHint?: boolean;
+  visualPolicy?: ImageVisualPolicy;
 }): WorkflowScene[] {
   const styleInstruction = buildImageStyleInstruction(args.imageStyle);
   const japaneseVisualGuide = args.japaneseVisualHint
@@ -240,13 +316,17 @@ function fallbackSplitScenes(args: {
   const chunkSize = Math.max(1, Math.ceil(words.length / args.sceneCount));
   return Array.from({ length: args.sceneCount }).map((_, idx) => {
     const chunk = words.slice(idx * chunkSize, (idx + 1) * chunkSize).join(" ");
+    const visualPolicy = args.visualPolicy === "news_strict" ? "news_strict" : "default";
     return {
       index: idx + 1,
       sceneTitle: `Scene ${idx + 1}`,
       narrationText: chunk || args.narration,
-      imagePrompt: `${styleInstruction}. ${chunk || args.narration}. ${composition}${
-        japaneseVisualGuide ? ` ${japaneseVisualGuide}` : ""
-      }`
+      imagePrompt: sanitizePromptByVisualPolicy(
+        `${styleInstruction}. ${chunk || args.narration}. ${composition}${
+          japaneseVisualGuide ? ` ${japaneseVisualGuide}` : ""
+        }`,
+        visualPolicy
+      )
     };
   });
 }
@@ -322,6 +402,7 @@ export async function generateImagePrompts(args: {
   imageStyle: string;
   imageAspectRatio?: ImageAspectRatio;
   sceneCount?: number;
+  visualPolicy?: ImageVisualPolicy;
 }, userId?: string): Promise<string[]> {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
@@ -337,6 +418,8 @@ export async function generateImagePrompts(args: {
     imageAspectRatio === "16:9"
       ? "Use cinematic landscape 16:9 composition with strong horizontal framing."
       : "Use vertical storytelling composition optimized for 9:16 mobile shorts.";
+  const visualPolicy = args.visualPolicy === "news_strict" ? "news_strict" : "default";
+  const visualPolicyGuide = applyVisualPolicyClause("", visualPolicy).trim();
   const provider = await resolveProviderForTask("text", userId);
   const textModel = await resolveModelForTask(provider, "text", userId);
 
@@ -353,6 +436,7 @@ export async function generateImagePrompts(args: {
             "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
             `${compositionGuide}\n` +
             `${japaneseVisualGuide}\n` +
+            `${visualPolicyGuide}\n` +
             `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}`
         })
     });
@@ -361,7 +445,8 @@ export async function generateImagePrompts(args: {
     if (prompts.length !== sceneCount) {
       throw new Error(`Failed to generate exactly ${sceneCount} image prompts.`);
     }
-    return japaneseVisualHint ? prompts.map(appendJapaneseVisualHint) : prompts;
+    const withJapaneseHint = japaneseVisualHint ? prompts.map(appendJapaneseVisualHint) : prompts;
+    return withJapaneseHint.map((prompt) => sanitizePromptByVisualPolicy(prompt, visualPolicy));
   }
 
   const client = await getOpenAiClient(userId);
@@ -375,7 +460,8 @@ export async function generateImagePrompts(args: {
           "Prompts must be non-graphic, educational, and safe for general audiences. " +
           "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction. " +
           compositionGuide +
-          (japaneseVisualGuide ? ` ${japaneseVisualGuide}` : "")
+          (japaneseVisualGuide ? ` ${japaneseVisualGuide}` : "") +
+          (visualPolicyGuide ? ` ${visualPolicyGuide}` : "")
       },
       {
         role: "user",
@@ -388,7 +474,8 @@ export async function generateImagePrompts(args: {
   if (prompts.length !== sceneCount) {
     throw new Error(`Failed to generate exactly ${sceneCount} image prompts.`);
   }
-  return japaneseVisualHint ? prompts.map(appendJapaneseVisualHint) : prompts;
+  const withJapaneseHint = japaneseVisualHint ? prompts.map(appendJapaneseVisualHint) : prompts;
+  return withJapaneseHint.map((prompt) => sanitizePromptByVisualPolicy(prompt, visualPolicy));
 }
 
 /** Split narration into N scenes and generate one image prompt per scene. */
@@ -398,6 +485,7 @@ export async function splitNarrationToScenes(args: {
   imageStyle: string;
   imageAspectRatio?: ImageAspectRatio;
   sceneCount?: number;
+  visualPolicy?: ImageVisualPolicy;
 }, userId?: string): Promise<WorkflowScene[]> {
   const sceneCount = Math.max(3, Math.min(12, args.sceneCount ?? 5));
   const imageAspectRatio = args.imageAspectRatio === "16:9" ? "16:9" : "9:16";
@@ -413,6 +501,8 @@ export async function splitNarrationToScenes(args: {
     imageAspectRatio === "16:9"
       ? "All image prompts must explicitly request landscape 16:9 composition."
       : "All image prompts must explicitly request vertical 9:16 composition.";
+  const visualPolicy = args.visualPolicy === "news_strict" ? "news_strict" : "default";
+  const visualPolicyGuide = applyVisualPolicyClause("", visualPolicy).trim();
   const provider = await resolveProviderForTask("text", userId);
   const textModel = await resolveModelForTask(provider, "text", userId);
 
@@ -429,6 +519,7 @@ export async function splitNarrationToScenes(args: {
             "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction.\n" +
             `${compositionGuide}\n` +
             `${japaneseVisualGuide}\n` +
+            `${visualPolicyGuide}\n` +
             `Title: ${args.title}\nNarration: ${args.narration}\nImage style: ${styleInstruction}\n` +
             `Split the narration flow into ${sceneCount} logical scenes and write one visual prompt per scene.`
         })
@@ -436,12 +527,16 @@ export async function splitNarrationToScenes(args: {
 
     const parsed = safeParseScenes(response.text || "", sceneCount);
     if (parsed) {
-      return japaneseVisualHint
+      const mapped = japaneseVisualHint
         ? parsed.map((scene) => ({
             ...scene,
             imagePrompt: appendJapaneseVisualHint(scene.imagePrompt)
           }))
         : parsed;
+      return mapped.map((scene) => ({
+        ...scene,
+        imagePrompt: sanitizePromptByVisualPolicy(scene.imagePrompt, visualPolicy)
+      }));
     }
 
     return fallbackSplitScenes({
@@ -449,7 +544,8 @@ export async function splitNarrationToScenes(args: {
       imageStyle: args.imageStyle,
       imageAspectRatio,
       sceneCount,
-      japaneseVisualHint
+      japaneseVisualHint,
+      visualPolicy
     });
   }
 
@@ -464,7 +560,8 @@ export async function splitNarrationToScenes(args: {
           "All imagePrompt values must be non-graphic, educational, and safe for general audiences. " +
           "Avoid explicit violence, injury, blood, death scenes, and self-harm depiction. " +
           compositionGuide +
-          (japaneseVisualGuide ? ` ${japaneseVisualGuide}` : "")
+          (japaneseVisualGuide ? ` ${japaneseVisualGuide}` : "") +
+          (visualPolicyGuide ? ` ${visualPolicyGuide}` : "")
       },
       {
         role: "user",
@@ -477,12 +574,16 @@ export async function splitNarrationToScenes(args: {
 
   const parsed = safeParseScenes(response.output_text || "", sceneCount);
   if (parsed) {
-    return japaneseVisualHint
+    const mapped = japaneseVisualHint
       ? parsed.map((scene) => ({
           ...scene,
           imagePrompt: appendJapaneseVisualHint(scene.imagePrompt)
         }))
       : parsed;
+    return mapped.map((scene) => ({
+      ...scene,
+      imagePrompt: sanitizePromptByVisualPolicy(scene.imagePrompt, visualPolicy)
+    }));
   }
 
   return fallbackSplitScenes({
@@ -490,7 +591,8 @@ export async function splitNarrationToScenes(args: {
     imageStyle: args.imageStyle,
     imageAspectRatio,
     sceneCount,
-    japaneseVisualHint
+    japaneseVisualHint,
+    visualPolicy
   });
 }
 
@@ -927,26 +1029,44 @@ export async function generateImages(
   options?: {
     startIndex?: number;
     imageAspectRatio?: ImageAspectRatio;
+    visualPolicy?: ImageVisualPolicy;
+    imageStyle?: string;
+    providerOverride?: "openai" | "gemini";
+    imageModelOverride?: string;
+    fileNameSuffix?: string;
     onProgress?: (completed: number, total: number) => Promise<void> | void;
   },
   userId?: string
 ): Promise<string[]> {
-  const provider = await resolveProviderForTask("image", userId);
-  const imageModel = await resolveModelForTask(provider, "image", userId);
+  const provider = options?.providerOverride || (await resolveProviderForTask("image", userId));
+  const resolvedImageModel = await resolveModelForTask(provider, "image", userId);
+  const imageModel = String(options?.imageModelOverride || resolvedImageModel).trim() || resolvedImageModel;
   const textModel = await resolveModelForTask(provider, "text", userId);
   const urls: string[] = [];
   const timeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 90000);
   const retryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 1);
   const startIndex = Math.max(0, options?.startIndex ?? 0);
   const imageAspectRatio = options?.imageAspectRatio === "16:9" ? "16:9" : "9:16";
+  const visualPolicy = options?.visualPolicy === "news_strict" ? "news_strict" : "default";
+  const safeFileNameSuffix = String(options?.fileNameSuffix || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "");
+  const styleAwarePrompts = prompts.map((prompt) => ensurePromptContainsStyle(prompt, options?.imageStyle));
+  const sanitizedPrompts = styleAwarePrompts.map((prompt) => sanitizePromptByVisualPolicy(prompt, visualPolicy));
+
+  function buildImageFileName(index: number, extension = "png"): string {
+    const sequence = startIndex + index + 1;
+    const suffix = safeFileNameSuffix ? `-${safeFileNameSuffix}` : "";
+    return `image-${sequence}${suffix}.${extension}`;
+  }
 
   if (provider === "gemini") {
     const client = await getGeminiClient(userId);
 
-    for (let index = 0; index < prompts.length; index += 1) {
+    for (let index = 0; index < sanitizedPrompts.length; index += 1) {
       const inline = await generateImageWithRetryGemini({
         client,
-        prompt: prompts[index],
+        prompt: sanitizedPrompts[index],
         imageAspectRatio,
         timeoutMs,
         retryCount,
@@ -957,7 +1077,7 @@ export async function generateImages(
 
       const imageBuffer = Buffer.from(inline.data, "base64");
       const extension = extensionFromMime(inline.mimeType, "png");
-      const fileName = `image-${startIndex + index + 1}.${extension}`;
+      const fileName = buildImageFileName(index, extension);
       const stored = await storeGeneratedAsset({
         jobId,
         fileName,
@@ -967,7 +1087,7 @@ export async function generateImages(
       });
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
-        await options.onProgress(index + 1, prompts.length);
+        await options.onProgress(index + 1, sanitizedPrompts.length);
       }
     }
 
@@ -976,10 +1096,10 @@ export async function generateImages(
 
   const client = await getOpenAiClient(userId);
 
-  for (let index = 0; index < prompts.length; index += 1) {
+  for (let index = 0; index < sanitizedPrompts.length; index += 1) {
     const result = await generateImageWithRetryOpenAi({
       client,
-      prompt: prompts[index],
+      prompt: sanitizedPrompts[index],
       imageAspectRatio,
       timeoutMs,
       retryCount,
@@ -991,7 +1111,7 @@ export async function generateImages(
     const imageData = result.data?.[0];
     if (imageData?.b64_json) {
       const imageBuffer = Buffer.from(imageData.b64_json, "base64");
-      const fileName = `image-${startIndex + index + 1}.png`;
+      const fileName = buildImageFileName(index, "png");
       const stored = await storeGeneratedAsset({
         jobId,
         fileName,
@@ -1001,13 +1121,13 @@ export async function generateImages(
       });
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
-        await options.onProgress(index + 1, prompts.length);
+        await options.onProgress(index + 1, sanitizedPrompts.length);
       }
       continue;
     }
 
     if (imageData?.url) {
-      const fileName = `image-${startIndex + index + 1}.png`;
+      const fileName = buildImageFileName(index, "png");
       const stored = await storeGeneratedAssetFromRemote({
         jobId,
         fileName,
@@ -1017,7 +1137,7 @@ export async function generateImages(
       });
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
-        await options.onProgress(index + 1, prompts.length);
+        await options.onProgress(index + 1, sanitizedPrompts.length);
       }
       continue;
     }

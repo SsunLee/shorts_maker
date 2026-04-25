@@ -40,10 +40,42 @@ interface S3Config {
 
 let cachedClient: S3Client | undefined;
 
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function isMissingS3CredentialError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("could not load credentials from any providers") ||
+    normalized.includes("missing credentials in config") ||
+    normalized.includes("credential is missing") ||
+    normalized.includes("credentialsprovidererror")
+  );
+}
+
+function wrapS3Error(error: unknown, action: string): Error {
+  if (isMissingS3CredentialError(error)) {
+    return new Error(
+      `S3 인증 정보가 없습니다(${action}). AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY` +
+        " (필요 시 AWS_SESSION_TOKEN)를 설정한 뒤 서버를 재시작해 주세요."
+    );
+  }
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(String(error || "Unknown S3 error"));
 }
 
 function normalizePrefix(raw: string | undefined): string {
@@ -252,16 +284,20 @@ export async function toSignedStorageReadUrl(
   if (!objectKey) {
     return sourceUrl;
   }
-  const client = getS3Client(config);
-  const safeExpires = Math.max(60, Math.min(60 * 60 * 12, Math.floor(expiresInSec)));
-  return getSignedUrl(
-    client,
-    new GetObjectCommand({
-      Bucket: config.bucket,
-      Key: objectKey
-    }),
-    { expiresIn: safeExpires }
-  );
+  try {
+    const client = getS3Client(config);
+    const safeExpires = Math.max(60, Math.min(60 * 60 * 12, Math.floor(expiresInSec)));
+    return getSignedUrl(
+      client,
+      new GetObjectCommand({
+        Bucket: config.bucket,
+        Key: objectKey
+      }),
+      { expiresIn: safeExpires }
+    );
+  } catch (error) {
+    throw wrapS3Error(error, "signed URL 생성");
+  }
 }
 
 export async function storeGeneratedAsset(args: {
@@ -276,6 +312,12 @@ export async function storeGeneratedAsset(args: {
   const relativePath = withUserScope(`generated/${args.jobId}/${args.fileName}`, args.userId);
 
   if (!config.enabled) {
+    if (isReadOnlyServerlessRuntime()) {
+      throw new Error(
+        "서버리스 환경에서는 로컬 파일 저장소를 사용할 수 없습니다. " +
+          "S3_BUCKET/S3_REGION/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY를 설정해 주세요."
+      );
+    }
     const outputDir = path.join(process.cwd(), "public", "generated", args.jobId);
     await fs.mkdir(outputDir, { recursive: true });
     const localPath = path.join(outputDir, args.fileName);
@@ -287,16 +329,20 @@ export async function storeGeneratedAsset(args: {
   }
 
   const objectKey = joinKey(config, relativePath);
-  const client = getS3Client(config);
-  await client.send(
-    new PutObjectCommand({
-      Bucket: config.bucket,
-      Key: objectKey,
-      Body: Buffer.from(args.body),
-      ContentType: args.contentType || guessContentType(args.fileName),
-      CacheControl: args.cacheControl || "public, max-age=31536000, immutable"
-    })
-  );
+  try {
+    const client = getS3Client(config);
+    await client.send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: objectKey,
+        Body: Buffer.from(args.body),
+        ContentType: args.contentType || guessContentType(args.fileName),
+        CacheControl: args.cacheControl || "public, max-age=31536000, immutable"
+      })
+    );
+  } catch (error) {
+    throw wrapS3Error(error, "객체 업로드");
+  }
 
   return {
     publicUrl: toPublicUrl(config, objectKey)
@@ -318,6 +364,12 @@ export async function storeInstagramFontAsset(args: {
   );
 
   if (!config.enabled) {
+    if (isReadOnlyServerlessRuntime()) {
+      throw new Error(
+        "서버리스 환경에서는 로컬 폰트 저장소를 사용할 수 없습니다. " +
+          "S3_BUCKET/S3_REGION/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY를 설정해 주세요."
+      );
+    }
     const localPath = path.join(process.cwd(), "public", ...relativePath.split("/"));
     await fs.mkdir(path.dirname(localPath), { recursive: true });
     await fs.writeFile(localPath, Buffer.from(args.body));
@@ -328,16 +380,20 @@ export async function storeInstagramFontAsset(args: {
   }
 
   const objectKey = joinKey(config, relativePath);
-  const client = getS3Client(config);
-  await client.send(
-    new PutObjectCommand({
-      Bucket: config.bucket,
-      Key: objectKey,
-      Body: Buffer.from(args.body),
-      ContentType: args.contentType || guessContentType(safeFileName),
-      CacheControl: args.cacheControl || "public, max-age=31536000, immutable"
-    })
-  );
+  try {
+    const client = getS3Client(config);
+    await client.send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: objectKey,
+        Body: Buffer.from(args.body),
+        ContentType: args.contentType || guessContentType(safeFileName),
+        CacheControl: args.cacheControl || "public, max-age=31536000, immutable"
+      })
+    );
+  } catch (error) {
+    throw wrapS3Error(error, "폰트 업로드");
+  }
 
   return {
     publicUrl: toPublicUrl(config, objectKey)
@@ -412,16 +468,20 @@ export async function mirrorRenderedVideoToStorage(args: {
     );
   }
   const body = Buffer.from(await response.arrayBuffer());
-  const client = getS3Client(config);
-  await client.send(
-    new PutObjectCommand({
-      Bucket: config.bucket,
-      Key: objectKey,
-      Body: body,
-      ContentType: "video/mp4",
-      CacheControl: "public, max-age=604800"
-    })
-  );
+  try {
+    const client = getS3Client(config);
+    await client.send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: objectKey,
+        Body: body,
+        ContentType: "video/mp4",
+        CacheControl: "public, max-age=604800"
+      })
+    );
+  } catch (error) {
+    throw wrapS3Error(error, "렌더 영상 업로드");
+  }
   return targetUrl;
 }
 

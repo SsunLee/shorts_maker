@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   ArrowDown,
@@ -25,16 +26,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   renderInstagramPageToPngDataUrl,
   resolveInstagramTemplateVariables
 } from "@/lib/instagram-page-renderer";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
+import {
+  INSTAGRAM_FEED_DRAFT_KEY,
+  INSTAGRAM_FEED_MAX_ROWS_KEY,
+  INSTAGRAM_FEED_STORAGE_KEY,
+  INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY,
+  type InstagramFeedDraft,
+  type InstagramTemplateEditDraft
+} from "@/lib/instagram-feed-storage";
 import type { AppSettings } from "@/lib/types";
 import type { InstagramFeedPage, InstagramGeneratedFeedItem, InstagramTemplate } from "@/lib/instagram-types";
-
-const FEED_STORAGE_KEY = "shorts-maker:instagram:generated-feed:v1";
-const FEED_MAX_ROWS_KEY = "shorts-maker:instagram:feed:max-rows:v1";
 
 type MetaHealthResponse = {
   ok?: boolean;
@@ -89,6 +96,15 @@ type SheetTableResponse = {
   error?: string;
 };
 
+type GenerateImageResponse = {
+  imageUrl?: string;
+  usedPrompt?: string;
+  stylePreset?: string;
+  error?: string;
+};
+
+const INSTAGRAM_MEDIA_PROXY_PATH = "/api/instagram/media-proxy";
+
 function isRenderableMediaUrl(url: string): boolean {
   const raw = String(url || "").trim().toLowerCase();
   if (!raw) return false;
@@ -98,15 +114,39 @@ function isRenderableMediaUrl(url: string): boolean {
   return false;
 }
 
+function toInstagramMediaPreviewUrl(source: string): string {
+  const value = String(source || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("data:") || value.startsWith("blob:")) {
+    return value;
+  }
+  if (value.startsWith(`${INSTAGRAM_MEDIA_PROXY_PATH}?`)) {
+    return value;
+  }
+  if (/^https?:\/\//i.test(value) || value.startsWith("/")) {
+    return `${INSTAGRAM_MEDIA_PROXY_PATH}?source=${encodeURIComponent(value)}`;
+  }
+  return value;
+}
+
 function pagePrimaryMediaUrl(page: InstagramGeneratedFeedItem["pages"][number]): string {
   const bg = String(page.backgroundImageUrl || "").trim();
   if (isRenderableMediaUrl(bg)) {
     return bg;
   }
-  const firstImageLayer = page.elements.find(
-    (element) => element.type === "image" && isRenderableMediaUrl(element.imageUrl)
+  const heroImageLayer = selectPrimaryEditableImageElement(page);
+  if (heroImageLayer && heroImageLayer.type === "image" && isRenderableMediaUrl(heroImageLayer.imageUrl)) {
+    return String(heroImageLayer.imageUrl || "");
+  }
+  const anyImageLayerWithUrl = page.elements.find(
+    (element) => element.type === "image" && isRenderableMediaUrl(String(element.imageUrl || ""))
   );
-  return firstImageLayer && firstImageLayer.type === "image" ? String(firstImageLayer.imageUrl || "") : "";
+  if (anyImageLayerWithUrl && anyImageLayerWithUrl.type === "image") {
+    return String(anyImageLayerWithUrl.imageUrl || "");
+  }
+  return "";
 }
 
 function inferMediaKind(url: string): "image" | "video" {
@@ -243,6 +283,98 @@ function pageOutputKind(page: InstagramFeedPage): "image" | "video" {
   return Boolean(page.audioEnabled) ? "video" : "image";
 }
 
+function collapseWhitespace(value: string): string {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeLayerDimensionPercent(value: number | undefined): number {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 0;
+  }
+  return numeric <= 1 ? numeric * 100 : numeric;
+}
+
+function layerCoverageScore(layer: { width?: number; height?: number }): number {
+  return normalizeLayerDimensionPercent(layer.width) * normalizeLayerDimensionPercent(layer.height);
+}
+
+function selectPrimaryEditableImageElement(page: InstagramFeedPage): InstagramFeedPage["elements"][number] | undefined {
+  const imageElements = page.elements.filter((element) => element.type === "image");
+  if (imageElements.length === 0) {
+    return undefined;
+  }
+  const sorted = [...imageElements].sort((left, right) => layerCoverageScore(right) - layerCoverageScore(left));
+  const candidate = sorted.find((element) => layerCoverageScore(element) >= 120);
+  return candidate || undefined;
+}
+
+function buildDefaultPageImagePrompt(page: InstagramFeedPage, item?: InstagramGeneratedFeedItem): string {
+  const primaryImageLayer = selectPrimaryEditableImageElement(page);
+  const promptFromLayer =
+    primaryImageLayer && primaryImageLayer.type === "image" && collapseWhitespace(primaryImageLayer.aiPrompt).length > 0
+      ? primaryImageLayer
+      : page.elements.find((element) => element.type === "image" && collapseWhitespace(element.aiPrompt).length > 0);
+  if (promptFromLayer && promptFromLayer.type === "image") {
+    return collapseWhitespace(promptFromLayer.aiPrompt);
+  }
+  const subject = collapseWhitespace(item?.subject || "");
+  const keyword = collapseWhitespace(item?.keyword || "");
+  const pageName = collapseWhitespace(page.name || "Page");
+  return collapseWhitespace(`${subject} ${keyword} ${pageName} 인스타그램 카드뉴스용 사실적 이미지`);
+}
+
+function applyImageToFeedPage(args: {
+  page: InstagramFeedPage;
+  mediaUrl: string;
+  prompt?: string;
+}): InstagramFeedPage {
+  const mediaUrl = String(args.mediaUrl || "").trim();
+  const prompt = collapseWhitespace(String(args.prompt || ""));
+  if (!mediaUrl) {
+    return args.page;
+  }
+
+  const primaryImageLayer = selectPrimaryEditableImageElement(args.page);
+  const primaryImageLayerId = primaryImageLayer && primaryImageLayer.type === "image" ? primaryImageLayer.id : undefined;
+  let imageLayerUpdated = false;
+  const elements = args.page.elements.map((element) => {
+    if (element.type !== "image" || imageLayerUpdated) {
+      return element;
+    }
+    if (!primaryImageLayerId || element.id !== primaryImageLayerId) {
+      return element;
+    }
+    imageLayerUpdated = true;
+    return {
+      ...element,
+      imageUrl: mediaUrl,
+      aiPrompt: prompt || element.aiPrompt
+    };
+  });
+
+  return {
+    ...args.page,
+    backgroundImageUrl: imageLayerUpdated ? args.page.backgroundImageUrl : mediaUrl,
+    elements
+  };
+}
+
+function toFeedPreviewPage(page: InstagramFeedPage): InstagramFeedPage {
+  return {
+    ...page,
+    backgroundImageUrl: toInstagramMediaPreviewUrl(String(page.backgroundImageUrl || "")),
+    elements: page.elements.map((element) =>
+      element.type === "image"
+        ? {
+            ...element,
+            imageUrl: toInstagramMediaPreviewUrl(String(element.imageUrl || ""))
+          }
+        : element
+    )
+  };
+}
+
 function buildSampleDataFromFeedItem(
   item: InstagramGeneratedFeedItem,
   rows: SheetRowsResponse["rows"]
@@ -260,6 +392,7 @@ function buildSampleDataFromFeedItem(
 }
 
 export function InstagramFeedClient(): React.JSX.Element {
+  const router = useRouter();
   const [items, setItems] = useState<InstagramGeneratedFeedItem[]>([]);
   const [templates, setTemplates] = useState<InstagramTemplate[]>([]);
   const [sheetRows, setSheetRows] = useState<SheetRowsResponse["rows"]>([]);
@@ -288,6 +421,18 @@ export function InstagramFeedClient(): React.JSX.Element {
   const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
   const [wrapSheetCells, setWrapSheetCells] = useState(false);
   const [thumbnailPreviews, setThumbnailPreviews] = useState<Record<string, string>>({});
+  const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
+  const [mediaDialogPageId, setMediaDialogPageId] = useState<string>();
+  const [mediaDialogUrl, setMediaDialogUrl] = useState("");
+  const [mediaDialogPrompt, setMediaDialogPrompt] = useState("");
+  const [mediaDialogBusy, setMediaDialogBusy] = useState(false);
+  const [mediaDialogError, setMediaDialogError] = useState<string>();
+  const [mediaDialogPreviewIndex, setMediaDialogPreviewIndex] = useState(0);
+  const [mediaDialogPreviewBroken, setMediaDialogPreviewBroken] = useState(false);
+  const [brokenThumbnailIds, setBrokenThumbnailIds] = useState<Record<string, boolean>>({});
+  const [mediaWorkspacePageId, setMediaWorkspacePageId] = useState<string>();
+  const [incomingDraft, setIncomingDraft] = useState<InstagramFeedDraft | null>(null);
+  const [feedItemsHydrated, setFeedItemsHydrated] = useState(false);
 
   const sheetShortcutUrl = useMemo(() => {
     const id = spreadsheetId.trim();
@@ -301,8 +446,10 @@ export function InstagramFeedClient(): React.JSX.Element {
     if (typeof window === "undefined") {
       return;
     }
-    const raw = window.localStorage.getItem(FEED_STORAGE_KEY);
+    setFeedItemsHydrated(false);
+    const raw = window.localStorage.getItem(INSTAGRAM_FEED_STORAGE_KEY);
     if (!raw) {
+      setFeedItemsHydrated(true);
       return;
     }
     try {
@@ -313,6 +460,8 @@ export function InstagramFeedClient(): React.JSX.Element {
       }
     } catch {
       setItems([]);
+    } finally {
+      setFeedItemsHydrated(true);
     }
   }, []);
 
@@ -320,7 +469,44 @@ export function InstagramFeedClient(): React.JSX.Element {
     if (typeof window === "undefined") {
       return;
     }
-    const saved = window.localStorage.getItem(FEED_MAX_ROWS_KEY);
+    const raw = window.localStorage.getItem(INSTAGRAM_FEED_DRAFT_KEY);
+    if (!raw) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as InstagramFeedDraft;
+      if (parsed && typeof parsed === "object") {
+        setIncomingDraft(parsed);
+      }
+    } catch {
+      // Ignore malformed draft payload.
+    } finally {
+      window.localStorage.removeItem(INSTAGRAM_FEED_DRAFT_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!incomingDraft || !feedItemsHydrated) {
+      return;
+    }
+
+    const draftCaption = String(incomingDraft.caption || "").trim();
+    const draftSelectedItemId = String(incomingDraft.selectedItemId || "").trim();
+
+    if (draftCaption) {
+      setCaption(draftCaption);
+    }
+    if (draftSelectedItemId && items.some((item) => item.id === draftSelectedItemId)) {
+      setSelectedItemId(draftSelectedItemId);
+    }
+    setIncomingDraft(null);
+  }, [incomingDraft, items, feedItemsHydrated]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const saved = window.localStorage.getItem(INSTAGRAM_FEED_MAX_ROWS_KEY);
     if (!saved) {
       return;
     }
@@ -338,7 +524,7 @@ export function InstagramFeedClient(): React.JSX.Element {
     if (!/^(?:[1-9]|10)$/.test(normalized)) {
       return;
     }
-    window.localStorage.setItem(FEED_MAX_ROWS_KEY, normalized);
+    window.localStorage.setItem(INSTAGRAM_FEED_MAX_ROWS_KEY, normalized);
   }, [maxRows]);
 
   useEffect(() => {
@@ -365,6 +551,10 @@ export function InstagramFeedClient(): React.JSX.Element {
     () => items.find((item) => item.id === selectedItemId),
     [items, selectedItemId]
   );
+  const selectedTemplate = useMemo(
+    () => templates.find((template) => template.id === selectedItem?.templateId),
+    [templates, selectedItem?.templateId]
+  );
 
   const orderedPages = useMemo(() => {
     if (!selectedItem) return [];
@@ -374,6 +564,48 @@ export function InstagramFeedClient(): React.JSX.Element {
     const missing = selectedItem.pages.filter((page) => !order.includes(page.id));
     return [...ordered, ...missing];
   }, [orderedPageIdsByItem, selectedItem]);
+  const selectedMediaDialogPage = useMemo(
+    () => orderedPages.find((page) => page.id === mediaDialogPageId),
+    [orderedPages, mediaDialogPageId]
+  );
+  const mediaDialogPreviewCandidates = useMemo(() => {
+    const raw = String(mediaDialogUrl || "").trim();
+    if (!raw || !isRenderableMediaUrl(raw) || inferMediaKind(raw) !== "image") {
+      return [] as string[];
+    }
+    const candidates = [raw, toInstagramMediaPreviewUrl(raw)].filter(Boolean);
+    const seen = new Set<string>();
+    return candidates.filter((candidate) => {
+      if (seen.has(candidate)) {
+        return false;
+      }
+      seen.add(candidate);
+      return true;
+    });
+  }, [mediaDialogUrl]);
+  const mediaDialogPreviewUrl = mediaDialogPreviewCandidates[mediaDialogPreviewIndex] || "";
+
+  useEffect(() => {
+    if (mediaDialogOpen && mediaDialogPageId && !selectedMediaDialogPage) {
+      setMediaDialogOpen(false);
+    }
+  }, [mediaDialogOpen, mediaDialogPageId, selectedMediaDialogPage]);
+
+  useEffect(() => {
+    setMediaDialogPreviewIndex(0);
+    setMediaDialogPreviewBroken(false);
+  }, [mediaDialogUrl, mediaDialogPageId, mediaDialogOpen]);
+
+  useEffect(() => {
+    if (orderedPages.length === 0) {
+      setMediaWorkspacePageId(undefined);
+      return;
+    }
+    if (mediaWorkspacePageId && orderedPages.some((page) => page.id === mediaWorkspacePageId)) {
+      return;
+    }
+    setMediaWorkspacePageId(orderedPages[0]?.id);
+  }, [mediaWorkspacePageId, orderedPages]);
 
   const mediaPlan = useMemo(
     () =>
@@ -398,6 +630,7 @@ export function InstagramFeedClient(): React.JSX.Element {
     const buildThumbnails = async (): Promise<void> => {
       if (!selectedItem || orderedPages.length === 0) {
         setThumbnailPreviews({});
+        setBrokenThumbnailIds({});
         return;
       }
       const matchedTemplate = templates.find((template) => template.id === selectedItem.templateId);
@@ -408,8 +641,9 @@ export function InstagramFeedClient(): React.JSX.Element {
       const next: Record<string, string> = {};
       for (const page of orderedPages) {
         try {
+          const previewPage = toFeedPreviewPage(page);
           next[page.id] = await renderInstagramPageToPngDataUrl({
-            page,
+            page: previewPage,
             sampleData,
             canvasWidth,
             canvasHeight
@@ -420,6 +654,7 @@ export function InstagramFeedClient(): React.JSX.Element {
       }
       if (!cancelled) {
         setThumbnailPreviews(next);
+        setBrokenThumbnailIds({});
       }
     };
     void buildThumbnails();
@@ -501,7 +736,7 @@ export function InstagramFeedClient(): React.JSX.Element {
 
   function clearAll(): void {
     if (typeof window !== "undefined") {
-      window.localStorage.removeItem(FEED_STORAGE_KEY);
+      window.localStorage.removeItem(INSTAGRAM_FEED_STORAGE_KEY);
     }
     setItems([]);
     setSelectedItemId(undefined);
@@ -587,7 +822,7 @@ export function InstagramFeedClient(): React.JSX.Element {
   function saveFeedItems(nextItems: InstagramGeneratedFeedItem[]): void {
     setItems(nextItems);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(FEED_STORAGE_KEY, JSON.stringify(nextItems));
+      window.localStorage.setItem(INSTAGRAM_FEED_STORAGE_KEY, JSON.stringify(nextItems));
     }
   }
 
@@ -664,7 +899,7 @@ export function InstagramFeedClient(): React.JSX.Element {
 
   function refreshResults(): void {
     if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(FEED_STORAGE_KEY);
+    const raw = window.localStorage.getItem(INSTAGRAM_FEED_STORAGE_KEY);
     if (!raw) {
       setItems([]);
       setSelectedItemId(undefined);
@@ -713,6 +948,165 @@ export function InstagramFeedClient(): React.JSX.Element {
     const bounded = Math.max(0, Math.min(targetIndex, next.length));
     next.splice(bounded, 0, moved);
     reorderSelectedItemPages(next);
+  }
+
+  function openMediaDialogForPage(page: InstagramFeedPage): void {
+    setMediaDialogPageId(page.id);
+    setMediaWorkspacePageId(page.id);
+    setMediaDialogUrl(pagePrimaryMediaUrl(page));
+    setMediaDialogPrompt(buildDefaultPageImagePrompt(page, selectedItem));
+    setMediaDialogError(undefined);
+    setMediaDialogPreviewBroken(false);
+    setMediaDialogOpen(true);
+  }
+
+  function openMediaWorkspaceEditor(args?: { preferMissing?: boolean; pageId?: string }): void {
+    if (orderedPages.length === 0) {
+      return;
+    }
+    const explicitPage = args?.pageId ? orderedPages.find((page) => page.id === args.pageId) : undefined;
+    const missingPage = orderedPages.find((page) => !pagePrimaryMediaUrl(page));
+    const fallbackPage = orderedPages[0];
+    const targetPage = explicitPage || (args?.preferMissing ? missingPage : undefined) || missingPage || fallbackPage;
+    if (!targetPage) {
+      return;
+    }
+    openMediaDialogForPage(targetPage);
+  }
+
+  function openDetailedTemplateEditor(): void {
+    if (!selectedItem) {
+      setError("선택된 결과가 없습니다.");
+      return;
+    }
+    const canvasWidth = normalizeCanvasWidth(Number(selectedTemplate?.canvasWidth || 1080));
+    const canvasHeight = normalizeCanvasHeight(Number(selectedTemplate?.canvasHeight || 1350));
+    const nowIso = new Date().toISOString();
+    const clonedPages = orderedPages.map((page) => ({
+      ...page,
+      id: uid(),
+      elements: page.elements.map((element) => ({ ...element, id: uid() }))
+    }));
+    const draftTemplate: InstagramTemplate = {
+      id: uid(),
+      templateName: `${selectedItem.templateName} (피드 편집본)`,
+      mode: selectedTemplate?.mode || "news",
+      sourceTitle: selectedItem.subject,
+      sourceTopic: selectedItem.keyword,
+      canvasPreset: selectedTemplate?.canvasPreset,
+      canvasWidth,
+      canvasHeight,
+      pageDurationSec: Math.max(1, Number(selectedTemplate?.pageDurationSec || 4)),
+      pageCount: clonedPages.length,
+      pages: clonedPages,
+      customFonts: selectedTemplate?.customFonts || [],
+      updatedAt: nowIso
+    };
+    const draftPayload: InstagramTemplateEditDraft = {
+      createdAt: nowIso,
+      source: "instagram-feed",
+      focusPageId: clonedPages[0]?.id,
+      template: draftTemplate,
+      sampleData: buildSampleDataFromFeedItem(selectedItem, sheetRows)
+    };
+
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY, JSON.stringify(draftPayload));
+    }
+    router.push("/instagram/templates");
+  }
+
+  function applyMediaToSelectedPage(mediaUrl: string, prompt: string): boolean {
+    if (!selectedItem || !mediaDialogPageId) {
+      return false;
+    }
+    const resolvedMediaUrl = String(mediaUrl || "").trim();
+    if (!resolvedMediaUrl) {
+      return false;
+    }
+    const nextItems = items.map((item) => {
+      if (item.id !== selectedItem.id) {
+        return item;
+      }
+      return {
+        ...item,
+        pages: item.pages.map((page) =>
+          page.id === mediaDialogPageId
+            ? applyImageToFeedPage({
+                page,
+                mediaUrl: resolvedMediaUrl,
+                prompt
+              })
+            : page
+        )
+      };
+    });
+    saveFeedItems(nextItems);
+    return true;
+  }
+
+  async function applyMediaUrlFromDialog(): Promise<void> {
+    setMediaDialogError(undefined);
+    const resolvedUrl = String(mediaDialogUrl || "").trim();
+    if (!resolvedUrl) {
+      setMediaDialogError("이미지 URL을 입력해 주세요.");
+      return;
+    }
+    if (!isRenderableMediaUrl(resolvedUrl)) {
+      setMediaDialogError("http(s), data URL 또는 /경로 형태의 이미지 URL을 입력해 주세요.");
+      return;
+    }
+    const updated = applyMediaToSelectedPage(resolvedUrl, mediaDialogPrompt);
+    if (!updated) {
+      setMediaDialogError("선택한 페이지를 찾지 못했습니다.");
+      return;
+    }
+    setSuccess("페이지 이미지를 적용했습니다.");
+    setMediaDialogOpen(false);
+  }
+
+  async function generateMediaForSelectedPage(): Promise<void> {
+    if (!selectedMediaDialogPage) {
+      setMediaDialogError("선택한 페이지를 찾지 못했습니다.");
+      return;
+    }
+    const prompt = collapseWhitespace(
+      mediaDialogPrompt || buildDefaultPageImagePrompt(selectedMediaDialogPage, selectedItem)
+    );
+    if (!prompt) {
+      setMediaDialogError("이미지 프롬프트를 입력해 주세요.");
+      return;
+    }
+
+    setMediaDialogBusy(true);
+    setMediaDialogError(undefined);
+    try {
+      const response = await fetch("/api/instagram/generate-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          canvasWidth: normalizeCanvasWidth(Number(selectedTemplate?.canvasWidth || 1080)),
+          canvasHeight: normalizeCanvasHeight(Number(selectedTemplate?.canvasHeight || 1350))
+        })
+      });
+      const data = (await response.json()) as GenerateImageResponse;
+      if (!response.ok || !data.imageUrl) {
+        throw new Error(data.error || "이미지 생성에 실패했습니다.");
+      }
+      setMediaDialogUrl(String(data.imageUrl || ""));
+      setMediaDialogPreviewBroken(false);
+      const updated = applyMediaToSelectedPage(String(data.imageUrl || ""), prompt);
+      if (!updated) {
+        throw new Error("페이지 이미지 반영에 실패했습니다.");
+      }
+      setSuccess("AI 이미지 생성 후 페이지에 적용했습니다.");
+      setMediaDialogOpen(false);
+    } catch (mediaError) {
+      setMediaDialogError(mediaError instanceof Error ? mediaError.message : "이미지 생성에 실패했습니다.");
+    } finally {
+      setMediaDialogBusy(false);
+    }
   }
 
   async function checkMetaHealth(): Promise<void> {
@@ -765,8 +1159,9 @@ export function InstagramFeedClient(): React.JSX.Element {
     for (let index = 0; index < orderedPages.length; index += 1) {
       const page = orderedPages[index];
       const pageName = sanitizeDownloadName(page.name || `page-${index + 1}`);
+      const previewPage = toFeedPreviewPage(page);
       const imageDataUrl = await renderInstagramPageToPngDataUrl({
-        page,
+        page: previewPage,
         sampleData,
         canvasWidth,
         canvasHeight
@@ -950,7 +1345,7 @@ export function InstagramFeedClient(): React.JSX.Element {
               이 화면에서 템플릿 + 시트 row를 바로 조합해 업로드 전 컨테이너를 생성합니다.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
             <Button type="button" variant="outline" onClick={() => void loadBuildContext()} disabled={loadingContext}>
               {loadingContext ? "로딩 중..." : "소스 새로고침"}
             </Button>
@@ -1150,10 +1545,10 @@ export function InstagramFeedClient(): React.JSX.Element {
       </div>
 
       {items.length > 0 ? (
-        <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-xl border bg-card p-3">
+        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="order-2 rounded-xl border bg-card p-3 lg:order-1">
             <p className="mb-2 text-sm font-semibold">결과 선택</p>
-            <div className="max-h-[70vh] space-y-2 overflow-y-auto pr-1">
+            <div className="max-h-[42vh] space-y-2 overflow-y-auto pr-1 md:max-h-[70vh]">
               {items.map((item) => (
                 <button
                   key={item.id}
@@ -1177,7 +1572,7 @@ export function InstagramFeedClient(): React.JSX.Element {
             </div>
           </aside>
 
-          <div className="space-y-4">
+          <div className="order-1 space-y-4 lg:order-2">
             {selectedItem ? (
               <>
                 <div className="rounded-xl border bg-card p-3">
@@ -1196,6 +1591,24 @@ export function InstagramFeedClient(): React.JSX.Element {
                         disabled={checkingMeta}
                       >
                         {checkingMeta ? "검사 중..." : "Meta API 검사"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full sm:w-auto"
+                        onClick={() => openMediaWorkspaceEditor({ preferMissing: true })}
+                        disabled={orderedPages.length === 0}
+                      >
+                        이미지 편집기
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full sm:w-auto"
+                        onClick={openDetailedTemplateEditor}
+                        disabled={orderedPages.length === 0}
+                      >
+                        템플릿 상세 편집
                       </Button>
                       <Button
                         type="button"
@@ -1269,7 +1682,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                     }
                   }}
                 >
-                  <DialogContent className="max-w-2xl">
+                  <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto p-4 sm:p-6">
                     <DialogHeader>
                       <DialogTitle>Instagram 업로드 확인</DialogTitle>
                       <DialogDescription>
@@ -1341,6 +1754,105 @@ export function InstagramFeedClient(): React.JSX.Element {
                   </DialogContent>
                 </Dialog>
 
+                <Dialog
+                  open={mediaDialogOpen}
+                  onOpenChange={(open) => {
+                    if (!open && mediaDialogBusy) {
+                      return;
+                    }
+                    setMediaDialogOpen(open);
+                    if (!open) {
+                      setMediaDialogError(undefined);
+                    }
+                  }}
+                >
+                  <DialogContent className="max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle>페이지 이미지 추가/변경</DialogTitle>
+                      <DialogDescription>
+                        {selectedMediaDialogPage
+                          ? `${selectedMediaDialogPage.name} 페이지에 사용할 이미지를 설정합니다.`
+                          : "이미지를 설정할 페이지를 선택해 주세요."}
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                      <div className="space-y-1">
+                        <Label>이미지 URL</Label>
+                        <Input
+                          value={mediaDialogUrl}
+                          onChange={(event) => setMediaDialogUrl(event.target.value)}
+                          placeholder="https://... 또는 /generated/... 또는 data:image/..."
+                          disabled={mediaDialogBusy}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>AI 이미지 프롬프트</Label>
+                        <Textarea
+                          rows={4}
+                          value={mediaDialogPrompt}
+                          onChange={(event) => setMediaDialogPrompt(event.target.value)}
+                          placeholder="예: 도심 야경에서 인터뷰하는 뉴스 리포터, 사실적인 다큐 사진"
+                          disabled={mediaDialogBusy}
+                        />
+                      </div>
+                      {mediaDialogUrl &&
+                      isRenderableMediaUrl(mediaDialogUrl) &&
+                      inferMediaKind(mediaDialogUrl) === "image" &&
+                      !mediaDialogPreviewBroken &&
+                      mediaDialogPreviewUrl ? (
+                        <div className="overflow-hidden rounded-md border">
+                          <img
+                            src={mediaDialogPreviewUrl}
+                            alt="page media preview"
+                            className="h-40 w-full object-cover"
+                            onError={() => {
+                              setMediaDialogPreviewIndex((current) => {
+                                const next = current + 1;
+                                if (next < mediaDialogPreviewCandidates.length) {
+                                  return next;
+                                }
+                                setMediaDialogPreviewBroken(true);
+                                return current;
+                              });
+                            }}
+                          />
+                        </div>
+                      ) : null}
+                      {mediaDialogPreviewBroken ? (
+                        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-500">
+                          이미지 미리보기를 불러오지 못했습니다. URL을 다시 확인하거나 AI 생성을 사용해 주세요.
+                        </div>
+                      ) : null}
+                      {mediaDialogError ? <p className="text-sm text-destructive">{mediaDialogError}</p> : null}
+                    </div>
+                    <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setMediaDialogOpen(false)}
+                        disabled={mediaDialogBusy}
+                      >
+                        닫기
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void applyMediaUrlFromDialog()}
+                        disabled={mediaDialogBusy}
+                      >
+                        URL 적용
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => void generateMediaForSelectedPage()}
+                        disabled={mediaDialogBusy || !selectedMediaDialogPage}
+                      >
+                        {mediaDialogBusy ? "AI 생성 중..." : "AI 생성 후 적용"}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
                 <div className="rounded-xl border bg-card p-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <p className="text-sm font-semibold">컨테이너 순서 편집 (n8n 스타일 흐름)</p>
@@ -1348,11 +1860,57 @@ export function InstagramFeedClient(): React.JSX.Element {
                       드래그 또는 ↑↓ 버튼으로 순서를 정한 뒤 업로드
                     </p>
                   </div>
+                  <div className="mb-3 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground">
+                    이미지 UX 가이드: 각 페이지 카드의 `이미지 추가/변경` 버튼에서 AI 생성 또는 URL 입력으로 바로 반영할 수 있습니다.
+                  </div>
+                  <div className="mb-3 rounded-md border border-border/60 bg-muted/20 p-2">
+                    <p className="mb-2 text-xs font-medium text-foreground">이미지 편집 워크스페이스</p>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Select
+                        value={mediaWorkspacePageId || orderedPages[0]?.id || ""}
+                        onValueChange={setMediaWorkspacePageId}
+                        disabled={orderedPages.length === 0}
+                      >
+                        <SelectTrigger className="h-8 w-full sm:max-w-xs">
+                          <SelectValue placeholder="편집할 페이지 선택" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {orderedPages.map((page, index) => (
+                            <SelectItem key={`feed-media-workspace-${page.id}`} value={page.id}>
+                              {index + 1}. {page.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => openMediaWorkspaceEditor({ pageId: mediaWorkspacePageId })}
+                        disabled={orderedPages.length === 0}
+                      >
+                        선택 페이지 편집
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => openMediaWorkspaceEditor({ preferMissing: true })}
+                        disabled={orderedPages.length === 0}
+                      >
+                        미디어 누락 페이지 편집
+                      </Button>
+                    </div>
+                  </div>
                   <div className="overflow-x-auto">
                     <div className="flex min-w-max items-center gap-3 pb-2">
                       {orderedPages.map((page, index) => {
                         const mediaUrl = pagePrimaryMediaUrl(page);
                         const kind = inferMediaKind(mediaUrl);
+                        const isMediaMissing = !mediaUrl;
+                        const previewBroken = Boolean(brokenThumbnailIds[page.id]);
                         return (
                           <div key={page.id} className="flex items-center gap-3">
                             <article
@@ -1370,26 +1928,35 @@ export function InstagramFeedClient(): React.JSX.Element {
                             >
                               <div className="mb-1 flex items-center justify-between">
                                 <p className="text-xs font-medium">{index + 1}. {page.name}</p>
-                                <p className="text-[10px] text-muted-foreground">{kind}</p>
+                                <p className={`text-[10px] ${isMediaMissing ? "text-amber-500" : "text-muted-foreground"}`}>
+                                  {isMediaMissing ? "image 필요" : kind}
+                                </p>
                               </div>
                               <div
                                 className="relative aspect-[4/5] overflow-hidden rounded border"
                                 style={{ backgroundColor: page.backgroundColor || "#111111" }}
                               >
-                                {thumbnailPreviews[page.id] ? (
+                                {thumbnailPreviews[page.id] && !previewBroken ? (
                                   <img
                                     src={thumbnailPreviews[page.id]}
                                     alt={`${page.name} preview`}
                                     className="absolute inset-0 h-full w-full object-cover"
                                     draggable={false}
+                                    onError={() =>
+                                      setBrokenThumbnailIds((prev) => ({ ...prev, [page.id]: true }))
+                                    }
                                   />
                                 ) : null}
-                                {!thumbnailPreviews[page.id] &&
+                                {(!thumbnailPreviews[page.id] || previewBroken) &&
                                 !mediaUrl &&
-                                page.elements.filter((layer) => layer.type === "image" && layer.imageUrl).length === 0 &&
                                 !page.backgroundImageUrl ? (
                                   <div className="absolute inset-0 flex items-center justify-center text-[11px] text-muted-foreground">
                                     미디어 없음
+                                  </div>
+                                ) : null}
+                                {previewBroken ? (
+                                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-amber-500">
+                                    미리보기 로드 실패
                                   </div>
                                 ) : null}
                               </div>
@@ -1415,6 +1982,15 @@ export function InstagramFeedClient(): React.JSX.Element {
                                   <ArrowDown className="h-3.5 w-3.5" />
                                 </Button>
                               </div>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={isMediaMissing ? "default" : "outline"}
+                                className="mt-1 h-7 w-full px-2 text-[11px]"
+                                onClick={() => openMediaDialogForPage(page)}
+                              >
+                                {isMediaMissing ? "이미지 추가" : "이미지 변경"}
+                              </Button>
                             </article>
                             {index < orderedPages.length - 1 ? (
                               <div className="flex h-full items-center text-muted-foreground">

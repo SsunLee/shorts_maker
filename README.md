@@ -9,6 +9,7 @@ Full-stack short-video generator with:
 재사용 가능한 작업 프롬프트(15년차 시니어 개발자 모드):
 
 - `docs/codex-senior-work-prompt.md`
+- `AGENT.md` (운영 배포/링크 안전 규칙)
 
 새 세션 시작 시 해당 파일의 프롬프트 블록을 그대로 붙여넣어 동일한 작업 톤/품질로 진행할 수 있습니다.
 
@@ -228,6 +229,12 @@ Content-row fetch (`/api/sheet-rows`) required columns:
 3. Set `VIDEO_ENGINE_URL` to a reachable public URL for your FastAPI engine.
 4. Add `CRON_SECRET` (랜덤 긴 문자열) for protected cron endpoint.
 5. (선택) `SUPER_ADMIN_EMAILS` / `NEXT_PUBLIC_SUPER_ADMIN_EMAILS`에 관리자 이메일 목록(`,` 구분) 설정.
+
+운영 배포는 루트 디렉터리에서 아래 명령을 권장합니다(루트 디렉터리 강제):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/vercel-prod-deploy.ps1
+```
 
 스케줄 자동 실행은 `web/vercel.json`의 cron 설정(`*/5 * * * *`)으로
 `/api/cron/automation`를 호출해 동작합니다.

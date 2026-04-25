@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getWorkflow } from "@/lib/workflow-store";
 import { updateSceneSplit } from "@/lib/staged-workflow";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
+import { withReadableWorkflowMediaUrls } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
 
@@ -120,19 +121,20 @@ export async function GET(
   if (!workflow) {
     return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
   }
+  const hydrated = await withReadableWorkflowMediaUrls(workflow);
   const summaryOnly = new URL(request.url).searchParams.get("summary") === "1";
   if (summaryOnly) {
     return NextResponse.json({
-      id: workflow.id,
-      stage: workflow.stage,
-      status: workflow.status,
-      updatedAt: workflow.updatedAt,
-      error: workflow.error,
-      previewVideoUrl: workflow.previewVideoUrl,
-      finalVideoUrl: workflow.finalVideoUrl
+      id: hydrated.id,
+      stage: hydrated.stage,
+      status: hydrated.status,
+      updatedAt: hydrated.updatedAt,
+      error: hydrated.error,
+      previewVideoUrl: hydrated.previewVideoUrl,
+      finalVideoUrl: hydrated.finalVideoUrl
     });
   }
-  return NextResponse.json(workflow);
+  return NextResponse.json(hydrated);
 }
 
 /** Update narration/split scene prompts before moving to next stage. */
@@ -149,7 +151,8 @@ export async function PATCH(
     const body = await request.json();
     const payload = patchSchema.parse(body);
     const workflow = await updateSceneSplit(id, payload, userId);
-    return NextResponse.json(workflow);
+    const hydrated = await withReadableWorkflowMediaUrls(workflow);
+    return NextResponse.json(hydrated);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to update workflow";
     return NextResponse.json({ error: message }, { status: 400 });

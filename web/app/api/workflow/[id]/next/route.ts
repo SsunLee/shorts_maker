@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runNextWorkflowStage } from "@/lib/staged-workflow";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
+import { withReadableWorkflowMediaUrls } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
 
@@ -16,7 +17,8 @@ export async function POST(
     }
     const { id } = await context.params;
     const workflow = await runNextWorkflowStage(id, userId);
-    return NextResponse.json(workflow);
+    const hydrated = await withReadableWorkflowMediaUrls(workflow);
+    return NextResponse.json(hydrated);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to run next stage";
     return NextResponse.json({ error: message }, { status: 400 });

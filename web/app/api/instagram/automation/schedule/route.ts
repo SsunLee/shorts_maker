@@ -19,7 +19,8 @@ const schema = z.object({
   sheetName: z.string().optional(),
   autoIdeaEnabled: z.boolean().optional(),
   autoIdeaKeywords: z.string().optional(),
-  autoIdeaLanguage: z.enum(["ko", "en", "ja", "es", "hi"]).optional()
+  autoIdeaLanguage: z.enum(["ko", "en", "ja", "es", "hi"]).optional(),
+  autoUploadEnabled: z.boolean().optional()
 });
 
 export async function GET(): Promise<NextResponse> {
@@ -55,4 +56,3 @@ export async function DELETE(): Promise<NextResponse> {
   const schedule = await disableInstagramAutomationSchedule(userId);
   return NextResponse.json({ schedule });
 }
-

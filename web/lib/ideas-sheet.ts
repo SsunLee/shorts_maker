@@ -7,8 +7,145 @@ interface SheetMatrix {
   sheetName: string;
 }
 
+type TextSignature = {
+  raw: string;
+  normalized: string;
+  tokens: string[];
+};
+
+type AppendSkippedItem = {
+  field: "keyword" | "subject";
+  keyword: string;
+  subject: string;
+  reason: string;
+  matchedValue?: string;
+};
+
 function normalizeHeader(value: string): string {
   return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function parseRatio(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseFloat(String(value || "").trim());
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value || "").trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function normalizeSimilarityText(value: string | undefined): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/#[\p{L}\p{N}_-]+/gu, " ")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeSimilarityText(value: string | undefined): string[] {
+  const normalized = normalizeSimilarityText(value);
+  if (!normalized) {
+    return [];
+  }
+  const words = normalized
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+  const wordSet = new Set(words);
+  if (wordSet.size >= 5) {
+    return Array.from(wordSet).slice(0, 200);
+  }
+
+  const compact = normalized.replace(/\s+/g, "");
+  const ngrams: string[] = [];
+  if (compact.length >= 4) {
+    const gramSize = compact.length > 40 ? 3 : 2;
+    for (let index = 0; index <= compact.length - gramSize && ngrams.length < 200; index += 1) {
+      ngrams.push(compact.slice(index, index + gramSize));
+    }
+  }
+  return Array.from(new Set([...words, ...ngrams])).slice(0, 200);
+}
+
+function buildTextSignature(value: string): TextSignature {
+  return {
+    raw: String(value || "").trim(),
+    normalized: normalizeSimilarityText(value),
+    tokens: tokenizeSimilarityText(value)
+  };
+}
+
+function computeJaccard(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  let intersection = 0;
+  leftSet.forEach((token) => {
+    if (rightSet.has(token)) {
+      intersection += 1;
+    }
+  });
+  const union = leftSet.size + rightSet.size - intersection;
+  if (union <= 0) {
+    return 0;
+  }
+  return intersection / union;
+}
+
+function countCommonTokens(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const rightSet = new Set(right);
+  let count = 0;
+  left.forEach((token) => {
+    if (rightSet.has(token)) {
+      count += 1;
+    }
+  });
+  return count;
+}
+
+function findNearDuplicateText(
+  candidate: TextSignature,
+  references: TextSignature[],
+  threshold: number,
+  minCommonTokens: number
+): TextSignature | undefined {
+  if (!candidate.normalized) {
+    return undefined;
+  }
+  return references.find((target) => {
+    if (!target.normalized) {
+      return false;
+    }
+    if (target.normalized === candidate.normalized) {
+      return true;
+    }
+    const longerLength = Math.max(candidate.normalized.length, target.normalized.length);
+    const shorterLength = Math.min(candidate.normalized.length, target.normalized.length);
+    if (
+      longerLength >= 10 &&
+      shorterLength >= 8 &&
+      (target.normalized.includes(candidate.normalized) || candidate.normalized.includes(target.normalized))
+    ) {
+      return true;
+    }
+    const score = computeJaccard(candidate.tokens, target.tokens);
+    const common = countCommonTokens(candidate.tokens, target.tokens);
+    return score >= threshold && common >= minCommonTokens;
+  });
 }
 
 function findColumnIndex(headers: string[], aliases: string[]): number | undefined {
@@ -111,7 +248,7 @@ export async function appendIdeaRowsToSheet(args: {
   idBase?: string;
   items: IdeaDraftRow[];
   userId?: string;
-}): Promise<{ inserted: number; sheetName: string; insertedIds: string[] }> {
+}): Promise<{ inserted: number; sheetName: string; insertedIds: string[]; skipped: AppendSkippedItem[] }> {
   const context = await getSheetsContext(args.sheetName, args.userId);
   if (!context) {
     throw new Error(
@@ -165,6 +302,34 @@ export async function appendIdeaRowsToSheet(args: {
     });
   }
   const pendingKeywordKeys = new Set<string>();
+  const keywordSimilarityThreshold = parseRatio(process.env.IDEA_SHEET_KEYWORD_SIMILARITY, 0.9, 0.4, 0.999);
+  const subjectSimilarityThreshold = parseRatio(process.env.IDEA_SHEET_SUBJECT_SIMILARITY, 0.78, 0.35, 0.999);
+  const keywordMinCommonTokens = parsePositiveInt(process.env.IDEA_SHEET_KEYWORD_MIN_COMMON_TOKENS, 3);
+  const subjectMinCommonTokens = parsePositiveInt(process.env.IDEA_SHEET_SUBJECT_MIN_COMMON_TOKENS, 6);
+
+  const existingKeywordSignatures: TextSignature[] = [];
+  if (indexes.keyword !== undefined) {
+    bodyRows.forEach((row) => {
+      const value = String(row[indexes.keyword!] ?? "").trim();
+      if (value) {
+        existingKeywordSignatures.push(buildTextSignature(value));
+      }
+    });
+  }
+
+  const existingSubjectSignatures: TextSignature[] = [];
+  if (indexes.subject !== undefined) {
+    bodyRows.forEach((row) => {
+      const value = String(row[indexes.subject!] ?? "").trim();
+      if (value) {
+        existingSubjectSignatures.push(buildTextSignature(value));
+      }
+    });
+  }
+
+  const pendingKeywordSignatures: TextSignature[] = [];
+  const pendingSubjectSignatures: TextSignature[] = [];
+  const skipped: AppendSkippedItem[] = [];
 
   function takeUniqueId(preferred?: string): string {
     const explicit = normalizeIdeaId(preferred);
@@ -183,15 +348,63 @@ export async function appendIdeaRowsToSheet(args: {
   }
 
   const insertedIds: string[] = [];
-  const appendRows = args.items.map((item) => {
+  const appendRows = args.items
+    .map((item) => {
     const row = Array(headers.length).fill("");
     const keyword = String(item.Keyword || "").trim();
+    const subject = String(item.Subject || "").trim();
+    const keywordSignature = buildTextSignature(keyword);
+    const subjectSignature = buildTextSignature(subject);
     if (indexes.keyword !== undefined && keyword) {
       const keywordKey = keyword.toLowerCase();
       if (existingKeywordKeys.has(keywordKey) || pendingKeywordKeys.has(keywordKey)) {
-        throw new Error(`중복 keyword는 반영할 수 없습니다: ${keyword}`);
+        skipped.push({
+          field: "keyword",
+          keyword,
+          subject,
+          reason: "동일 keyword",
+          matchedValue: keyword
+        });
+        return null;
+      }
+      const similarKeyword =
+        findNearDuplicateText(
+          keywordSignature,
+          [...existingKeywordSignatures, ...pendingKeywordSignatures],
+          keywordSimilarityThreshold,
+          keywordMinCommonTokens
+        ) || undefined;
+      if (similarKeyword) {
+        skipped.push({
+          field: "keyword",
+          keyword,
+          subject,
+          reason: `유사 keyword(${Math.round(keywordSimilarityThreshold * 100)}% 이상)`,
+          matchedValue: similarKeyword.raw
+        });
+        return null;
       }
       pendingKeywordKeys.add(keywordKey);
+    }
+
+    if (indexes.subject !== undefined && subject) {
+      const similarSubject =
+        findNearDuplicateText(
+          subjectSignature,
+          [...existingSubjectSignatures, ...pendingSubjectSignatures],
+          subjectSimilarityThreshold,
+          subjectMinCommonTokens
+        ) || undefined;
+      if (similarSubject) {
+        skipped.push({
+          field: "subject",
+          keyword,
+          subject,
+          reason: `유사 subject(${Math.round(subjectSimilarityThreshold * 100)}% 이상)`,
+          matchedValue: similarSubject.raw
+        });
+        return null;
+      }
     }
 
     const nextId = takeUniqueId(item.id);
@@ -204,7 +417,7 @@ export async function appendIdeaRowsToSheet(args: {
       row[indexes.keyword] = keyword;
     }
     if (indexes.subject !== undefined) {
-      row[indexes.subject] = item.Subject;
+      row[indexes.subject] = subject;
     }
     if (indexes.description !== undefined) {
       row[indexes.description] = item.Description;
@@ -215,11 +428,16 @@ export async function appendIdeaRowsToSheet(args: {
     if (indexes.publish !== undefined) {
       row[indexes.publish] = "대기중";
     }
+    pendingKeywordSignatures.push(keywordSignature);
+    pendingSubjectSignatures.push(subjectSignature);
+    existingKeywordSignatures.push(keywordSignature);
+    existingSubjectSignatures.push(subjectSignature);
     return row;
-  });
+  })
+    .filter((row): row is string[] => Array.isArray(row));
 
   if (appendRows.length === 0) {
-    return { inserted: 0, sheetName: context.sheetName, insertedIds: [] };
+    return { inserted: 0, sheetName: context.sheetName, insertedIds: [], skipped };
   }
 
   await context.sheets.spreadsheets.values.append({
@@ -234,6 +452,7 @@ export async function appendIdeaRowsToSheet(args: {
   return {
     inserted: appendRows.length,
     sheetName: context.sheetName,
-    insertedIds
+    insertedIds,
+    skipped
   };
 }

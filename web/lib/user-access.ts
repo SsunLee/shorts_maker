@@ -1,5 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { prisma } from "@/lib/prisma";
+import {
+  getDefaultUserMenuVisibility,
+  normalizeUserMenuVisibility,
+  type UserMenuVisibility
+} from "@/lib/menu-visibility";
 
 export interface UserAccessStatus {
   allowed: boolean;
@@ -13,6 +18,7 @@ export interface UserAccountRecord {
   role: string;
   isActive: boolean;
   expiresAt?: string;
+  menuVisibility: UserMenuVisibility;
   accessCodeHint?: string;
   accessCodeIssuedAt?: string;
   accessCodeLastUsedAt?: string;
@@ -108,6 +114,7 @@ function mapAccount(row: {
   role: string;
   isActive: boolean;
   expiresAt: Date | null;
+  menuVisibility: unknown;
   accessCode?: {
     codeHint: string;
     createdAt: Date;
@@ -123,6 +130,7 @@ function mapAccount(row: {
     role: row.role,
     isActive: row.isActive,
     expiresAt: toIso(row.expiresAt),
+    menuVisibility: normalizeUserMenuVisibility(row.menuVisibility),
     accessCodeHint: row.accessCode?.codeHint || undefined,
     accessCodeIssuedAt: toIso(row.accessCode?.createdAt),
     accessCodeLastUsedAt: toIso(row.accessCode?.lastUsedAt),
@@ -210,7 +218,8 @@ export async function ensureUserAccount(args: {
             name: args.name || legacy.name || null,
             role: legacy.role,
             isActive: legacy.isActive,
-            expiresAt: legacy.expiresAt
+            expiresAt: legacy.expiresAt,
+            menuVisibility: normalizeUserMenuVisibility(legacy.menuVisibility)
           },
           create: {
             userId: args.userId,
@@ -218,7 +227,8 @@ export async function ensureUserAccount(args: {
             name: args.name || legacy.name || null,
             role: legacy.role || (isSuperAdminEmail(args.email) ? "super_admin" : "user"),
             isActive: legacy.isActive,
-            expiresAt: legacy.expiresAt
+            expiresAt: legacy.expiresAt,
+            menuVisibility: normalizeUserMenuVisibility(legacy.menuVisibility)
           }
         });
         await prisma.userAccount.delete({
@@ -354,6 +364,7 @@ export async function updateUserAccess(args: {
   isActive?: boolean;
   expiresAt?: string | null;
   role?: string;
+  menuVisibility?: unknown;
   actorUserId?: string;
 }): Promise<UserAccountRecord> {
   if (!prisma) {
@@ -400,13 +411,17 @@ export async function updateUserAccess(args: {
       update: {
         isActive: typeof args.isActive === "boolean" ? args.isActive : undefined,
         expiresAt: parsedExpiresAt,
-        role: normalizedRole
+        role: normalizedRole,
+        menuVisibility:
+          args.menuVisibility !== undefined ? normalizeUserMenuVisibility(args.menuVisibility) : undefined
       },
       create: {
         userId,
         isActive: typeof args.isActive === "boolean" ? args.isActive : true,
         expiresAt: parsedExpiresAt ?? null,
-        role: normalizedRole || "user"
+        role: normalizedRole || "user",
+        menuVisibility:
+          args.menuVisibility !== undefined ? normalizeUserMenuVisibility(args.menuVisibility) : undefined
       }
     });
     const row = await prisma.userAccount.findUnique({
@@ -422,6 +437,35 @@ export async function updateUserAccess(args: {
   } catch (error) {
     if (isMissingTableError(error)) {
       throw new Error("Run `npx prisma db push` first (UserAccount table is missing).");
+    }
+    throw error;
+  }
+}
+
+export async function getUserMenuVisibility(args: {
+  userId: string;
+  email?: string;
+}): Promise<UserMenuVisibility> {
+  if (!prisma) {
+    return getDefaultUserMenuVisibility();
+  }
+
+  try {
+    const row =
+      (await prisma.userAccount.findUnique({
+        where: { userId: args.userId },
+        select: { menuVisibility: true }
+      })) ??
+      (args.email
+        ? await prisma.userAccount.findFirst({
+            where: { email: String(args.email).trim().toLowerCase() },
+            select: { menuVisibility: true }
+          })
+        : null);
+    return normalizeUserMenuVisibility(row?.menuVisibility);
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return getDefaultUserMenuVisibility();
     }
     throw error;
   }

@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import type { InstagramGeneratedFeedItem, InstagramTemplate } from "@/lib/instagram-types";
+import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
+import { renderInstagramPageToPngDataUrl } from "@/lib/instagram-page-renderer";
 import type { AppSettings, IdeaLanguage } from "@/lib/types";
 
 type TemplateResponse = {
@@ -55,6 +57,7 @@ type DashboardPersistState = {
   autoIdeaEnabled?: boolean;
   autoIdeaLanguage?: IdeaLanguage;
   autoIdeaKeywords?: string;
+  metaUploadEnabled?: boolean;
 };
 
 type InstagramScheduleResponse = {
@@ -70,13 +73,28 @@ type InstagramScheduleResponse = {
       autoIdeaEnabled: boolean;
       autoIdeaKeywords?: string;
       autoIdeaLanguage?: IdeaLanguage;
+      autoUploadEnabled?: boolean;
     };
     nextRunAt?: string;
     lastRunAt?: string;
-    lastResult?: "started" | "skipped_running" | "failed";
+    lastResult?: "started" | "skipped_running" | "skipped_noop" | "failed";
     lastError?: string;
     updatedAt: string;
   };
+  error?: string;
+};
+
+type MetaHealthResponse = {
+  ok?: boolean;
+  ready?: boolean;
+  message?: string;
+  missing?: string[];
+};
+
+type UploadResponse = {
+  ok?: boolean;
+  mediaId?: string;
+  permalink?: string;
   error?: string;
 };
 
@@ -168,9 +186,66 @@ function parseKeywordList(raw: string): string[] {
   return output;
 }
 
-function scheduleResultLabel(value: "started" | "skipped_running" | "failed" | undefined): string {
+function clamp(value: number, min: number, max: number, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function normalizeCanvasWidth(value: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1080;
+  return Math.max(320, Math.min(4000, Math.round(numeric)));
+}
+
+function normalizeCanvasHeight(value: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1350;
+  return Math.max(320, Math.min(4000, Math.round(numeric)));
+}
+
+function pageOutputKind(page: InstagramGeneratedFeedItem["pages"][number]): "image" | "video" {
+  return Boolean(page.audioEnabled) ? "video" : "image";
+}
+
+function buildSampleDataFromRow(row: InstagramSheetRow): Record<string, string> {
+  return {
+    ...(row.raw || {}),
+    id: String(row.id || ""),
+    status: String(row.status || "준비"),
+    keyword: String(row.keyword || ""),
+    subject: String(row.subject || ""),
+    description: String(row.description || ""),
+    narration: String(row.narration || "")
+  };
+}
+
+function normalizeHashTag(raw: string): string {
+  return String(raw || "")
+    .trim()
+    .replace(/^#+/, "")
+    .replace(/\s+/g, "");
+}
+
+function buildCaptionForUpload(item: InstagramGeneratedFeedItem, row: InstagramSheetRow): string {
+  const sampleData = buildSampleDataFromRow(row);
+  const captionFromSheet = materialize(firstNonEmpty(sampleData, ["caption", "Caption"]), sampleData).trim();
+  if (captionFromSheet) {
+    return captionFromSheet;
+  }
+  const keyword = normalizeHashTag(row.keyword || item.keyword);
+  const hashLine = keyword ? `#${keyword}` : "";
+  return [String(row.subject || item.subject || "").trim(), hashLine].filter(Boolean).join("\n");
+}
+
+function scheduleResultLabel(
+  value: "started" | "skipped_running" | "skipped_noop" | "failed" | undefined
+): string {
   if (value === "started") return "실행됨";
   if (value === "skipped_running") return "실행중이라 스킵";
+  if (value === "skipped_noop") return "실행 없음(작업 비활성)";
   if (value === "failed") return "실패";
   return "-";
 }
@@ -213,6 +288,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
   const [autoIdeaEnabled, setAutoIdeaEnabled] = useState(false);
   const [autoIdeaLanguage, setAutoIdeaLanguage] = useState<IdeaLanguage>("ja");
   const [autoIdeaKeywords, setAutoIdeaKeywords] = useState("");
+  const [metaUploadEnabled, setMetaUploadEnabled] = useState(true);
 
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleCadence, setScheduleCadence] = useState<"daily" | "interval_hours">("daily");
@@ -223,10 +299,11 @@ export function InstagramDashboardClient(): React.JSX.Element {
   const [scheduleAutoIdeaEnabled, setScheduleAutoIdeaEnabled] = useState(false);
   const [scheduleAutoIdeaLanguage, setScheduleAutoIdeaLanguage] = useState<IdeaLanguage>("ja");
   const [scheduleAutoIdeaKeywords, setScheduleAutoIdeaKeywords] = useState("");
+  const [scheduleAutoUploadEnabled, setScheduleAutoUploadEnabled] = useState(false);
   const [scheduleLastRunAt, setScheduleLastRunAt] = useState<string>();
   const [scheduleNextRunAt, setScheduleNextRunAt] = useState<string>();
   const [scheduleLastResult, setScheduleLastResult] = useState<
-    "started" | "skipped_running" | "failed" | undefined
+    "started" | "skipped_running" | "skipped_noop" | "failed" | undefined
   >();
   const [scheduleLastError, setScheduleLastError] = useState<string>();
   const [scheduleUpdatedAt, setScheduleUpdatedAt] = useState<string>();
@@ -259,6 +336,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
     setScheduleAutoIdeaEnabled(Boolean(config?.autoIdeaEnabled));
     setScheduleAutoIdeaLanguage(normalizeLanguage(config?.autoIdeaLanguage, "ja"));
     setScheduleAutoIdeaKeywords(String(config?.autoIdeaKeywords || "").trim());
+    setScheduleAutoUploadEnabled(Boolean(config?.autoUploadEnabled));
     setScheduleLastRunAt(schedule?.lastRunAt);
     setScheduleNextRunAt(schedule?.nextRunAt);
     setScheduleLastResult(schedule?.lastResult);
@@ -306,7 +384,8 @@ export function InstagramDashboardClient(): React.JSX.Element {
           sheetName: String(scheduleSheetName || sourceSheetName || "").trim() || undefined,
           autoIdeaEnabled: scheduleAutoIdeaEnabled,
           autoIdeaKeywords: String(scheduleAutoIdeaKeywords || "").trim(),
-          autoIdeaLanguage: scheduleAutoIdeaLanguage
+          autoIdeaLanguage: scheduleAutoIdeaLanguage,
+          autoUploadEnabled: scheduleAutoUploadEnabled
         })
       });
       const data = (await response.json()) as InstagramScheduleResponse;
@@ -320,6 +399,33 @@ export function InstagramDashboardClient(): React.JSX.Element {
         error instanceof Error ? error.message : "인스타 자동화 스케줄 저장에 실패했습니다.";
       setScheduleError(message);
       pushLog(`스케줄 저장 실패: ${message}`);
+    } finally {
+      setScheduleBusy(false);
+    }
+  }
+
+  async function runScheduleNow(): Promise<void> {
+    setScheduleBusy(true);
+    setScheduleError(undefined);
+    try {
+      const response = await fetch("/api/instagram/automation/schedule/run", {
+        method: "POST"
+      });
+      const data = (await response.json()) as InstagramScheduleResponse;
+      if (!response.ok) {
+        throw new Error(data.error || "인스타 자동화 스케줄 즉시 실행에 실패했습니다.");
+      }
+      if (!data.schedule?.config?.enabled) {
+        throw new Error("스케줄이 비활성화 상태입니다. 먼저 스케줄을 저장해 주세요.");
+      }
+      applyScheduleState(data.schedule);
+      pushLog(`스케줄 즉시 실행 완료 · ${scheduleResultLabel(data.schedule?.lastResult)}`);
+      await refresh();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "인스타 자동화 스케줄 즉시 실행에 실패했습니다.";
+      setScheduleError(message);
+      pushLog(`스케줄 즉시 실행 실패: ${message}`);
     } finally {
       setScheduleBusy(false);
     }
@@ -450,6 +556,99 @@ export function InstagramDashboardClient(): React.JSX.Element {
     return insertedTotal;
   }
 
+  async function assertMetaReady(): Promise<void> {
+    const response = await fetch("/api/instagram/meta/health", { cache: "no-store" });
+    const data = (await response.json()) as MetaHealthResponse;
+    if (!response.ok) {
+      throw new Error(data.message || "Meta API 연결 검사에 실패했습니다.");
+    }
+    if (!data.ready) {
+      const missing = Array.isArray(data.missing) && data.missing.length > 0 ? ` (누락: ${data.missing.join(", ")})` : "";
+      throw new Error((data.message || "Meta 설정이 준비되지 않았습니다.") + missing);
+    }
+  }
+
+  async function buildRenderedMediaUrlsForItem(args: {
+    item: InstagramGeneratedFeedItem;
+    template: InstagramTemplate;
+    row: InstagramSheetRow;
+  }): Promise<string[]> {
+    const sampleData = buildSampleDataFromRow(args.row);
+    const canvasWidth = normalizeCanvasWidth(Number(args.template.canvasWidth || 1080));
+    const canvasHeight = normalizeCanvasHeight(Number(args.template.canvasHeight || 1350));
+    await ensureInstagramCustomFontsLoaded(args.template.customFonts || []);
+
+    const mediaUrls: string[] = [];
+    for (const page of args.item.pages) {
+      const imageDataUrl = await renderInstagramPageToPngDataUrl({
+        page,
+        sampleData,
+        canvasWidth,
+        canvasHeight
+      });
+
+      if (pageOutputKind(page) === "video") {
+        const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), sampleData).trim();
+        const response = await fetch("/api/instagram/render-page-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            templateName: args.item.templateName,
+            pageName: page.name,
+            imageDataUrl,
+            useAudio: Boolean(page.audioEnabled && resolvedAudioPrompt),
+            audioPrompt: resolvedAudioPrompt || undefined,
+            ttsProvider:
+              page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
+            sampleData,
+            audioVoice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
+            audioSpeed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
+            durationSec: Math.max(1, Number(page.durationSec) || 4),
+            outputWidth: canvasWidth,
+            outputHeight: canvasHeight
+          })
+        });
+        const data = (await response.json()) as { outputUrl?: string; error?: string };
+        if (!response.ok || !data.outputUrl) {
+          throw new Error(data.error || `${page.name} MP4 렌더링에 실패했습니다.`);
+        }
+        mediaUrls.push(data.outputUrl);
+      } else {
+        mediaUrls.push(imageDataUrl);
+      }
+    }
+    return mediaUrls;
+  }
+
+  async function uploadGeneratedItem(args: {
+    item: InstagramGeneratedFeedItem;
+    template: InstagramTemplate;
+    row: InstagramSheetRow;
+    sheetName?: string;
+  }): Promise<UploadResponse> {
+    const mediaUrls = await buildRenderedMediaUrlsForItem({
+      item: args.item,
+      template: args.template,
+      row: args.row
+    });
+    const caption = buildCaptionForUpload(args.item, args.row);
+    const response = await fetch("/api/instagram/meta/upload-feed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        caption,
+        mediaUrls,
+        rowId: args.row.id,
+        sheetName: args.sheetName || undefined
+      })
+    });
+    const data = (await response.json()) as UploadResponse;
+    if (!response.ok) {
+      throw new Error(data.error || "Meta 업로드에 실패했습니다.");
+    }
+    return data;
+  }
+
   async function runAutomation(): Promise<void> {
     if (runLockRef.current) {
       return;
@@ -465,7 +664,9 @@ export function InstagramDashboardClient(): React.JSX.Element {
       const max = Number.parseInt(maxRows, 10) || 3;
       const normalizedMax = Math.max(1, Math.min(10, max));
       setPhase("running");
-      pushLog(`수동 자동화 시작 · row ${normalizedMax}개`);
+      pushLog(
+        `수동 자동화 시작 · row ${normalizedMax}개 · ${metaUploadEnabled ? "Meta 업로드 포함" : "컨테이너 생성만"}`
+      );
 
       let currentRows = readyRows;
       let currentSheetName = sourceSheetName;
@@ -503,6 +704,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
 
       const templateMap = new Map(templates.map((item) => [item.id, item]));
       const generated: InstagramGeneratedFeedItem[] = [];
+      const rowMap = new Map(pickedRows.map((row) => [String(row.id), row]));
 
       for (const row of pickedRows) {
         const payload = {
@@ -520,9 +722,17 @@ export function InstagramDashboardClient(): React.JSX.Element {
           if (!template) continue;
           const pages = template.pages.map((page) => ({
             ...page,
+            backgroundImageUrl: materialize(String(page.backgroundImageUrl || ""), payload),
+            audioPrompt: materialize(String(page.audioPrompt || ""), payload),
             elements: page.elements.map((element) =>
               element.type === "text"
                 ? { ...element, text: materialize(element.text, payload) }
+                : element.type === "image"
+                  ? {
+                      ...element,
+                      imageUrl: materialize(String(element.imageUrl || ""), payload),
+                      aiPrompt: materialize(String(element.aiPrompt || ""), payload)
+                    }
                 : element
             )
           }));
@@ -540,8 +750,69 @@ export function InstagramDashboardClient(): React.JSX.Element {
       }
 
       saveFeedResults(generated);
-      setPhase("completed");
-      pushLog(`자동화 완료 · 결과 ${generated.length}개 생성`);
+      pushLog(`컨테이너 생성 완료 · 결과 ${generated.length}개 생성`);
+
+      if (!metaUploadEnabled) {
+        setPhase("completed");
+        pushLog("Meta 업로드는 꺼져 있습니다. 생성 결과는 [인스타그램 > 피드]에서 수동 업로드할 수 있습니다.");
+        return;
+      }
+
+      if (generated.length === 0) {
+        setPhase("failed");
+        throw new Error("생성 결과가 없어 Meta 업로드를 진행할 수 없습니다.");
+      }
+
+      await assertMetaReady();
+      pushLog("Meta 연결 확인 완료 · 업로드를 시작합니다.");
+      if (selectedTemplateIds.length > 1) {
+        pushLog("주의: 템플릿을 여러 개 선택하여 같은 row가 여러 게시물로 업로드될 수 있습니다.");
+      }
+
+      let uploadedCount = 0;
+      let failedCount = 0;
+      for (const item of generated) {
+        const template = templateMap.get(item.templateId);
+        const row = rowMap.get(item.rowId);
+        if (!template || !row) {
+          failedCount += 1;
+          pushLog(`[업로드 실패] ${item.subject} · 템플릿/row 정보를 찾지 못했습니다.`);
+          continue;
+        }
+
+        pushLog(`[업로드 시작] ${item.subject} · 템플릿 ${item.templateName}`);
+        try {
+          const uploaded = await uploadGeneratedItem({
+            item,
+            template,
+            row,
+            sheetName: currentSheetName || undefined
+          });
+          uploadedCount += 1;
+          pushLog(
+            `[업로드 완료] ${item.subject} · mediaId=${uploaded.mediaId || "-"}${
+              uploaded.permalink ? ` · ${uploaded.permalink}` : ""
+            }`
+          );
+        } catch (uploadError) {
+          failedCount += 1;
+          const message = uploadError instanceof Error ? uploadError.message : "Meta 업로드에 실패했습니다.";
+          pushLog(`[업로드 실패] ${item.subject} · ${message}`);
+        }
+      }
+
+      if (failedCount > 0) {
+        setPhase("failed");
+        const message = `Meta 업로드 부분 실패: 성공 ${uploadedCount}개 / 실패 ${failedCount}개`;
+        setRunError(message);
+        pushLog(message);
+      } else {
+        setPhase("completed");
+        pushLog(`Meta 업로드 완료 · ${uploadedCount}개`);
+      }
+
+      await refresh();
+      await refreshSchedule(false);
     } catch (error) {
       setPhase("failed");
       const message = error instanceof Error ? error.message : "인스타 자동화 실행에 실패했습니다.";
@@ -574,6 +845,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
         if (typeof saved.autoIdeaEnabled === "boolean") setAutoIdeaEnabled(saved.autoIdeaEnabled);
         if (saved.autoIdeaLanguage) setAutoIdeaLanguage(normalizeLanguage(saved.autoIdeaLanguage, "ja"));
         if (typeof saved.autoIdeaKeywords === "string") setAutoIdeaKeywords(saved.autoIdeaKeywords);
+        if (typeof saved.metaUploadEnabled === "boolean") setMetaUploadEnabled(saved.metaUploadEnabled);
       } catch {
         // ignore parse error
       }
@@ -594,10 +866,20 @@ export function InstagramDashboardClient(): React.JSX.Element {
       showSchedule,
       autoIdeaEnabled,
       autoIdeaLanguage,
-      autoIdeaKeywords
+      autoIdeaKeywords,
+      metaUploadEnabled
     };
     window.localStorage.setItem(DASHBOARD_STATE_KEY, JSON.stringify(state));
-  }, [maxRows, selectedTemplateIds, showRun, showSchedule, autoIdeaEnabled, autoIdeaLanguage, autoIdeaKeywords]);
+  }, [
+    maxRows,
+    selectedTemplateIds,
+    showRun,
+    showSchedule,
+    autoIdeaEnabled,
+    autoIdeaLanguage,
+    autoIdeaKeywords,
+    metaUploadEnabled
+  ]);
 
   useEffect(() => {
     if (!scheduleSheetName.trim() && sourceSheetName.trim()) {
@@ -610,7 +892,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
       <header className="space-y-1">
         <h1 className="text-2xl font-bold">Instagram Dashboard</h1>
         <p className="text-sm text-muted-foreground">
-          저장된 키워드 기반 아이디어 생성 + 중복 회피 + 피드 자동화를 실행합니다.
+          키워드 기반 아이디어 생성 + 중복 회피 + 피드 컨테이너 생성/Meta 업로드 자동화를 실행합니다.
         </p>
       </header>
 
@@ -722,6 +1004,16 @@ export function InstagramDashboardClient(): React.JSX.Element {
               </p>
             </div>
 
+            <div className="rounded-md border p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-sm font-medium">Meta 자동 업로드</p>
+                <Switch checked={metaUploadEnabled} onCheckedChange={setMetaUploadEnabled} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                켜면 컨테이너 생성 직후 Meta 업로드까지 이어서 실행합니다. (Meta/S3 설정 필요)
+              </p>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               <Button type="button" onClick={() => void runAutomation()} disabled={phase === "running"}>
                 자동화 실행
@@ -730,6 +1022,9 @@ export function InstagramDashboardClient(): React.JSX.Element {
                 새로고침
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              생성 결과는 [인스타그램 &gt; 피드] 화면과 공유됩니다.
+            </p>
             {runError ? <p className="text-sm text-destructive">{runError}</p> : null}
           </div>
         ) : null}
@@ -737,7 +1032,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
 
       <div className="rounded-xl border bg-card p-4">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-base font-semibold">자동화 스케줄</h2>
+          <h2 className="text-base font-semibold">인스타 자동화 스케줄</h2>
           <Button type="button" variant="outline" size="sm" onClick={() => setShowSchedule((prev) => !prev)}>
             {showSchedule ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
             {showSchedule ? "접기" : "펼치기"}
@@ -850,18 +1145,34 @@ export function InstagramDashboardClient(): React.JSX.Element {
               </div>
             </div>
 
+            <div className="rounded-md border p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-sm font-medium">스케줄 Meta 자동 업로드</p>
+                <Switch checked={scheduleAutoUploadEnabled} onCheckedChange={setScheduleAutoUploadEnabled} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                켜면 스케줄 실행 시 활성 템플릿 기준으로 준비 row를 렌더링한 뒤 Meta 업로드까지 수행합니다.
+              </p>
+            </div>
+
             <div className="rounded-md border p-2 text-xs text-muted-foreground">
               <p>다음 실행: {scheduleNextRunAt ? new Date(scheduleNextRunAt).toLocaleString() : "-"}</p>
               <p>최근 실행: {scheduleLastRunAt ? new Date(scheduleLastRunAt).toLocaleString() : "-"}</p>
               <p>최근 결과: {scheduleResultLabel(scheduleLastResult)}</p>
               <p>마지막 저장: {scheduleUpdatedAt ? new Date(scheduleUpdatedAt).toLocaleString() : "-"}</p>
               {scheduleLastError ? <p className="mt-1 text-destructive">최근 오류: {scheduleLastError}</p> : null}
+              <p className="mt-1">
+                현재 스케줄은 자동 아이디어 생성(선택) + Meta 업로드(선택)를 순서대로 실행합니다.
+              </p>
               <p className="mt-1">스케줄은 서버 Cron으로 동작합니다. 브라우저 탭 유지가 필요 없습니다.</p>
             </div>
 
             <div className="flex flex-wrap gap-2">
               <Button type="button" onClick={() => void saveSchedule()} disabled={scheduleBusy}>
                 스케줄 저장
+              </Button>
+              <Button type="button" variant="outline" onClick={() => void runScheduleNow()} disabled={scheduleBusy}>
+                지금 실행(테스트)
               </Button>
               <Button type="button" variant="outline" onClick={() => void refreshSchedule(true)} disabled={scheduleBusy}>
                 스케줄 새로고침

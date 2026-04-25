@@ -14,6 +14,8 @@ import {
   Lightbulb,
   LogOut,
   Moon,
+  Newspaper,
+  MessageCircle,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
@@ -25,6 +27,13 @@ import { useEffect, useMemo, useState } from "react";
 import { getSession, signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  getDefaultUserMenuVisibility,
+  isManagedMenuSectionId,
+  isMenuItemVisible,
+  normalizeUserMenuVisibility,
+  type UserMenuVisibility
+} from "@/lib/menu-visibility";
 import { cn } from "@/lib/utils";
 import { AppTheme, applyTheme, getStoredTheme, normalizeTheme, setStoredTheme, THEME_CHANGED_EVENT } from "@/lib/theme";
 
@@ -61,6 +70,8 @@ const NAV_SECTIONS: NavSection[] = [
     links: [
       { href: "/instagram/templates", label: "템플릿", icon: LayoutTemplate },
       { href: "/instagram/ideas", label: "아이디어", icon: Lightbulb },
+      { href: "/instagram/news", label: "뉴스 정보 가져오기", icon: Newspaper, matchPrefixes: ["/instagram/news"] },
+      { href: "/instagram/dm", label: "DM 자동 전송", icon: MessageCircle, matchPrefixes: ["/instagram/dm"] },
       { href: "/instagram/feed", label: "피드", icon: Images },
       { href: "/instagram/reels", label: "릴스", icon: Clapperboard },
       { href: "/instagram/dashboard", label: "Dashboard", icon: Home, matchPrefixes: ["/instagram/dashboard"] }
@@ -77,6 +88,7 @@ export function AppNav(): React.JSX.Element {
   const [theme, setTheme] = useState<AppTheme>("light");
   const [accountLabel, setAccountLabel] = useState("계정");
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [menuVisibility, setMenuVisibility] = useState<UserMenuVisibility>(() => getDefaultUserMenuVisibility());
 
   useEffect(() => {
     try {
@@ -127,15 +139,20 @@ export function AppNav(): React.JSX.Element {
           session?.user?.id?.trim() ||
           "계정";
         const meResponse = await fetch("/api/me", { cache: "no-store" });
-        const meData = (await meResponse.json().catch(() => ({}))) as { isSuperAdmin?: boolean };
+        const meData = (await meResponse.json().catch(() => ({}))) as {
+          isSuperAdmin?: boolean;
+          menuVisibility?: unknown;
+        };
         if (mounted) {
           setAccountLabel(rawId);
           setIsSuperAdmin(Boolean(meData.isSuperAdmin));
+          setMenuVisibility(normalizeUserMenuVisibility(meData.menuVisibility));
         }
       } catch {
         if (mounted) {
           setAccountLabel("계정");
           setIsSuperAdmin(false);
+          setMenuVisibility(getDefaultUserMenuVisibility());
         }
       }
     };
@@ -152,7 +169,21 @@ export function AppNav(): React.JSX.Element {
   );
   const hideForAuthRoute = pathname.startsWith("/auth");
   const sections = useMemo(() => {
-    const base = [...NAV_SECTIONS];
+    const base = NAV_SECTIONS
+      .map((section) => {
+        const sectionId = section.id;
+        if (!isManagedMenuSectionId(sectionId)) {
+          return section;
+        }
+        const visibleLinks = section.links.filter((link) =>
+          isMenuItemVisible(menuVisibility, sectionId, link.href)
+        );
+        return {
+          ...section,
+          links: visibleLinks
+        };
+      })
+      .filter((section) => section.links.length > 0);
     const globalLinks: NavLinkItem[] = [{ href: "/settings", label: "Settings", icon: Settings }];
     if (isSuperAdmin) {
       globalLinks.push({ href: "/admin/users", label: "관리자", icon: UserRound });
@@ -164,7 +195,7 @@ export function AppNav(): React.JSX.Element {
       links: globalLinks
     });
     return base;
-  }, [isSuperAdmin]);
+  }, [isSuperAdmin, menuVisibility]);
 
   const filteredSections = useMemo(() => {
     const query = navSearch.trim().toLowerCase();

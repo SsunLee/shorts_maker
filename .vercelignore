@@ -1,0 +1,15 @@
+node_modules
+.next
+.next-*
+web/.next
+web/.next-*
+web/node_modules
+video-engine/.venv
+video-engine/outputs
+web/data
+web/public/generated
+*.log
+*.tsbuildinfo
+.env
+.env.local
+.env.*

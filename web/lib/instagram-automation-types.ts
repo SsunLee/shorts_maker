@@ -13,14 +13,14 @@ export interface InstagramAutomationScheduleConfig {
   autoIdeaEnabled: boolean;
   autoIdeaKeywords?: string;
   autoIdeaLanguage?: IdeaLanguage;
+  autoUploadEnabled: boolean;
 }
 
 export interface InstagramAutomationScheduleState {
   config: InstagramAutomationScheduleConfig;
   nextRunAt?: string;
   lastRunAt?: string;
-  lastResult?: "started" | "skipped_running" | "failed";
+  lastResult?: "started" | "skipped_running" | "skipped_noop" | "failed";
   lastError?: string;
   updatedAt: string;
 }
-

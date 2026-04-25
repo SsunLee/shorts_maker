@@ -19,6 +19,7 @@ const isProduction = process.env.NODE_ENV === "production";
 
 const nextConfig = {
   reactStrictMode: true,
+  serverExternalPackages: ["@napi-rs/canvas"],
   outputFileTracingIncludes: {
     "/api/furigana": ["./node_modules/kuromoji/dict/**/*"],
     "/api/furigana/route": ["./node_modules/kuromoji/dict/**/*"]

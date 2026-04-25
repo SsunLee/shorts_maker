@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import os from "os";
 import path from "path";
 import { randomUUID } from "node:crypto";
 
@@ -42,6 +43,14 @@ function sanitizeNamespace(value: string): string {
   return normalized.replace(/^-+|-+$/g, "") || "default";
 }
 
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 function resolveLongformTemplateFile(): string {
   const explicit = (process.env.LONGFORM_TEMPLATE_FILE || "").trim();
   if (explicit) {
@@ -50,6 +59,9 @@ function resolveLongformTemplateFile(): string {
   const namespace = (process.env.AUTOMATION_NAMESPACE || process.env.SETTINGS_NAMESPACE || "").trim();
   if (namespace) {
     return path.join(process.cwd(), "data", `longform-templates.${sanitizeNamespace(namespace)}.json`);
+  }
+  if (isReadOnlyServerlessRuntime()) {
+    return path.join(os.tmpdir(), "shorts-maker", "longform-templates.json");
   }
   return path.join(process.cwd(), "data", "longform-templates.json");
 }
@@ -257,4 +269,3 @@ export async function deleteLongformTemplate(id: string): Promise<void> {
     templates: catalog.templates.filter((item) => item.id !== id)
   });
 }
-

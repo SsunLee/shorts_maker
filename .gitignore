@@ -39,4 +39,8 @@ Thumbs.db
 .env.*.local
 web/.env
 web/.env.local
+web/.env.production
+web/.env.preview
+web/.env.development
 video-engine/.env
+.vercel

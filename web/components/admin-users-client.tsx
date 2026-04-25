@@ -1,11 +1,25 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  MANAGED_MENU_SECTIONS,
+  normalizeUserMenuVisibility,
+  type ManagedMenuSectionId,
+  type UserMenuVisibility
+} from "@/lib/menu-visibility";
 
 interface UserAccountItem {
   userId: string;
@@ -14,6 +28,7 @@ interface UserAccountItem {
   role: string;
   isActive: boolean;
   expiresAt?: string;
+  menuVisibility: UserMenuVisibility;
   accessCodeHint?: string;
   accessCodeIssuedAt?: string;
   accessCodeLastUsedAt?: string;
@@ -106,6 +121,8 @@ export function AdminUsersClient({
   const [showLatestIssuedCode, setShowLatestIssuedCode] = useState(false);
   const [issuedCodeByUser, setIssuedCodeByUser] = useState<Record<string, string>>({});
   const [showIssuedCodeByUser, setShowIssuedCodeByUser] = useState<Record<string, boolean>>({});
+  const [menuModalUser, setMenuModalUser] = useState<UserAccountItem>();
+  const [menuDraft, setMenuDraft] = useState<UserMenuVisibility>(normalizeUserMenuVisibility(undefined));
 
   async function load(): Promise<void> {
     setError(undefined);
@@ -165,8 +182,13 @@ export function AdminUsersClient({
 
   async function saveUser(
     user: UserAccountItem,
-    patch: { isActive?: boolean; expiresAt?: string | null; role?: "user" | "super_admin" }
-  ): Promise<void> {
+    patch: {
+      isActive?: boolean;
+      expiresAt?: string | null;
+      role?: "user" | "super_admin";
+      menuVisibility?: UserMenuVisibility;
+    }
+  ): Promise<boolean> {
     setSavingUserId(user.userId);
     setError(undefined);
     try {
@@ -183,8 +205,10 @@ export function AdminUsersClient({
         throw new Error(data.error || "사용자 갱신에 실패했습니다.");
       }
       await load();
+      return true;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Unknown error");
+      return false;
     } finally {
       setSavingUserId(undefined);
     }
@@ -301,6 +325,33 @@ export function AdminUsersClient({
       setError(deleteError instanceof Error ? deleteError.message : "Unknown error");
     } finally {
       setSavingUserId(undefined);
+    }
+  }
+
+  function openMenuPermissionModal(user: UserAccountItem): void {
+    setMenuModalUser(user);
+    setMenuDraft(normalizeUserMenuVisibility(user.menuVisibility));
+  }
+
+  function toggleMenuVisibility(sectionId: ManagedMenuSectionId, href: string): void {
+    setMenuDraft((current) => ({
+      ...current,
+      [sectionId]: {
+        ...current[sectionId],
+        [href]: !current[sectionId][href]
+      }
+    }));
+  }
+
+  async function saveMenuPermission(): Promise<void> {
+    if (!menuModalUser) {
+      return;
+    }
+    const success = await saveUser(menuModalUser, {
+      menuVisibility: normalizeUserMenuVisibility(menuDraft)
+    });
+    if (success) {
+      setMenuModalUser(undefined);
     }
   }
 
@@ -559,6 +610,18 @@ export function AdminUsersClient({
                           size="sm"
                           variant="outline"
                           disabled={savingUserId === user.userId}
+                          onClick={() => openMenuPermissionModal(user)}
+                          className="h-8 w-8 p-0"
+                          title="메뉴 권한 수정"
+                        >
+                          <ShieldCheck className="h-4 w-4" />
+                          <span className="sr-only">메뉴 권한 수정</span>
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={savingUserId === user.userId}
                           onClick={() =>
                             void saveUser(user, {
                               expiresAt: fromDatetimeLocal(draftExpireByUser[user.userId] || "")
@@ -630,6 +693,60 @@ export function AdminUsersClient({
           </table>
         </div>
       </div>
+
+      <Dialog
+        open={Boolean(menuModalUser)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMenuModalUser(undefined);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto p-4 sm:max-w-[640px] sm:p-6">
+          <DialogHeader>
+            <DialogTitle>메뉴 허용 여부 설정</DialogTitle>
+            <DialogDescription>
+              {menuModalUser?.name || menuModalUser?.email || menuModalUser?.userId || "사용자"} 계정의 유튜브/인스타그램
+              메뉴 노출 여부를 설정합니다. 체크하면 메뉴가 보입니다.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {MANAGED_MENU_SECTIONS.map((section) => (
+              <div key={section.id} className="rounded-xl border bg-muted/10 p-3 sm:p-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-sm font-semibold">{section.label}</p>
+                  <p className="text-xs text-muted-foreground">
+                    체크 {Object.values(menuDraft[section.id]).filter(Boolean).length} / {section.items.length}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  {section.items.map((item) => (
+                    <label
+                      key={item.href}
+                      className="flex items-center justify-between gap-3 rounded-lg border bg-background/70 px-3 py-2 text-sm"
+                    >
+                      <span className="truncate">{item.label}</span>
+                      <Switch
+                        checked={menuDraft[section.id][item.href]}
+                        onCheckedChange={() => toggleMenuVisibility(section.id, item.href)}
+                        disabled={savingUserId === menuModalUser?.userId}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" onClick={() => setMenuModalUser(undefined)}>
+              닫기
+            </Button>
+            <Button type="button" onClick={() => void saveMenuPermission()} disabled={savingUserId === menuModalUser?.userId}>
+              {savingUserId === menuModalUser?.userId ? "저장 중..." : "권한 저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

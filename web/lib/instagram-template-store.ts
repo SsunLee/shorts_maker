@@ -12,6 +12,16 @@ import {
 } from "@/lib/instagram-types";
 import { scopedUserId } from "@/lib/user-storage-namespace";
 
+const AUTO_TEXT_BINDING_KEY_PREFIX = "auto_txt_";
+
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return normalized.replace(/^-+|-+$/g, "") || "default";
@@ -44,6 +54,9 @@ function resolveInstagramStorageUserId(userId?: string): string | undefined {
 }
 
 async function ensureTemplateFile(): Promise<void> {
+  if (isReadOnlyServerlessRuntime()) {
+    return;
+  }
   const file = resolveTemplateFile();
   await fs.mkdir(path.dirname(file), { recursive: true });
   try {
@@ -67,6 +80,49 @@ function normalizeHex(value: string | undefined, fallback: string): string {
     return normalized.toUpperCase();
   }
   return fallback;
+}
+
+function sanitizeTextBindingKey(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .replace(/^\{\{+|\}\}+$/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+}
+
+function generateAutoTextBindingKey(): string {
+  return `${AUTO_TEXT_BINDING_KEY_PREFIX}${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+}
+
+function ensureUniqueTextBindingKey(candidate: string, taken: Set<string>): string {
+  const base = sanitizeTextBindingKey(candidate) || generateAutoTextBindingKey();
+  let next = base;
+  let suffix = 2;
+  while (taken.has(next.toLowerCase())) {
+    next = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  taken.add(next.toLowerCase());
+  return next;
+}
+
+function ensurePageTextBindingKeys(elements: InstagramPageElement[]): InstagramPageElement[] {
+  const taken = new Set<string>();
+  return elements.map((element) => {
+    if (element.type !== "text") {
+      return element;
+    }
+    const nextKey = ensureUniqueTextBindingKey(
+      sanitizeTextBindingKey(element.bindingKey) || generateAutoTextBindingKey(),
+      taken
+    );
+    return {
+      ...element,
+      bindingKey: nextKey
+    };
+  });
 }
 
 function normalizeCustomFont(font: Partial<InstagramCustomFont>): InstagramCustomFont | undefined {
@@ -159,6 +215,7 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
       shape,
       fillEnabled: element.fillEnabled !== false,
       fillColor: normalizeHex(element.fillColor, "#EEEEEE"),
+      fillOpacity: clamp(Number((element as { fillOpacity?: number }).fillOpacity), 0, 1, 1),
       strokeColor: normalizeHex(element.strokeColor, "#111111"),
       strokeWidth: clamp(Number(element.strokeWidth), 0, 24, 0),
       cornerRadius: clamp(Number(element.cornerRadius), 0, 200, 0)
@@ -175,8 +232,10 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
       overlayColor: normalizeHex(element.overlayColor, "#000000"),
       overlayOpacity: clamp(Number(element.overlayOpacity), 0, 1, 0),
       aiGenerateEnabled: Boolean(element.aiGenerateEnabled),
+      aiModel: String((element as { aiModel?: string }).aiModel || "auto"),
       aiPrompt: String(element.aiPrompt || ""),
-      aiStylePreset: String(element.aiStylePreset || "Cinematic photo-real")
+      aiStylePreset: String(element.aiStylePreset || "Cinematic photo-real"),
+      aiImageOrientation: element.aiImageOrientation === "horizontal" ? "horizontal" : "vertical"
     };
   }
 
@@ -187,11 +246,12 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
       ...base,
       type: "text",
       textMode,
+      bindingKey: sanitizeTextBindingKey((element as { bindingKey?: string }).bindingKey),
       text: String(element.text || ""),
       autoWrap: element.autoWrap !== false,
       color: normalizeHex(element.color, "#111111"),
       fontFamily: String(element.fontFamily || "Noto Sans KR"),
-      fontSize: clamp(Number(element.fontSize), 8, 240, 36),
+      fontSize: clamp(Number(element.fontSize), 8, 144, 36),
       lineHeight: clamp(Number(element.lineHeight), 0.8, 3, 1.2),
       letterSpacing: clamp(Number(element.letterSpacing), -2, 20, 0),
       textAlign:
@@ -206,6 +266,7 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
       shadowX: clamp(Number((element as { shadowX?: number }).shadowX), -40, 40, 0),
       shadowY: clamp(Number((element as { shadowY?: number }).shadowY), -40, 40, 0),
       backgroundColor: normalizeHex(element.backgroundColor, "#FFFFFF"),
+      backgroundOpacity: clamp(Number((element as { backgroundOpacity?: number }).backgroundOpacity), 0, 1, 1),
       padding: clamp(Number(element.padding), 0, 60, 0)
     };
   }
@@ -214,12 +275,13 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
 }
 
 function normalizePage(page: Partial<InstagramFeedPage>, index: number): InstagramFeedPage {
-  const elements = Array.isArray(page.elements)
+  const elementsRaw = Array.isArray(page.elements)
     ? page.elements
         .map((item, itemIndex) => normalizeElement(item as Partial<InstagramPageElement>, itemIndex))
         .filter((item): item is InstagramPageElement => Boolean(item))
         .sort((a, b) => a.zIndex - b.zIndex)
     : [];
+  const elements = ensurePageTextBindingKeys(elementsRaw);
 
   return {
     id: String(page.id || randomUUID()),
@@ -260,6 +322,7 @@ function normalizeTemplate(template: Partial<InstagramTemplate>): InstagramTempl
   return {
     id: String(template.id || randomUUID()),
     templateName,
+    mode: template.mode === "news" ? "news" : "general",
     sourceTitle: String(template.sourceTitle || "{{subject}}"),
     sourceTopic: String(template.sourceTopic || "{{description}}"),
     canvasPreset,
@@ -312,12 +375,16 @@ async function readCatalog(userId?: string): Promise<InstagramTemplateCatalog> {
       // Do not fallback to filesystem in production/serverless.
       return { templates: [] };
     } catch (error) {
-      if (process.env.NODE_ENV === "production") {
+      if (isReadOnlyServerlessRuntime() || process.env.NODE_ENV === "production") {
         throw new Error(
           `Instagram template storage(DB) read failed: ${error instanceof Error ? error.message : "unknown"}`
         );
       }
     }
+  }
+
+  if (isReadOnlyServerlessRuntime()) {
+    return { templates: [] };
   }
 
   await ensureTemplateFile();
@@ -341,12 +408,18 @@ async function writeCatalog(catalog: InstagramTemplateCatalog, userId?: string):
       });
       return;
     } catch (error) {
-      if (process.env.NODE_ENV === "production") {
+      if (isReadOnlyServerlessRuntime() || process.env.NODE_ENV === "production") {
         throw new Error(
           `Instagram template storage(DB) write failed: ${error instanceof Error ? error.message : "unknown"}`
         );
       }
     }
+  }
+
+  if (isReadOnlyServerlessRuntime()) {
+    throw new Error(
+      "Instagram template persistence requires database storage in serverless runtime. Add DATABASE_URL and retry."
+    );
   }
 
   await ensureTemplateFile();

@@ -7,6 +7,14 @@ import type { InstagramAutomationScheduleState } from "@/lib/instagram-automatio
 
 const INSTAGRAM_SCHEDULE_SUFFIX = "::instagram-schedule";
 
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return normalized.replace(/^-+|-+$/g, "") || "default";
@@ -45,6 +53,9 @@ function recoverUserIdFromStorage(storageUserId: string): string | undefined {
 }
 
 async function ensureScheduleFile(): Promise<void> {
+  if (isReadOnlyServerlessRuntime()) {
+    return;
+  }
   const scheduleFile = resolveScheduleFile();
   await fs.mkdir(path.dirname(scheduleFile), { recursive: true });
   try {
@@ -67,6 +78,10 @@ export async function readInstagramAutomationScheduleState(
       return undefined;
     }
     return parsed as Partial<InstagramAutomationScheduleState>;
+  }
+
+  if (isReadOnlyServerlessRuntime()) {
+    return undefined;
   }
 
   const scheduleFile = resolveScheduleFile();
@@ -95,6 +110,12 @@ export async function writeInstagramAutomationScheduleState(
       create: { userId: storageUserId, data: state as unknown as Prisma.InputJsonValue }
     });
     return state;
+  }
+
+  if (isReadOnlyServerlessRuntime()) {
+    throw new Error(
+      "Instagram automation schedule persistence requires DATABASE_URL on serverless runtime. Add DATABASE_URL and retry."
+    );
   }
 
   const scheduleFile = resolveScheduleFile();
@@ -134,4 +155,3 @@ export async function listEnabledInstagramScheduleUsers(): Promise<string[]> {
 
   return Array.from(users);
 }
-

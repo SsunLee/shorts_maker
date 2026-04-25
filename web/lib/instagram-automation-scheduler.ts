@@ -17,6 +17,7 @@ import {
 } from "@/lib/instagram-ideas-prompt";
 import { generateInstagramIdeaRows } from "@/lib/instagram-ideas-generator";
 import { appendInstagramIdeasToSheet } from "@/lib/instagram-sheet";
+import { runInstagramScheduledMetaUpload } from "@/lib/instagram-schedule-meta-runner";
 
 const DEFAULT_CONFIG: InstagramAutomationScheduleConfig = {
   enabled: false,
@@ -27,7 +28,8 @@ const DEFAULT_CONFIG: InstagramAutomationScheduleConfig = {
   itemsPerRun: 3,
   autoIdeaEnabled: false,
   autoIdeaKeywords: "",
-  autoIdeaLanguage: "ja"
+  autoIdeaLanguage: "ja",
+  autoUploadEnabled: false
 };
 
 declare global {
@@ -206,7 +208,8 @@ function normalizeConfig(
     sheetName: String(input?.sheetName || "").trim() || undefined,
     autoIdeaEnabled: Boolean(input?.autoIdeaEnabled),
     autoIdeaKeywords: String(input?.autoIdeaKeywords || "").trim(),
-    autoIdeaLanguage: normalizeLanguage(input?.autoIdeaLanguage)
+    autoIdeaLanguage: normalizeLanguage(input?.autoIdeaLanguage),
+    autoUploadEnabled: Boolean(input?.autoUploadEnabled)
   };
 }
 
@@ -224,6 +227,7 @@ function normalizeState(input?: Partial<InstagramAutomationScheduleState>): Inst
     lastResult:
       input?.lastResult === "started" ||
       input?.lastResult === "skipped_running" ||
+      input?.lastResult === "skipped_noop" ||
       input?.lastResult === "failed"
         ? input.lastResult
         : undefined,
@@ -588,15 +592,46 @@ export async function runInstagramAutomationScheduleTick(
   let lastResult: InstagramAutomationScheduleState["lastResult"] = "started";
   let lastError: string | undefined;
   try {
-    if (state.config.autoIdeaEnabled) {
+    if (!state.config.autoIdeaEnabled && !state.config.autoUploadEnabled) {
+      lastResult = "skipped_noop";
+      lastError = "스케줄 작업이 비활성화되어 있어 실행할 작업이 없습니다.";
+    } else {
       const actorUserId = String(userId || "").trim();
       if (!actorUserId) {
         throw new Error("스케줄 실행 사용자 정보를 찾을 수 없습니다.");
       }
-      await runInstagramAutoIdeaGeneration(actorUserId, state.config);
+      let hadWork = false;
+      if (state.config.autoIdeaEnabled) {
+        const autoIdeaResult = await runInstagramAutoIdeaGeneration(actorUserId, state.config);
+        if (autoIdeaResult.inserted > 0) {
+          hadWork = true;
+        }
+      }
+
+      if (state.config.autoUploadEnabled) {
+        const uploadResult = await runInstagramScheduledMetaUpload({
+          userId: actorUserId,
+          itemsPerRun: state.config.itemsPerRun,
+          sheetName: state.config.sheetName
+        });
+        if (uploadResult.uploaded > 0 || uploadResult.attempted > 0) {
+          hadWork = true;
+        }
+        if (uploadResult.failed > 0) {
+          throw new Error(
+            `Meta 업로드 부분 실패: 성공 ${uploadResult.uploaded}건 / 실패 ${uploadResult.failed}건`
+          );
+        }
+      }
+
+      if (hadWork) {
+        lastResult = "started";
+        lastError = undefined;
+      } else {
+        lastResult = "skipped_noop";
+        lastError = "실행할 준비 row가 없습니다.";
+      }
     }
-    lastResult = "started";
-    lastError = undefined;
   } catch (error) {
     lastResult = "failed";
     lastError = error instanceof Error ? error.message : "인스타 자동화 스케줄 실행 실패";
@@ -622,12 +657,14 @@ export async function runDueInstagramAutomationSchedules(options?: {
   scanned: number;
   attempted: number;
   started: number;
+  skippedNoop: number;
   failed: number;
   users: string[];
 }> {
   const userIds = options?.userIds?.length ? options.userIds : await listEnabledInstagramScheduleUsers();
   let attempted = 0;
   let started = 0;
+  let skippedNoop = 0;
   let failed = 0;
 
   for (const userId of userIds) {
@@ -639,10 +676,12 @@ export async function runDueInstagramAutomationSchedules(options?: {
       continue;
     }
     attempted += 1;
-    if (state.lastResult === "failed") {
-      failed += 1;
-    } else {
+    if (state.lastResult === "started") {
       started += 1;
+    } else if (state.lastResult === "skipped_noop") {
+      skippedNoop += 1;
+    } else if (state.lastResult === "failed") {
+      failed += 1;
     }
   }
 
@@ -650,6 +689,7 @@ export async function runDueInstagramAutomationSchedules(options?: {
     scanned: userIds.length,
     attempted,
     started,
+    skippedNoop,
     failed,
     users: userIds
   };
@@ -706,4 +746,3 @@ export async function disableInstagramAutomationSchedule(
 ): Promise<InstagramAutomationScheduleState> {
   return updateInstagramAutomationScheduleConfig(userId, { enabled: false });
 }
-

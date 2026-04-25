@@ -161,7 +161,32 @@ export function resolveInstagramTemplateVariables(
   });
 }
 
+function resolveSampleDataValueByKey(sampleData: Record<string, string>, key: string): string | undefined {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) {
+    return undefined;
+  }
+  if (Object.prototype.hasOwnProperty.call(sampleData, normalizedKey)) {
+    return String(sampleData[normalizedKey] ?? "");
+  }
+  const matchedKey = Object.keys(sampleData).find(
+    (candidate) => candidate.toLowerCase() === normalizedKey.toLowerCase()
+  );
+  return matchedKey ? String(sampleData[matchedKey] ?? "") : undefined;
+}
+
 function resolveTextLayerContent(layer: InstagramTextElement, sampleData: Record<string, string>): string {
+  if (layer.textMode === "variable") {
+    const source = String(layer.text || "");
+    const hasToken = /\{\{[^}]+\}\}/.test(source);
+    const bindingKey = String(layer.bindingKey || "").trim();
+    if (!hasToken && bindingKey) {
+      const byBindingKey = resolveSampleDataValueByKey(sampleData, bindingKey);
+      if (typeof byBindingKey === "string" && byBindingKey.length > 0) {
+        return byBindingKey;
+      }
+    }
+  }
   return resolveInstagramTemplateVariables(layer.text, sampleData, layer.textMode === "plain" ? "plain" : "variable");
 }
 
@@ -523,7 +548,10 @@ export async function renderInstagramPageToPngDataUrl(args: {
       }
       ctx.closePath();
       if (layer.fillEnabled !== false) {
-        ctx.fillStyle = normalizeHex(layer.fillColor, "#F4F1EA");
+        ctx.fillStyle = withAlpha(
+          normalizeHex(layer.fillColor, "#F4F1EA"),
+          clamp(Number((layer as { fillOpacity?: number }).fillOpacity), 0, 1, 1)
+        );
         ctx.fill();
       }
       if (layer.strokeWidth > 0) {
@@ -598,7 +626,7 @@ export async function renderInstagramPageToPngDataUrl(args: {
     const padding = Math.max(0, textLayer.padding);
     const maxTextWidth = Math.max(10, width - padding * 2);
     const fontStyle = textLayer.italic ? "italic " : "";
-    const fontWeight = textLayer.bold ? 700 : 400;
+    const fontWeight = textLayer.bold ? 600 : 400;
     ctx.font = `${fontStyle}${fontWeight} ${Math.max(8, textLayer.fontSize)}px ${buildFontFamilyStack(textLayer.fontFamily)}`;
     ctx.textBaseline = "top";
     ctx.fillStyle = normalizeHex(textLayer.color, "#111111");
@@ -616,8 +644,13 @@ export async function renderInstagramPageToPngDataUrl(args: {
       ctx.shadowOffsetY = 0;
     }
 
-    if (textLayer.padding > 0 || normalizeHex(textLayer.backgroundColor, "#FFFFFF") !== "#FFFFFF") {
-      ctx.fillStyle = normalizeHex(textLayer.backgroundColor, "#FFFFFF");
+    const textBackgroundOpacity = clamp(Number(textLayer.backgroundOpacity), 0, 1, 1);
+    if (
+      textLayer.padding > 0 ||
+      normalizeHex(textLayer.backgroundColor, "#FFFFFF") !== "#FFFFFF" ||
+      textBackgroundOpacity < 1
+    ) {
+      ctx.fillStyle = withAlpha(textLayer.backgroundColor, textBackgroundOpacity);
       ctx.fillRect(left, top, width, height);
       ctx.fillStyle = normalizeHex(textLayer.color, "#111111");
     }
@@ -625,7 +658,7 @@ export async function renderInstagramPageToPngDataUrl(args: {
     // Keep clipping inside layer bounds but add enough bleed for font overhang (CJK display fonts).
     const baseFontSize = Math.max(8, textLayer.fontSize);
     const clipBleedX = Math.max(12, Math.round(baseFontSize * 0.45));
-    const clipBleedY = Math.max(4, Math.round(baseFontSize * 0.18));
+    const clipBleedY = Math.max(10, Math.round(baseFontSize * 0.45));
     ctx.beginPath();
     ctx.rect(left - clipBleedX, top - clipBleedY, width + clipBleedX * 2, height + clipBleedY * 2);
     ctx.clip();
@@ -639,7 +672,7 @@ export async function renderInstagramPageToPngDataUrl(args: {
     const rubyReserve = hasRuby ? Math.max(8, textLayer.fontSize * 0.42) : 0;
     const lineHeight = Math.max(8, textLayer.fontSize * clamp(textLayer.lineHeight, 0.8, 3, 1.2)) + rubyReserve;
     const totalHeight = lines.length * lineHeight;
-    const verticalInset = Math.max(2, Math.round(baseFontSize * 0.08));
+    const verticalInset = Math.max(2, Math.round(baseFontSize * 0.12));
     const availableHeight = Math.max(0, height - verticalInset * 2);
     const startY = top + verticalInset + Math.max(0, (availableHeight - totalHeight) / 2);
     let textX = left + padding;
@@ -676,7 +709,7 @@ export async function renderInstagramPageToPngDataUrl(args: {
         const baseWidth = ctx.measureText(baseText).width;
         if (segment.ruby.trim()) {
           const rubyFontSize = Math.max(8, textLayer.fontSize * 0.42);
-          const rubyFont = `${textLayer.bold ? "700" : "500"} ${textLayer.italic ? "italic " : ""}${rubyFontSize}px ${buildFontFamilyStack(textLayer.fontFamily)}`;
+          const rubyFont = `${textLayer.bold ? "600" : "500"} ${textLayer.italic ? "italic " : ""}${rubyFontSize}px ${buildFontFamilyStack(textLayer.fontFamily)}`;
           const mainFont = ctx.font;
           ctx.font = rubyFont;
           const rubyWidth = ctx.measureText(segment.ruby).width;

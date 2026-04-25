@@ -16,6 +16,12 @@ const updateSchema = z.object({
   isActive: z.boolean().optional(),
   expiresAt: z.union([z.string().datetime(), z.literal(""), z.null()]).optional(),
   role: z.enum(["user", "super_admin"]).optional(),
+  menuVisibility: z
+    .object({
+      youtube: z.record(z.boolean()).optional(),
+      instagram: z.record(z.boolean()).optional()
+    })
+    .optional(),
   issueAccessCode: z.boolean().optional()
 });
 
@@ -61,6 +67,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
       isActive: payload.isActive,
       expiresAt: payload.expiresAt,
       role: payload.role,
+      menuVisibility: payload.menuVisibility,
       actorUserId: adminUserId
     });
     if (payload.issueAccessCode) {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { isSuperAdminUser } from "@/lib/user-access";
+import { getUserMenuVisibility, isSuperAdminUser } from "@/lib/user-access";
 
 export const runtime = "nodejs";
 
@@ -14,10 +14,12 @@ export async function GET(): Promise<NextResponse> {
   const email = String(session.user.email || "").trim();
   const userId = String(session.user.id || session.user.email || "").trim();
   const isSuperAdmin = await isSuperAdminUser({ userId, email });
+  const menuVisibility = await getUserMenuVisibility({ userId, email });
   return NextResponse.json({
     authenticated: true,
     email,
     name: session.user.name || undefined,
-    isSuperAdmin
+    isSuperAdmin,
+    menuVisibility
   });
 }

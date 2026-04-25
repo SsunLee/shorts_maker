@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { startStagedWorkflow } from "@/lib/staged-workflow";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
+import { withReadableWorkflowMediaUrls } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
 
@@ -30,7 +31,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body = await request.json();
     const payload = requestSchema.parse(body);
     const workflow = await startStagedWorkflow(payload, userId);
-    return NextResponse.json(workflow);
+    const hydrated = await withReadableWorkflowMediaUrls(workflow);
+    return NextResponse.json(hydrated);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to start workflow";
     return NextResponse.json({ error: message }, { status: 400 });

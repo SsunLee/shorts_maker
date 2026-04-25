@@ -30,7 +30,8 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       narration,
       imageStyle: payload.imageStyle,
       imageAspectRatio: payload.imageAspectRatio,
-      sceneCount: payload.sceneCount
+      sceneCount: payload.sceneCount,
+      visualPolicy: "news_strict"
     }, userId);
     if (imagePrompts.length < 3) {
       throw new Error(
@@ -48,6 +49,9 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
 
     const imageUrls = await generateImages(id, imagePrompts, {
       imageAspectRatio: payload.imageAspectRatio === "16:9" ? "16:9" : "9:16",
+      visualPolicy: "news_strict",
+      imageStyle: payload.imageStyle,
+      fileNameSuffix: `batch-${Date.now()}`,
       onProgress: async (completed, total) => {
         const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
         await upsertRow({

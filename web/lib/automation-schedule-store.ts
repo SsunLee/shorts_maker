@@ -5,6 +5,14 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { scopedUserId, unscopedUserId } from "@/lib/user-storage-namespace";
 
+function isReadOnlyServerlessRuntime(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    process.env.NEXT_RUNTIME === "edge"
+  );
+}
+
 function sanitizeNamespace(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return normalized.replace(/^-+|-+$/g, "") || "default";
@@ -25,6 +33,9 @@ function resolveScheduleFile(): string {
 }
 
 async function ensureScheduleFile(): Promise<void> {
+  if (isReadOnlyServerlessRuntime()) {
+    return;
+  }
   const scheduleFile = resolveScheduleFile();
   await fs.mkdir(path.dirname(scheduleFile), { recursive: true });
   try {
@@ -47,6 +58,10 @@ export async function readAutomationScheduleState(
       return undefined;
     }
     return parsed as Partial<AutomationScheduleState>;
+  }
+
+  if (isReadOnlyServerlessRuntime()) {
+    return undefined;
   }
 
   const scheduleFile = resolveScheduleFile();
@@ -75,6 +90,12 @@ export async function writeAutomationScheduleState(
       create: { userId: storageUserId, data: state as unknown as Prisma.InputJsonValue }
     });
     return state;
+  }
+
+  if (isReadOnlyServerlessRuntime()) {
+    throw new Error(
+      "Automation schedule persistence requires DATABASE_URL on serverless runtime. Add DATABASE_URL and retry."
+    );
   }
 
   const scheduleFile = resolveScheduleFile();

@@ -296,6 +296,7 @@ export function SettingsForm(): React.JSX.Element {
   const [settingsJsonError, setSettingsJsonError] = useState<string>();
   const [settingsJsonMessage, setSettingsJsonMessage] = useState<string>();
   const [googleOAuthLoading, setGoogleOAuthLoading] = useState(false);
+  const [metaOAuthLoading, setMetaOAuthLoading] = useState(false);
   const [theme, setTheme] = useState<AppTheme>("light");
   const settingsJsonFileRef = useRef<HTMLInputElement | null>(null);
   const currentTextProvider = useMemo(
@@ -342,15 +343,26 @@ export function SettingsForm(): React.JSX.Element {
       return;
     }
     const params = new URLSearchParams(window.location.search);
-    const oauthState = String(params.get("google_oauth") || "").trim().toLowerCase();
-    if (!oauthState) {
+    const googleOauthState = String(params.get("google_oauth") || "").trim().toLowerCase();
+    const metaOauthState = String(params.get("meta_oauth") || "").trim().toLowerCase();
+    if (!googleOauthState && !metaOauthState) {
       return;
     }
-    const oauthMessage = String(params.get("google_oauth_message") || "").trim();
-    if (oauthState === "success") {
-      setMessage(oauthMessage || "Google OAuth 연동이 완료되었습니다.");
-    } else {
-      setMessage(oauthMessage || "Google OAuth 연동에 실패했습니다.");
+    if (googleOauthState) {
+      const oauthMessage = String(params.get("google_oauth_message") || "").trim();
+      if (googleOauthState === "success") {
+        setMessage(oauthMessage || "Google OAuth 연동이 완료되었습니다.");
+      } else {
+        setMessage(oauthMessage || "Google OAuth 연동에 실패했습니다.");
+      }
+    }
+    if (metaOauthState) {
+      const oauthMessage = String(params.get("meta_oauth_message") || "").trim();
+      if (metaOauthState === "success") {
+        setMessage(oauthMessage || "Meta 원클릭 연동이 완료되었습니다.");
+      } else {
+        setMessage(oauthMessage || "Meta 원클릭 연동에 실패했습니다.");
+      }
     }
     const cleaned = `${window.location.pathname}${window.location.hash || ""}`;
     window.history.replaceState(null, "", cleaned);
@@ -716,6 +728,39 @@ export function SettingsForm(): React.JSX.Element {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Google OAuth 시작에 실패했습니다.");
       setGoogleOAuthLoading(false);
+    }
+  }
+
+  async function startMetaOAuth(): Promise<void> {
+    setMetaOAuthLoading(true);
+    setMessage(undefined);
+    try {
+      const merged = {
+        ...settings,
+        metaGraphVersion: String(settings.metaGraphVersion || "v23.0").trim() || "v23.0"
+      };
+      const saveResponse = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(merged)
+      });
+      if (!saveResponse.ok) {
+        const error = (await saveResponse.json()) as { error?: string };
+        throw new Error(error.error || "Meta OAuth 시작 전 설정 저장에 실패했습니다.");
+      }
+
+      const response = await fetch("/api/meta/oauth/start?return_to=/settings", {
+        method: "GET",
+        cache: "no-store"
+      });
+      const data = (await response.json()) as { url?: string; error?: string };
+      if (!response.ok || !data.url) {
+        throw new Error(data.error || "Meta OAuth 시작 URL을 만들지 못했습니다.");
+      }
+      window.location.href = data.url;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Meta OAuth 시작에 실패했습니다.");
+      setMetaOAuthLoading(false);
     }
   }
 
@@ -1564,13 +1609,21 @@ export function SettingsForm(): React.JSX.Element {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Meta / Instagram 업로드 설정</CardTitle>
-          <CardDescription>
-            인스타그램 피드/릴스 업로드 API 연동에 사용할 Meta Graph API 정보입니다.
-          </CardDescription>
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <CardTitle>Meta / Instagram 업로드 설정</CardTitle>
+            <CardDescription>
+              인스타그램 피드/릴스 업로드 API 연동에 사용할 Meta Graph API 정보입니다.
+            </CardDescription>
+          </div>
+          <Button type="button" onClick={() => void startMetaOAuth()} disabled={metaOAuthLoading}>
+            {metaOAuthLoading ? "연동 이동 중..." : "Meta 원클릭 연동"}
+          </Button>
         </CardHeader>
         <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            원클릭 연동 시 Access Token / Facebook Page ID / Instagram Account ID가 자동 채워집니다.
+          </p>
           <div className="space-y-2">
             <HelpLabel
               htmlFor="metaAccessToken"

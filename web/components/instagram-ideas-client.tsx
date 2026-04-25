@@ -53,6 +53,14 @@ function getCellValue(row: Record<string, string>, header: string): string {
   return key ? String(row[key] || "") : "";
 }
 
+function isInstagramUploadCompletedStatus(status: string): boolean {
+  const normalized = String(status || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toLowerCase();
+  return normalized === "업로드완료";
+}
+
 export function InstagramIdeasClient(): React.JSX.Element {
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState("5");
@@ -108,6 +116,11 @@ export function InstagramIdeasClient(): React.JSX.Element {
     if (!id) return "";
     return `https://docs.google.com/spreadsheets/d/${id}/edit`;
   }, [spreadsheetId]);
+
+  const visibleSheetRows = useMemo(
+    () => sheetRows.filter((row) => !isInstagramUploadCompletedStatus(getCellValue(row, "status"))),
+    [sheetRows]
+  );
 
   useEffect(() => {
     try {
@@ -521,7 +534,7 @@ export function InstagramIdeasClient(): React.JSX.Element {
             <div className="min-w-0">
               <CardTitle className="truncate">Google Sheet 테이블 뷰</CardTitle>
               <CardDescription className="break-words">
-                현재 시트의 실제 헤더/행 구조를 그대로 표시합니다.
+                현재 시트 데이터를 표시하며, status가 &quot;업로드 완료&quot;인 행은 숨깁니다.
               </CardDescription>
             </div>
             <Button
@@ -561,7 +574,14 @@ export function InstagramIdeasClient(): React.JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {sheetRows.map((row, rowIndex) => (
+                  {visibleSheetRows.length === 0 ? (
+                    <tr className="border-t">
+                      <td className="px-3 py-4 text-muted-foreground" colSpan={sheetHeaders.length}>
+                        표시할 행이 없습니다. (업로드 완료 상태는 숨김)
+                      </td>
+                    </tr>
+                  ) : (
+                    visibleSheetRows.map((row, rowIndex) => (
                     <tr key={`ig-sheet-row-${rowIndex}`} className="border-t align-top">
                       {sheetHeaders.map((header) => (
                         <td key={`ig-sheet-cell-${rowIndex}-${header}`} className="px-3 py-2 whitespace-pre-wrap break-words">
@@ -569,7 +589,8 @@ export function InstagramIdeasClient(): React.JSX.Element {
                         </td>
                       ))}
                     </tr>
-                  ))}
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

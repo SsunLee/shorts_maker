@@ -1,7 +1,7 @@
 import { listSheetContentRows } from "@/lib/sheet-content";
 import { generateIdeas } from "@/lib/idea-generator";
 import { appendIdeaRowsToSheet, loadIdeasSheetTable } from "@/lib/ideas-sheet";
-import { upsertRow } from "@/lib/repository";
+import { listRows, upsertRow } from "@/lib/repository";
 import {
   runNextWorkflowStage,
   startStagedWorkflow
@@ -19,7 +19,8 @@ import {
   CreateVideoRequest,
   IdeaLanguage,
   ImageAspectRatio,
-  RenderOptions
+  RenderOptions,
+  VideoRow
 } from "@/lib/types";
 import { appBaseUrl } from "@/lib/utils";
 
@@ -53,6 +54,28 @@ export interface StartAutomationArgs {
 }
 
 type StopReason = "requested" | "completed" | "failed";
+type SheetReadyRow = Awaited<ReturnType<typeof listSheetContentRows>>[number];
+
+type ContentSignature = {
+  rowId: string;
+  title: string;
+  body: string;
+  titleNorm: string;
+  bodyNorm: string;
+  titleTokens: string[];
+  bodyTokens: string[];
+  createdAtMs: number;
+  source: "history" | "run" | "ready";
+};
+
+type DuplicateCheckResult = {
+  duplicate: boolean;
+  reason?: string;
+  matched?: ContentSignature;
+  titleScore?: number;
+  bodyScore?: number;
+  commonBodyTokens?: number;
+};
 
 const MAX_LOGS = 200;
 const DEFAULTS: AutomationDefaults = {
@@ -160,6 +183,230 @@ function findRowValue(row: Record<string, string>, aliases: string[]): string {
   const aliasSet = new Set(aliases.map((item) => item.trim().toLowerCase()));
   const key = Object.keys(row).find((item) => aliasSet.has(item.trim().toLowerCase()));
   return key ? String(row[key] || "").trim() : "";
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value || "").trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function parseRatio(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseFloat(String(value || "").trim());
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function normalizeSimilarityText(value: string | undefined): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/#[\p{L}\p{N}_-]+/gu, " ")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeSimilarityText(value: string | undefined): string[] {
+  const normalized = normalizeSimilarityText(value);
+  if (!normalized) {
+    return [];
+  }
+  const words = normalized
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+  const wordSet = new Set(words);
+  if (wordSet.size >= 6) {
+    return Array.from(wordSet).slice(0, 200);
+  }
+
+  const compact = normalized.replace(/\s+/g, "");
+  const ngrams: string[] = [];
+  if (compact.length >= 4) {
+    const gramSize = compact.length > 40 ? 3 : 2;
+    for (let index = 0; index <= compact.length - gramSize && ngrams.length < 200; index += 1) {
+      ngrams.push(compact.slice(index, index + gramSize));
+    }
+  }
+  return Array.from(new Set([...words, ...ngrams])).slice(0, 200);
+}
+
+function computeJaccard(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  let intersection = 0;
+  leftSet.forEach((token) => {
+    if (rightSet.has(token)) {
+      intersection += 1;
+    }
+  });
+  const union = leftSet.size + rightSet.size - intersection;
+  if (union <= 0) {
+    return 0;
+  }
+  return intersection / union;
+}
+
+function countCommonTokens(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const rightSet = new Set(right);
+  let count = 0;
+  left.forEach((token) => {
+    if (rightSet.has(token)) {
+      count += 1;
+    }
+  });
+  return count;
+}
+
+function parseIsoMillis(value: string | undefined): number {
+  const timestamp = Date.parse(String(value || "").trim());
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function buildSignatureFromReadyRow(row: SheetReadyRow): ContentSignature {
+  const title = String(row.subject || row.keyword || "").trim();
+  const body = [row.keyword, row.subject, row.description, row.narration]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n");
+  const titleNorm = normalizeSimilarityText(title);
+  const bodyNorm = normalizeSimilarityText(body);
+  return {
+    rowId: row.id,
+    title,
+    body,
+    titleNorm,
+    bodyNorm,
+    titleTokens: tokenizeSimilarityText(title),
+    bodyTokens: tokenizeSimilarityText(body),
+    createdAtMs: Date.now(),
+    source: "ready"
+  };
+}
+
+function buildSignatureFromVideoRow(row: VideoRow): ContentSignature {
+  const title = String(row.title || "").trim();
+  const body = [row.title, row.topic, row.narration]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n");
+  const titleNorm = normalizeSimilarityText(title);
+  const bodyNorm = normalizeSimilarityText(body);
+  const createdAtMs = parseIsoMillis(row.updatedAt) || parseIsoMillis(row.createdAt) || 0;
+  return {
+    rowId: row.id,
+    title,
+    body,
+    titleNorm,
+    bodyNorm,
+    titleTokens: tokenizeSimilarityText(title),
+    bodyTokens: tokenizeSimilarityText(body),
+    createdAtMs,
+    source: "history"
+  };
+}
+
+function getDuplicateThresholds(): {
+  titleJaccard: number;
+  bodyJaccard: number;
+  bodyOnlyJaccard: number;
+  minCommonTokens: number;
+} {
+  return {
+    titleJaccard: parseRatio(process.env.AUTOMATION_DUP_TITLE_JACCARD, 0.84, 0.4, 0.99),
+    bodyJaccard: parseRatio(process.env.AUTOMATION_DUP_BODY_JACCARD, 0.74, 0.35, 0.99),
+    bodyOnlyJaccard: parseRatio(process.env.AUTOMATION_DUP_BODY_ONLY_JACCARD, 0.9, 0.5, 0.999),
+    minCommonTokens: parsePositiveInt(process.env.AUTOMATION_DUP_MIN_COMMON_TOKENS, 7)
+  };
+}
+
+function checkDuplicateContent(
+  candidate: ContentSignature,
+  references: ContentSignature[]
+): DuplicateCheckResult {
+  const thresholds = getDuplicateThresholds();
+  let best: DuplicateCheckResult | undefined;
+
+  for (const reference of references) {
+    if (!reference || reference.rowId === candidate.rowId) {
+      continue;
+    }
+    if (!reference.titleNorm && !reference.bodyNorm) {
+      continue;
+    }
+
+    if (candidate.titleNorm && reference.titleNorm && candidate.titleNorm === reference.titleNorm) {
+      return {
+        duplicate: true,
+        reason: "제목이 기존 업로드와 동일",
+        matched: reference,
+        titleScore: 1,
+        bodyScore: computeJaccard(candidate.bodyTokens, reference.bodyTokens),
+        commonBodyTokens: countCommonTokens(candidate.bodyTokens, reference.bodyTokens)
+      };
+    }
+
+    const titleScore = computeJaccard(candidate.titleTokens, reference.titleTokens);
+    const bodyScore = computeJaccard(candidate.bodyTokens, reference.bodyTokens);
+    const commonBodyTokens = countCommonTokens(candidate.bodyTokens, reference.bodyTokens);
+    const isNearDuplicate =
+      (titleScore >= thresholds.titleJaccard &&
+        bodyScore >= thresholds.bodyJaccard &&
+        commonBodyTokens >= thresholds.minCommonTokens) ||
+      (bodyScore >= thresholds.bodyOnlyJaccard && commonBodyTokens >= thresholds.minCommonTokens + 2);
+    if (!isNearDuplicate) {
+      continue;
+    }
+
+    const reason = `유사 콘텐츠 감지 (title ${(titleScore * 100).toFixed(0)}%, body ${(bodyScore * 100).toFixed(0)}%)`;
+    const current: DuplicateCheckResult = {
+      duplicate: true,
+      reason,
+      matched: reference,
+      titleScore,
+      bodyScore,
+      commonBodyTokens
+    };
+    if (!best || (current.bodyScore || 0) > (best.bodyScore || 0)) {
+      best = current;
+    }
+  }
+
+  return best || { duplicate: false };
+}
+
+async function loadRecentUploadedSignatures(userId?: string): Promise<ContentSignature[]> {
+  const lookbackDays = parsePositiveInt(process.env.AUTOMATION_DUP_LOOKBACK_DAYS, 21);
+  const lookbackMs = lookbackDays * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - lookbackMs;
+  const rows = await listRows(userId);
+  const candidates = rows.filter((row) => {
+    const isPublishedLike =
+      Boolean(row.youtubeUrl) ||
+      row.status === "uploaded" ||
+      row.status === "uploading" ||
+      (row.status === "ready" && Boolean(row.videoUrl));
+    if (!isPublishedLike) {
+      return false;
+    }
+    const when = parseIsoMillis(row.updatedAt) || parseIsoMillis(row.createdAt);
+    return when >= cutoff;
+  });
+  return candidates
+    .map((row) => buildSignatureFromVideoRow(row))
+    .filter((signature) => signature.titleTokens.length > 0 || signature.bodyTokens.length > 0)
+    .slice(0, 500);
 }
 
 async function generateIdeasForAutomation(args: {
@@ -566,11 +813,11 @@ function requestStopInternal(userId: string | undefined, reason: StopReason, err
 
 async function processOneRow(args: {
   userId?: string;
-  row: Awaited<ReturnType<typeof listSheetContentRows>>[number];
+  row: SheetReadyRow;
   defaults: AutomationDefaults;
   privacyStatus: "private" | "public" | "unlisted";
   uploadMode: "youtube" | "pre_upload";
-}): Promise<{ fatal: boolean }> {
+}): Promise<{ fatal: boolean; completed: boolean }> {
   const state = getStateRef(args.userId);
   const row = args.row;
   const tags = extractRowTags(row);
@@ -641,7 +888,7 @@ async function processOneRow(args: {
 
     if (args.uploadMode === "pre_upload") {
       pushLog(args.userId, "info", `[${row.id}] 업로드 전 단계까지 완료 (YouTube 업로드 생략)`);
-      return { fatal: false };
+      return { fatal: false, completed: true };
     }
 
     const description = buildUploadDescription(workflow.input.topic, workflow.narration, tags);
@@ -662,7 +909,7 @@ async function processOneRow(args: {
         privacyStatus: args.privacyStatus
       });
       pushLog(args.userId, "info", `[${row.id}] 업로드 요청을 백그라운드 큐로 전달했습니다.`);
-      return { fatal: false };
+      return { fatal: false, completed: true };
     }
 
     const youtubeUrl = await uploadVideoToYoutube({
@@ -693,7 +940,7 @@ async function processOneRow(args: {
       youtubeUrl
     });
     pushLog(args.userId, "info", `[${row.id}] 업로드 완료: ${youtubeUrl}`);
-    return { fatal: false };
+    return { fatal: false, completed: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown automation error";
     logServer("error", "row:failed", {
@@ -709,7 +956,7 @@ async function processOneRow(args: {
       error: message
     }, args.userId);
     pushLog(args.userId, "error", `[${row.id}] 실패: ${message}`);
-    return { fatal: isFatalUploadError(message) };
+    return { fatal: isFatalUploadError(message), completed: false };
   } finally {
     state.processed += 1;
     state.currentRowId = undefined;
@@ -778,6 +1025,15 @@ async function runAutomationLoop(args: {
     let autoIdeaRunLimit: number | undefined;
     let processedThisRun = 0;
     const prioritizedRowIds = new Set<string>();
+    const recentUploadedSignatures = await loadRecentUploadedSignatures(args.userId);
+    const runGeneratedSignatures: ContentSignature[] = [];
+    if (recentUploadedSignatures.length > 0) {
+      pushLog(
+        args.userId,
+        "info",
+        `[중복 방지] 최근 ${recentUploadedSignatures.length}개 업로드 이력을 기준으로 유사 콘텐츠를 자동 차단합니다.`
+      );
+    }
 
     if (args.autoIdeaEnabled) {
       const topic = String(args.autoIdeaTopic || "").trim();
@@ -831,7 +1087,46 @@ async function runAutomationLoop(args: {
       }
 
       const prioritizedRow = rows.find((item) => prioritizedRowIds.has(item.id));
-      const row = prioritizedRow || rows[0];
+      const orderedCandidates = prioritizedRow
+        ? [prioritizedRow, ...rows.filter((item) => item.id !== prioritizedRow.id)]
+        : rows;
+      let row: SheetReadyRow | undefined;
+      let selectedSignature: ContentSignature | undefined;
+      for (const candidate of orderedCandidates) {
+        const candidateSignature = buildSignatureFromReadyRow(candidate);
+        const duplicateCheck = checkDuplicateContent(candidateSignature, [
+          ...recentUploadedSignatures,
+          ...runGeneratedSignatures
+        ]);
+        if (!duplicateCheck.duplicate) {
+          row = candidate;
+          selectedSignature = candidateSignature;
+          break;
+        }
+        const matchedLabel = duplicateCheck.matched
+          ? `${duplicateCheck.matched.rowId} (${duplicateCheck.matched.source})`
+          : "기존 업로드";
+        const duplicateReason = `${duplicateCheck.reason || "중복 콘텐츠"} · 기준 ${matchedLabel}`;
+        pushLog(args.userId, "error", `[${candidate.id}] 자동 스킵: ${duplicateReason}`);
+        state.failed += 1;
+        state.lastError = `중복 콘텐츠 자동 차단: ${duplicateReason}`;
+        state.processed += 1;
+        await upsertRow(
+          {
+            id: candidate.id,
+            status: "failed",
+            error: `중복 콘텐츠 자동 차단: ${duplicateReason}`
+          },
+          args.userId
+        );
+        prioritizedRowIds.delete(candidate.id);
+      }
+
+      if (!row || !selectedSignature) {
+        pushLog(args.userId, "info", "준비 상태 row가 모두 중복으로 분류되어 다음 후보를 재탐색합니다.");
+        continue;
+      }
+
       state.currentRowId = row.id;
       state.currentRowTitle = row.subject || row.keyword || row.id;
       pushLog(args.userId, "info", `[${row.id}] 처리 시작 (${state.currentRowTitle})`);
@@ -844,6 +1139,16 @@ async function runAutomationLoop(args: {
         uploadMode: args.uploadMode
       });
       prioritizedRowIds.delete(row.id);
+      if (result.completed) {
+        runGeneratedSignatures.unshift({
+          ...selectedSignature,
+          source: "run",
+          createdAtMs: Date.now()
+        });
+        if (runGeneratedSignatures.length > 500) {
+          runGeneratedSignatures.length = 500;
+        }
+      }
       processedThisRun += 1;
       if (result.fatal) {
         requestStopInternal(args.userId, "failed", state.lastError || "Fatal automation error");

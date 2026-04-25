@@ -101,10 +101,22 @@ async function resolveUploadPath(videoUrl: string): Promise<string> {
   }
 
   if (videoUrl.startsWith("/")) {
-    return path.join(process.cwd(), "public", videoUrl.replace(/^\//, ""));
+    const localPath = path.join(process.cwd(), "public", videoUrl.replace(/^\//, ""));
+    try {
+      await fs.access(localPath);
+    } catch {
+      throw new Error(`Local video file not found: ${localPath}`);
+    }
+    return localPath;
   }
 
-  return videoUrl;
+  const localPath = String(videoUrl || "").trim();
+  try {
+    await fs.access(localPath);
+  } catch {
+    throw new Error(`Video file not found: ${localPath}`);
+  }
+  return localPath;
 }
 
 /** Upload an MP4 to YouTube and return the final watch URL. */

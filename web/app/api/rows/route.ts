@@ -3,6 +3,7 @@ import { listRows } from "@/lib/repository";
 import { listWorkflows } from "@/lib/workflow-store";
 import { progressFromStatus } from "@/lib/status";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
+import { toReadableWorkflowMediaUrl } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
 
@@ -21,10 +22,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const workflows = await listWorkflows(userId);
   const workflowById = new Map(workflows.map((item) => [item.id, item]));
-  const hydratedRows = rows.map((row) => {
+  const hydratedRows = await Promise.all(rows.map(async (row) => {
     const workflow = workflowById.get(row.id);
-    const fallbackVideoUrl =
-      workflow?.finalVideoUrl || workflow?.previewVideoUrl;
+    const fallbackVideoUrl = await toReadableWorkflowMediaUrl(
+      workflow?.finalVideoUrl || workflow?.previewVideoUrl
+    );
 
     let next = row;
 
@@ -56,6 +58,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
 
     return next;
-  });
+  }));
   return NextResponse.json({ rows: hydratedRows });
 }

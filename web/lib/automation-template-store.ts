@@ -181,21 +181,39 @@ async function readCatalogFromFile(): Promise<AutomationTemplateCatalog> {
 async function readCatalog(userId?: string): Promise<AutomationTemplateCatalog> {
   const storageUserId = scopedUserId(userId, "automation");
   if (storageUserId && prisma) {
-    const row = await prisma.userAutomationTemplateCatalog.findUnique({
-      where: { userId: storageUserId }
-    });
-    const parsed = row?.data as
-      | Partial<AutomationTemplateCatalog>
-      | Partial<AutomationTemplateSnapshot>
-      | undefined;
-    const normalized = normalizeCatalog(parsed);
-    if (normalized.templates.length > 0) {
-      return normalized;
+    try {
+      const row = await prisma.userAutomationTemplateCatalog.findUnique({
+        where: { userId: storageUserId }
+      });
+      const parsed = row?.data as
+        | Partial<AutomationTemplateCatalog>
+        | Partial<AutomationTemplateSnapshot>
+        | undefined;
+      const normalized = normalizeCatalog(parsed);
+      if (normalized.templates.length > 0) {
+        return normalized;
+      }
+      // DB is available but no saved template yet.
+      // Do not fallback to filesystem in production/serverless.
+      if (process.env.NODE_ENV === "production") {
+        return { templates: [] };
+      }
+      // Dev-only fallback: surface existing local file template.
+      return readCatalogFromFile();
+    } catch (error) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          `Automation template storage(DB) read failed: ${error instanceof Error ? error.message : "unknown"}`
+        );
+      }
+      return readCatalogFromFile();
     }
-    // First-login fallback: surface existing local template file until user saves to DB.
-    return readCatalogFromFile();
   }
 
+  if (process.env.NODE_ENV === "production") {
+    // In production/serverless, local filesystem storage is not reliable/writable.
+    return { templates: [] };
+  }
   return readCatalogFromFile();
 }
 
@@ -219,6 +237,13 @@ async function writeCatalog(catalog: AutomationTemplateCatalog, userId?: string)
       create: { userId: storageUserId, data: data as unknown as Prisma.InputJsonValue }
     });
     return;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Automation template persistence requires database storage in production. " +
+        "Set DATABASE_URL/POSTGRES_* and reconnect deployment environment."
+    );
   }
 
   await ensureAutomationTemplateFile();

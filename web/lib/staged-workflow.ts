@@ -333,7 +333,8 @@ export async function startStagedWorkflow(
       narration,
       imageStyle: normalizedInput.imageStyle,
       imageAspectRatio: normalizedInput.imageAspectRatio,
-      sceneCount: Math.max(MIN_SCENES, Math.min(MAX_SCENES, normalizedInput.sceneCount ?? 5))
+      sceneCount: Math.max(MIN_SCENES, Math.min(MAX_SCENES, normalizedInput.sceneCount ?? 5)),
+      visualPolicy: "news_strict"
     }, userId);
     validateScenes(scenes);
 
@@ -461,6 +462,7 @@ export async function updateSceneSplit(
 export async function regenerateWorkflowSceneImage(
   id: string,
   sceneIndex: number,
+  imagePromptOverride?: string,
   userId?: string
 ): Promise<VideoWorkflow> {
   const workflow = await getWorkflow(id, userId);
@@ -479,21 +481,26 @@ export async function regenerateWorkflowSceneImage(
   if (!targetScene) {
     throw new Error(`Scene ${targetIndex} was not found.`);
   }
-  if (!targetScene.imagePrompt.trim()) {
+  const nextPrompt = String(imagePromptOverride || targetScene.imagePrompt || "").trim();
+  if (!nextPrompt) {
     throw new Error(`Scene ${targetIndex} has an empty image prompt.`);
   }
 
   await upsertRow({ id, status: "generating_images", progress: 55 }, userId);
   const imageAspectRatio = resolveImageAspectRatioForWorkflow(workflow);
-  const [nextImageUrl] = await generateImages(workflow.id, [targetScene.imagePrompt], {
+  const [nextImageUrl] = await generateImages(workflow.id, [nextPrompt], {
     startIndex: targetIndex - 1,
-    imageAspectRatio
+    imageAspectRatio,
+    visualPolicy: "news_strict",
+    imageStyle: workflow.input.imageStyle,
+    fileNameSuffix: `regen-${targetIndex}-${Date.now()}`
   }, userId);
 
   const scenes = workflow.scenes.map((scene) =>
     scene.index === targetIndex
       ? {
           ...scene,
+          imagePrompt: nextPrompt,
           imageUrl: nextImageUrl
         }
       : scene
@@ -574,6 +581,9 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         workflow.scenes.map((scene) => scene.imagePrompt),
         {
           imageAspectRatio,
+          visualPolicy: "news_strict",
+          imageStyle: workflow.input.imageStyle,
+          fileNameSuffix: `batch-${Date.now()}`,
           onProgress: async (completed, total) => {
             const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
             await upsertRow({

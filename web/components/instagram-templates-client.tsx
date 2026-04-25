@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlignCenter,
@@ -40,16 +40,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { renderInstagramPageToPngDataUrl } from "@/lib/instagram-page-renderer";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
+import {
+  INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY,
+  type InstagramTemplateEditDraft
+} from "@/lib/instagram-feed-storage";
 import { isLocalFontAccessSupported, mergeFontOptions, queryInstalledFontNames } from "@/lib/local-fonts";
 import type { AppSettings } from "@/lib/types";
 import { filterVoiceOptions, resolveTtsVoiceProvider } from "@/lib/voice-options";
 import type {
+  InstagramAiImageOrientation,
   InstagramCustomFont,
   InstagramFeedPage,
   InstagramImageElement,
   InstagramPageElement,
   InstagramShapeElement,
   InstagramShapeType,
+  InstagramTemplateMode,
   InstagramTemplate,
   InstagramTextElement
 } from "@/lib/instagram-types";
@@ -70,6 +76,29 @@ type IdeasSheetTableResponse = {
   sheetName?: string;
   headers?: string[];
   rows?: Array<Record<string, string>>;
+  error?: string;
+};
+
+type GoogleNewsItem = {
+  title: string;
+  titleKo: string;
+  description: string;
+  summaryOriginal: string;
+  summaryKo: string;
+  detailOriginal: string;
+  detailKo: string;
+  imagePrompt: string;
+  source: string;
+  sourceUrl?: string;
+  publishedAt: string;
+  link: string;
+};
+
+type InstagramNewsResponse = {
+  country?: string;
+  count?: number;
+  fetchedAt?: string;
+  items?: GoogleNewsItem[];
   error?: string;
 };
 
@@ -168,22 +197,88 @@ type TextStyleSnapshot = Pick<
   | "shadowX"
   | "shadowY"
   | "backgroundColor"
+  | "backgroundOpacity"
   | "padding"
   | "opacity"
 >;
 
 type ShapeStyleSnapshot = Pick<
   InstagramShapeElement,
-  "shape" | "fillEnabled" | "fillColor" | "strokeColor" | "strokeWidth" | "cornerRadius" | "opacity"
+  | "shape"
+  | "fillEnabled"
+  | "fillColor"
+  | "fillOpacity"
+  | "strokeColor"
+  | "strokeWidth"
+  | "cornerRadius"
+  | "opacity"
 >;
 
 const DEFAULT_CANVAS_WIDTH = 1080;
 const DEFAULT_CANVAS_HEIGHT = 1350;
 const MIN_LAYER_SIZE_PERCENT = 1;
+const AUTO_TEXT_BINDING_KEY_PREFIX = "auto_txt_";
 const LAST_USED_TEMPLATE_ID_KEY = "shorts-maker:instagram:last-template-id";
 const FAVORITE_INSTAGRAM_FONTS_KEY = "shorts-maker:instagram:favorite-fonts";
 const INSTAGRAM_BINDING_STATE_KEY = "shorts-maker:instagram:binding-state";
 const DEFAULT_BINDING_FIELDS = ["id", "status", "type", "keyword", "subject", "description", "narration"];
+const NEWS_BINDING_FIELDS = [
+  "id",
+  "status",
+  "keyword",
+  "newsTitle",
+  "newsTitleKR",
+  "newsTitle_KR",
+  "news_title_kr",
+  "news_title",
+  "newsBody",
+  "news_body",
+  "sourceArticleOriginal",
+  "source_article_original",
+  "sourceArticleKo",
+  "source_article_ko",
+  "subject",
+  "title",
+  "description",
+  "narration",
+  "source",
+  "sourceName",
+  "link",
+  "url",
+  "newsLink",
+  "news_link",
+  "articleLink",
+  "article_link",
+  "publishedAt",
+  "published_at",
+  "summaryKo",
+  "summary_ko",
+  "summaryOriginal",
+  "summary_original",
+  "detailKo",
+  "detail_ko",
+  "detailOriginal",
+  "detail_original",
+  "articleBodyKo",
+  "article_body_ko",
+  "articlePart1",
+  "articlePart2",
+  "article_part_1",
+  "article_part_2",
+  "imagePrompt",
+  "image_prompt",
+  "newsImagePage1",
+  "news_image_page1",
+  "newsImagePage2",
+  "news_image_page2",
+  "newsImagePrimary",
+  "news_image_primary",
+  "imageUrl",
+  "image_url"
+];
+const NEWS_ONLY_BINDING_FIELD_SET = new Set(
+  NEWS_BINDING_FIELDS.filter((field) => !DEFAULT_BINDING_FIELDS.includes(field))
+);
 const CUSTOM_CANVAS_PRESET = "custom";
 const DEFAULT_SAMPLE_DATA: Record<string, string> = {
   type: "과거 부정형",
@@ -191,8 +286,120 @@ const DEFAULT_SAMPLE_DATA: Record<string, string> = {
   description: "시트 데이터와 연결되는 카드 템플릿",
   keyword: "instagram"
 };
+const DEFAULT_NEWS_SAMPLE_DATA: Record<string, string> = {
+  type: "뉴스",
+  status: "준비",
+  keyword: "news",
+  newsTitle: "뉴스 제목",
+  newsTitleKR: "뉴스 제목(한국어)",
+  newsTitle_KR: "뉴스 제목(한국어)",
+  news_title_kr: "뉴스 제목(한국어)",
+  newsBody: "뉴스 본문(한국어 요약)",
+  sourceArticleOriginal: "뉴스 출처 전문(원문)",
+  sourceArticleKo: "뉴스 출처 전문(한국어 번역)",
+  subject: "긴급 뉴스 핵심 요약",
+  title: "뉴스 제목",
+  description: "뉴스 본문 요약",
+  narration: "뉴스 본문 전체 내용",
+  source: "Google News",
+  link: "https://news.google.com",
+  newsImagePage1: "",
+  newsImagePage2: "",
+  newsImagePrimary: "",
+  imagePrompt:
+    "뉴스 상황을 시각화한 사실적인 사진, natural light, documentary photography, high detail, 9:16 vertical"
+};
+const NEWS_IMAGE_PROMPT_FALLBACK =
+  "뉴스 상황을 시각화한 사실적인 사진, natural light, documentary photography, high detail, 9:16 vertical";
+const NEWS_COUNTRY_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "KR", label: "대한민국 (KR)" },
+  { value: "US", label: "미국 (US)" },
+  { value: "JP", label: "일본 (JP)" },
+  { value: "GB", label: "영국 (GB)" },
+  { value: "CA", label: "캐나다 (CA)" },
+  { value: "AU", label: "호주 (AU)" },
+  { value: "IN", label: "인도 (IN)" },
+  { value: "SG", label: "싱가포르 (SG)" }
+];
+const NEWS_COUNT_OPTIONS = ["5", "10", "20", "30"];
+const NEWS_TOPIC_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "all", label: "전체" },
+  { value: "politics", label: "정치" },
+  { value: "economy", label: "경제" },
+  { value: "technology", label: "기술" },
+  { value: "ai", label: "AI" },
+  { value: "world", label: "국제" },
+  { value: "society", label: "사회" },
+  { value: "sports", label: "스포츠" },
+  { value: "entertainment", label: "연예" }
+];
+
+const NEWS_TOPIC_QUERY_BY_COUNTRY: Record<string, Record<string, string>> = {
+  KR: {
+    politics: "정치",
+    economy: "경제",
+    technology: "기술",
+    ai: "AI 인공지능",
+    world: "국제",
+    society: "사회",
+    sports: "스포츠",
+    entertainment: "연예"
+  },
+  JP: {
+    politics: "政治",
+    economy: "経済",
+    technology: "技術",
+    ai: "AI 人工知能",
+    world: "国際",
+    society: "社会",
+    sports: "スポーツ",
+    entertainment: "エンタメ"
+  },
+  DE: {
+    politics: "Politik",
+    economy: "Wirtschaft",
+    technology: "Technologie",
+    ai: "KI künstliche Intelligenz",
+    world: "Welt",
+    society: "Gesellschaft",
+    sports: "Sport",
+    entertainment: "Unterhaltung"
+  },
+  FR: {
+    politics: "politique",
+    economy: "économie",
+    technology: "technologie",
+    ai: "IA intelligence artificielle",
+    world: "monde",
+    society: "société",
+    sports: "sport",
+    entertainment: "divertissement"
+  },
+  DEFAULT: {
+    politics: "politics",
+    economy: "economy",
+    technology: "technology",
+    ai: "AI artificial intelligence",
+    world: "world",
+    society: "society",
+    sports: "sports",
+    entertainment: "entertainment"
+  }
+};
+
+function resolveNewsTopicQuery(topicValue: string, country: string): string {
+  if (!topicValue || topicValue === "all") {
+    return "";
+  }
+  const byCountry =
+    NEWS_TOPIC_QUERY_BY_COUNTRY[String(country || "").toUpperCase()] || NEWS_TOPIC_QUERY_BY_COUNTRY.DEFAULT;
+  return byCountry[topicValue] || NEWS_TOPIC_QUERY_BY_COUNTRY.DEFAULT[topicValue] || "";
+}
 const DEFAULT_INSTAGRAM_AI_IMAGE_STYLE = "Cinematic photo-real";
 const CUSTOM_FONT_ACCEPT = ".ttf,.otf,.ttc,.woff,.woff2";
+const MIN_TEXT_FONT_SIZE = 8;
+const MAX_TEXT_FONT_SIZE = 144;
+const TEXT_FONT_SIZE_STEP = 2;
 const INSTAGRAM_AI_IMAGE_STYLE_PRESETS = [
   "Cinematic photo-real",
   "Ultra photoreal photographer",
@@ -204,6 +411,11 @@ const INSTAGRAM_AI_IMAGE_STYLE_PRESETS = [
   "Pencil sketch",
   "Retro VHS film",
   "Editorial product ad"
+];
+const INSTAGRAM_AI_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "auto", label: "자동 (설정값)" },
+  { value: "openai:gpt-image-1", label: "OpenAI · gpt-image-1" },
+  { value: "gemini:gemini-2.5-flash-image", label: "Gemini · gemini-2.5-flash-image" }
 ];
 
 const CANVAS_PRESETS: Array<{ id: string; label: string; width: number; height: number }> = [
@@ -307,6 +519,59 @@ function uid(): string {
     return crypto.randomUUID();
   }
   return `ig_${Math.random().toString(36).slice(2)}${Date.now()}`;
+}
+
+function sanitizeTextBindingKey(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .replace(/^\{\{+|\}\}+$/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+}
+
+function isAutoTextBindingKey(value: string): boolean {
+  return String(value || "").trim().toLowerCase().startsWith(AUTO_TEXT_BINDING_KEY_PREFIX);
+}
+
+function buildAutoTextBindingKey(): string {
+  return `${AUTO_TEXT_BINDING_KEY_PREFIX}${uid().replace(/-/g, "").slice(0, 8).toLowerCase()}`;
+}
+
+function ensureUniqueTextBindingKey(candidate: string, taken: Set<string>): string {
+  const base = sanitizeTextBindingKey(candidate) || buildAutoTextBindingKey();
+  let next = base;
+  let suffix = 2;
+  while (taken.has(next.toLowerCase())) {
+    next = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  taken.add(next.toLowerCase());
+  return next;
+}
+
+function assignTemplateTextBindingKeys(template: InstagramTemplate): InstagramTemplate {
+  const taken = new Set<string>();
+  return {
+    ...template,
+    pages: template.pages.map((page) => ({
+      ...page,
+      elements: page.elements.map((element) => {
+        if (element.type !== "text") {
+          return element;
+        }
+        const nextKey = ensureUniqueTextBindingKey(
+          sanitizeTextBindingKey(element.bindingKey) || buildAutoTextBindingKey(),
+          taken
+        );
+        return {
+          ...element,
+          bindingKey: nextKey
+        };
+      })
+    }))
+  };
 }
 
 function clamp(value: number, min: number, max: number, fallback: number): number {
@@ -618,6 +883,19 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
 }
 
+function toInstagramMediaPreviewUrl(source: string): string {
+  const value = String(source || "").trim();
+  if (!value) return "";
+  const lowered = value.toLowerCase();
+  if (lowered.startsWith("data:") || lowered.startsWith("blob:")) {
+    return value;
+  }
+  if (value.startsWith("/api/instagram/media-proxy?")) {
+    return value;
+  }
+  return `/api/instagram/media-proxy?source=${encodeURIComponent(value)}`;
+}
+
 function getTextDecorationLine(layer: InstagramTextElement): string {
   const lines: string[] = [];
   if (layer.underline) lines.push("underline");
@@ -630,6 +908,20 @@ function getTextShadowStyle(layer: InstagramTextElement): string {
     return "none";
   }
   return `${layer.shadowX}px ${layer.shadowY}px ${layer.shadowBlur}px ${normalizeHex(layer.shadowColor, "#000000")}`;
+}
+
+function normalizeTextFontSize(value: number, fallback: number): number {
+  return clamp(Math.round(Number(value)), MIN_TEXT_FONT_SIZE, MAX_TEXT_FONT_SIZE, fallback);
+}
+
+function buildTextFontSizeOptions(currentValue: number): number[] {
+  const normalizedCurrent = normalizeTextFontSize(currentValue, MIN_TEXT_FONT_SIZE);
+  const values = new Set<number>();
+  for (let size = MIN_TEXT_FONT_SIZE; size <= MAX_TEXT_FONT_SIZE; size += TEXT_FONT_SIZE_STEP) {
+    values.add(size);
+  }
+  values.add(normalizedCurrent);
+  return Array.from(values).sort((a, b) => a - b);
 }
 
 function buildTextStyleSnapshot(layer: InstagramTextElement): TextStyleSnapshot {
@@ -651,6 +943,7 @@ function buildTextStyleSnapshot(layer: InstagramTextElement): TextStyleSnapshot 
     shadowX: layer.shadowX,
     shadowY: layer.shadowY,
     backgroundColor: layer.backgroundColor,
+    backgroundOpacity: clamp(Number(layer.backgroundOpacity), 0, 1, 1),
     padding: layer.padding,
     opacity: layer.opacity
   };
@@ -661,6 +954,7 @@ function buildShapeStyleSnapshot(layer: InstagramShapeElement): ShapeStyleSnapsh
     shape: layer.shape,
     fillEnabled: layer.fillEnabled,
     fillColor: layer.fillColor,
+    fillOpacity: layer.fillOpacity,
     strokeColor: layer.strokeColor,
     strokeWidth: layer.strokeWidth,
     cornerRadius: layer.cornerRadius,
@@ -712,6 +1006,38 @@ type BindingRowOption = {
   label: string;
   values: Record<string, string>;
 };
+
+function normalizeTemplateEditDraft(raw: unknown): InstagramTemplateEditDraft | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const item = raw as Partial<InstagramTemplateEditDraft>;
+  if (!item.template || typeof item.template !== "object") {
+    return undefined;
+  }
+
+  const normalizedTemplate = normalizeTemplateForEditor(item.template as InstagramTemplate);
+  const focusPageCandidate = String(item.focusPageId || "").trim();
+  const focusPageId = normalizedTemplate.pages.some((page) => page.id === focusPageCandidate)
+    ? focusPageCandidate
+    : undefined;
+
+  const sampleDataRaw = item.sampleData && typeof item.sampleData === "object" ? item.sampleData : undefined;
+  const sampleData: Record<string, string> = {};
+  Object.entries((sampleDataRaw || {}) as Record<string, unknown>).forEach(([key, value]) => {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return;
+    sampleData[normalizedKey] = String(value ?? "");
+  });
+
+  return {
+    createdAt: String(item.createdAt || new Date().toISOString()),
+    source: item.source === "instagram-feed" ? "instagram-feed" : undefined,
+    focusPageId,
+    template: normalizedTemplate,
+    sampleData: Object.keys(sampleData).length > 0 ? sampleData : undefined
+  };
+}
 
 function mergeBindingFieldsWithDefaults(fields: string[]): string[] {
   const next = uniqueValues(fields);
@@ -770,6 +1096,56 @@ function readBindingRowValue(values: Record<string, string>, field: string): str
   return matchedKey ? String(values[matchedKey] ?? "").trim() : "";
 }
 
+function isNewsGeneratedSampleValue(field: string, value: string): boolean {
+  const normalizedField = String(field || "").trim();
+  const normalizedValue = String(value || "").trim();
+  if (!normalizedValue) {
+    return false;
+  }
+  if (normalizedField === "id" && /^news-[a-z]{2}-\d+$/i.test(normalizedValue)) {
+    return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(DEFAULT_NEWS_SAMPLE_DATA, normalizedField)) {
+    return normalizedValue === String(DEFAULT_NEWS_SAMPLE_DATA[normalizedField] || "").trim();
+  }
+  return false;
+}
+
+function sanitizeGeneralSampleData(
+  current: Record<string, string>,
+  selectedRowValues?: Record<string, string>
+): Record<string, string> {
+  const next: Record<string, string> = { ...DEFAULT_SAMPLE_DATA };
+  Object.entries(current || {}).forEach(([key, value]) => {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey || NEWS_ONLY_BINDING_FIELD_SET.has(normalizedKey)) {
+      return;
+    }
+    next[normalizedKey] = String(value ?? "");
+  });
+
+  Object.entries(selectedRowValues || {}).forEach(([key, value]) => {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey || NEWS_ONLY_BINDING_FIELD_SET.has(normalizedKey)) {
+      return;
+    }
+    next[normalizedKey] = String(value ?? "");
+  });
+
+  DEFAULT_BINDING_FIELDS.forEach((field) => {
+    const rowValue = selectedRowValues ? readBindingRowValue(selectedRowValues, field) : "";
+    if (rowValue) {
+      next[field] = rowValue;
+      return;
+    }
+    if (isNewsGeneratedSampleValue(field, next[field] || "")) {
+      next[field] = DEFAULT_SAMPLE_DATA[field] || "";
+    }
+  });
+
+  return next;
+}
+
 function createBindingRowOptions(rows: Array<Record<string, string>>): BindingRowOption[] {
   const usedKeys = new Set<string>();
   return rows.map((row, index) => {
@@ -797,6 +1173,257 @@ function createBindingRowOptions(rows: Array<Record<string, string>>): BindingRo
   });
 }
 
+function resolveTemplateMode(mode: unknown): InstagramTemplateMode {
+  return mode === "news" ? "news" : "general";
+}
+
+function resolveAiImageOrientation(value: unknown): InstagramAiImageOrientation {
+  return value === "horizontal" ? "horizontal" : "vertical";
+}
+
+function resolveAiImageModel(value: unknown): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "auto";
+  }
+  const matched = INSTAGRAM_AI_MODEL_OPTIONS.find((item) => item.value === normalized);
+  return matched ? matched.value : normalized;
+}
+
+function applyOrientationToPrompt(prompt: string, orientation: InstagramAiImageOrientation): string {
+  const base = collapseWhitespace(prompt);
+  if (!base) return base;
+  const ratioHint = orientation === "horizontal" ? "16:9 horizontal" : "9:16 vertical";
+  const cleaned = base
+    .replace(/\b(16:9|9:16)\s*(horizontal|vertical|가로|세로|가로형|세로형)?/gi, "")
+    .replace(/최종\s*화면비\s*우선\s*:\s*[^\n]*/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return `${cleaned}\nASPECT_RATIO_REQUIRED: ${ratioHint}`;
+}
+
+function collapseWhitespace(value: string): string {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const normalized = collapseWhitespace(value);
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function splitTextForPages(value: string, maxCharsPerPage: number, maxPages: number): string[] {
+  const normalized = collapseWhitespace(value);
+  if (!normalized) {
+    return [];
+  }
+  const output: string[] = [];
+  let remaining = normalized;
+  while (remaining.length > 0 && output.length < maxPages) {
+    if (remaining.length <= maxCharsPerPage) {
+      output.push(remaining);
+      break;
+    }
+    let cut = remaining.lastIndexOf(" ", maxCharsPerPage);
+    if (cut < Math.floor(maxCharsPerPage * 0.6)) {
+      cut = maxCharsPerPage;
+    }
+    output.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+  if (remaining.length > 0 && output.length > 0) {
+    output[output.length - 1] = truncateText(`${output[output.length - 1]} ${remaining}`, maxCharsPerPage);
+  }
+  return output;
+}
+
+function normalizeNewsKeyword(value: string): string {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣]+/gi, "");
+  return normalized.slice(0, 20) || "news";
+}
+
+function buildNewsItemKey(item: GoogleNewsItem, index = 0): string {
+  return `${item.link || "news"}::${item.publishedAt || index}`;
+}
+
+function formatNewsDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value || "-";
+  }
+  return date.toLocaleString("ko-KR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function mergeNewsBindingFields(fields: string[]): string[] {
+  return mergeBindingFieldsWithDefaults(uniqueValues([...NEWS_BINDING_FIELDS, ...fields]));
+}
+
+function isSameStringArray(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function buildNewsSamplePayload(args: {
+  item: GoogleNewsItem;
+  country: string;
+  generatedImageUrl?: string;
+  generatedImageUrls?: Record<string, string>;
+}): Record<string, string> {
+  const item = args.item;
+  const title = collapseWhitespace(item.title || item.summaryOriginal || item.description);
+  const titleKo = collapseWhitespace(item.titleKo || item.summaryKo || title);
+  const summaryKo = collapseWhitespace(item.summaryKo || item.summaryOriginal || item.title);
+  const summaryOriginal = collapseWhitespace(item.summaryOriginal || item.description || item.title);
+  const detailKo = collapseWhitespace(item.detailKo || summaryKo || item.description || item.title);
+  const detailOriginal = collapseWhitespace(item.detailOriginal || summaryOriginal || item.description || item.title);
+  const summaryForBody = collapseWhitespace(summaryKo || detailKo || title);
+  const bodyParts = splitTextForPages(summaryForBody, 220, 2);
+  const keyword = normalizeNewsKeyword(item.source || "news");
+  const publishedAt = formatNewsDateTime(item.publishedAt);
+  const rowId = `news-${String(args.country || "kr").toLowerCase()}-${Date.now()}`;
+  const imagePrompt = collapseWhitespace(item.imagePrompt || NEWS_IMAGE_PROMPT_FALLBACK);
+  const generatedImageUrl = String(args.generatedImageUrl || "").trim();
+  const page1ImageUrl = String(args.generatedImageUrls?.["1"] || generatedImageUrl).trim();
+  const page2ImageUrl = String(args.generatedImageUrls?.["2"] || "").trim();
+  const primaryImageUrl = String(page1ImageUrl || generatedImageUrl || page2ImageUrl).trim();
+
+  return {
+    id: rowId,
+    status: "준비",
+    type: "뉴스",
+    keyword,
+    subject: summaryKo || title,
+    title,
+    newsTitle: title,
+    newsTitleKR: titleKo,
+    newsTitle_KR: titleKo,
+    news_title_kr: titleKo,
+    news_title: title,
+    newsBody: summaryForBody || bodyParts[0] || detailKo,
+    news_body: summaryForBody || bodyParts[0] || detailKo,
+    sourceArticleOriginal: detailOriginal,
+    source_article_original: detailOriginal,
+    sourceArticleKo: detailKo,
+    source_article_ko: detailKo,
+    description: bodyParts[0] || summaryForBody || detailKo,
+    narration: bodyParts.join("\n\n") || summaryForBody || detailKo,
+    source: item.source || "Google News",
+    sourceName: item.source || "Google News",
+    link: item.link,
+    url: item.link,
+    newsLink: item.link,
+    news_link: item.link,
+    articleLink: item.link,
+    article_link: item.link,
+    publishedAt,
+    published_at: publishedAt,
+    summaryKo,
+    summary_ko: summaryKo,
+    summaryOriginal,
+    summary_original: summaryOriginal,
+    detailKo,
+    detail_ko: detailKo,
+    detailOriginal,
+    detail_original: detailOriginal,
+    articleBodyKo: detailKo,
+    article_body_ko: detailKo,
+    articlePart1: bodyParts[0] || "",
+    articlePart2: bodyParts[1] || "",
+    article_part_1: bodyParts[0] || "",
+    article_part_2: bodyParts[1] || "",
+    imagePrompt,
+    image_prompt: imagePrompt,
+    newsImagePage1: page1ImageUrl,
+    news_image_page1: page1ImageUrl,
+    newsImagePage2: page2ImageUrl,
+    news_image_page2: page2ImageUrl,
+    newsImagePrimary: primaryImageUrl,
+    news_image_primary: primaryImageUrl,
+    imageUrl: primaryImageUrl,
+    image_url: primaryImageUrl
+  };
+}
+
+type NewsImageTarget = {
+  pageId: string;
+  pageIndex: number;
+  layerId: string;
+  orientation: InstagramAiImageOrientation;
+  aiModel: string;
+};
+
+function collectNewsImageTargets(template: InstagramTemplate, maxTargets = 2): NewsImageTarget[] {
+  const targets: NewsImageTarget[] = [];
+  for (const [pageIndex, page] of (template.pages || []).entries()) {
+    const imageLayer = page.elements.find((element) => element.type === "image");
+    if (!imageLayer || imageLayer.type !== "image") {
+      continue;
+    }
+    targets.push({
+      pageId: page.id,
+      pageIndex,
+      layerId: imageLayer.id,
+      orientation: resolveAiImageOrientation(imageLayer.aiImageOrientation),
+      aiModel: resolveAiImageModel(imageLayer.aiModel)
+    });
+    if (targets.length >= Math.max(1, maxTargets)) {
+      break;
+    }
+  }
+  return targets;
+}
+
+function buildNewsImageVariantPrompt(args: {
+  item: GoogleNewsItem;
+  pageIndex: number;
+  totalTargets: number;
+}): string {
+  const basePrompt = collapseWhitespace(args.item.imagePrompt || NEWS_IMAGE_PROMPT_FALLBACK);
+  const titleKo = collapseWhitespace(args.item.titleKo || args.item.summaryKo || args.item.title);
+  const detailKo = collapseWhitespace(args.item.detailKo || args.item.summaryKo || args.item.summaryOriginal || args.item.title);
+  const pageNumber = args.pageIndex + 1;
+  const roleHint =
+    args.pageIndex === 0
+      ? "첫 장 메인 컷: 뉴스의 핵심 상황을 한 눈에 보이는 대표 장면."
+      : args.pageIndex === 1
+        ? "둘째 장 보조 컷: 첫 장과 다른 장소/시점/구도의 장면."
+        : `${pageNumber}번째 장면: 앞선 장면과 다른 초점으로 세부 맥락을 전달.`;
+  const compositionHint =
+    args.pageIndex === 0
+      ? "wide establishing shot, clear focal point"
+      : args.pageIndex === 1
+        ? "different camera angle, medium shot, contextual details"
+        : "different subject emphasis, cinematic composition";
+  return [
+    basePrompt,
+    `뉴스 제목(한국어): ${titleKo}`,
+    `핵심 내용: ${truncateText(detailKo, 220)}`,
+    `장면 역할: ${roleHint}`,
+    `프레이밍: ${compositionHint}`,
+    `중요: 총 ${args.totalTargets}장 중 ${pageNumber}번째 컷. 다른 페이지와 인물 배치/구도/배경이 겹치지 않게 생성.`
+  ]
+    .map((line) => collapseWhitespace(line))
+    .filter(Boolean)
+    .join("\n");
+}
+
 function resolveCanvasPresetId(width: number, height: number): string {
   const matched = CANVAS_PRESETS.find((item) => item.width === width && item.height === height);
   return matched?.id || CUSTOM_CANVAS_PRESET;
@@ -809,6 +1436,7 @@ function deepCloneTemplate(template: InstagramTemplate): InstagramTemplate {
 function buildTemplatePayload(source: InstagramTemplate, templateId: string): InstagramTemplate {
   const payload = deepCloneTemplate(source);
   payload.id = templateId || payload.id || uid();
+  payload.mode = resolveTemplateMode(payload.mode);
   payload.canvasWidth = normalizeCanvasWidth(Number(payload.canvasWidth));
   payload.canvasHeight = normalizeCanvasHeight(Number(payload.canvasHeight));
   payload.canvasPreset = resolveCanvasPresetId(payload.canvasWidth, payload.canvasHeight);
@@ -820,7 +1448,7 @@ function buildTemplatePayload(source: InstagramTemplate, templateId: string): In
     ...page,
     durationSec: clamp(Number(page.durationSec), 1, 60, payload.pageDurationSec)
   }));
-  return payload;
+  return assignTemplateTextBindingKeys(payload);
 }
 
 function buildAutosaveSignature(template: InstagramTemplate): string {
@@ -844,6 +1472,7 @@ function createTextLayer(mode: "variable" | "plain" = "variable"): InstagramText
     id: uid(),
     type: "text",
     textMode: mode,
+    bindingKey: buildAutoTextBindingKey(),
     x: 50,
     y: 20,
     width: 84,
@@ -869,6 +1498,7 @@ function createTextLayer(mode: "variable" | "plain" = "variable"): InstagramText
     shadowX: 0,
     shadowY: 0,
     backgroundColor: "#FFFFFF",
+    backgroundOpacity: 1,
     padding: 0
   };
 }
@@ -891,6 +1521,7 @@ function createShapeLayer(shape: InstagramShapeType): InstagramShapeElement {
     opacity: 1,
     zIndex: 0,
     fillColor: "#F4F1EA",
+    fillOpacity: 1,
     strokeColor: "#111111",
     strokeWidth: isLine ? 3 : 2,
     cornerRadius: shape === "roundedRectangle" ? 24 : 0
@@ -965,8 +1596,10 @@ function createImageLayer(): InstagramImageElement {
     overlayColor: "#000000",
     overlayOpacity: 0,
     aiGenerateEnabled: false,
+    aiModel: "auto",
     aiPrompt: "",
-    aiStylePreset: DEFAULT_INSTAGRAM_AI_IMAGE_STYLE
+    aiStylePreset: DEFAULT_INSTAGRAM_AI_IMAGE_STYLE,
+    aiImageOrientation: "vertical"
   };
 }
 
@@ -991,6 +1624,7 @@ function createTemplate(): InstagramTemplate {
   return {
     id: uid(),
     templateName: "Instagram Feed Template",
+    mode: "general",
     sourceTitle: "{{subject}}",
     sourceTopic: "{{description}}",
     canvasPreset: "instagram_feed_portrait",
@@ -1006,6 +1640,7 @@ function createTemplate(): InstagramTemplate {
 
 function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTemplate {
   const normalized = deepCloneTemplate(template);
+  normalized.mode = resolveTemplateMode(normalized.mode);
   const normalizedCanvasWidth = normalizeCanvasWidth(Number(normalized.canvasWidth));
   const normalizedCanvasHeight = normalizeCanvasHeight(Number(normalized.canvasHeight));
   normalized.canvasWidth = normalizedCanvasWidth;
@@ -1053,21 +1688,27 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
             ...core,
             shape,
             width: size.width,
-            height: size.height
+            height: size.height,
+            fillOpacity: clamp(Number((core as InstagramShapeElement).fillOpacity), 0, 1, 1)
           } as InstagramShapeElement;
         }
         if (core.type === "image") {
           return {
             ...core,
             aiGenerateEnabled: Boolean(core.aiGenerateEnabled),
+            aiModel: resolveAiImageModel(core.aiModel),
             aiPrompt: String(core.aiPrompt || ""),
-            aiStylePreset: String(core.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE)
+            aiStylePreset: String(core.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE),
+            aiImageOrientation: resolveAiImageOrientation(core.aiImageOrientation)
           } as InstagramImageElement;
         }
         if (core.type === "text") {
           return {
             ...core,
-            autoWrap: core.autoWrap !== false
+            bindingKey: sanitizeTextBindingKey(core.bindingKey),
+            autoWrap: core.autoWrap !== false,
+            fontSize: normalizeTextFontSize(Number(core.fontSize), 56),
+            backgroundOpacity: clamp(Number(core.backgroundOpacity), 0, 1, 1)
           } as InstagramTextElement;
         }
         return core;
@@ -1077,14 +1718,20 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
   if (!normalized.pages.length) {
     normalized.pages = [createPage(0)];
   }
-  normalized.pageCount = normalized.pages.length;
-  return normalized;
+  const withBindingKeys = assignTemplateTextBindingKeys(normalized);
+  withBindingKeys.pageCount = withBindingKeys.pages.length;
+  return withBindingKeys;
 }
 
 function resolveElementName(layer: InstagramPageElement): string {
   if (layer.type === "text") {
     const preview = String(layer.text || "").replace(/\s+/g, " ").trim().slice(0, 20);
-    const prefix = layer.textMode === "plain" ? "Text(일반)" : "Text(변수)";
+    const bindingKey = String(layer.bindingKey || "").trim();
+    const bindingSuffix =
+      layer.textMode === "variable" && bindingKey
+        ? ` · ${isAutoTextBindingKey(bindingKey) ? `${bindingKey}*` : bindingKey}`
+        : "";
+    const prefix = layer.textMode === "plain" ? "Text(일반)" : `Text(변수${bindingSuffix})`;
     return preview ? `${prefix} · ${preview}` : prefix;
   }
   if (layer.type === "image") return "Image";
@@ -1094,7 +1741,8 @@ function resolveElementName(layer: InstagramPageElement): string {
 function resolveLayerTokenText(
   rawText: string,
   sampleData: Record<string, string>,
-  mode: "variable" | "plain" = "variable"
+  mode: "variable" | "plain" = "variable",
+  bindingKey?: string
 ): string {
   if (mode === "plain") {
     return String(rawText || "");
@@ -1102,6 +1750,18 @@ function resolveLayerTokenText(
   const source = String(rawText || "");
   const entries = Object.entries(sampleData || {});
   const keys = entries.map(([key]) => key);
+  const normalizedBindingKey = String(bindingKey || "").trim();
+  const hasToken = /\{\{[^}]+\}\}/.test(source);
+
+  if (!hasToken && normalizedBindingKey) {
+    if (Object.prototype.hasOwnProperty.call(sampleData, normalizedBindingKey)) {
+      return String(sampleData[normalizedBindingKey] ?? "");
+    }
+    const matchedByBinding = keys.find((key) => key.toLowerCase() === normalizedBindingKey.toLowerCase());
+    if (matchedByBinding) {
+      return String(sampleData[matchedByBinding] ?? "");
+    }
+  }
 
   return source.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (fullToken, tokenKeyRaw) => {
     const tokenKey = String(tokenKeyRaw || "").trim();
@@ -1121,7 +1781,12 @@ function resolveLayerTokenText(
 }
 
 function resolveTextLayerContent(layer: InstagramTextElement, sampleData: Record<string, string>): string {
-  return resolveLayerTokenText(layer.text, sampleData, layer.textMode === "plain" ? "plain" : "variable");
+  return resolveLayerTokenText(
+    layer.text,
+    sampleData,
+    layer.textMode === "plain" ? "plain" : "variable",
+    layer.bindingKey
+  );
 }
 
 function inferMediaTypeFromSource(source: string): "image" | "video" {
@@ -1371,7 +2036,18 @@ async function renderPageToPngDataUrl(args: {
   canvasWidth: number;
   canvasHeight: number;
 }): Promise<string> {
-  return renderInstagramPageToPngDataUrl(args);
+  const previewPage: InstagramFeedPage = {
+    ...args.page,
+    elements: args.page.elements.map((layer) =>
+      layer.type === "image"
+        ? {
+            ...layer,
+            imageUrl: toInstagramMediaPreviewUrl(layer.imageUrl)
+          }
+        : layer
+    )
+  };
+  return renderInstagramPageToPngDataUrl({ ...args, page: previewPage });
 }
 
 function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
@@ -1417,6 +2093,7 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
                     shape: normalizedShape,
                     fillEnabled: shapeSource.fillEnabled !== false,
                     fillColor: normalizeHex(String(shapeSource.fillColor || ""), "#F4F1EA"),
+                    fillOpacity: clamp(Number(shapeSource.fillOpacity), 0, 1, 1),
                     strokeColor: normalizeHex(String(shapeSource.strokeColor || ""), "#111111"),
                     strokeWidth: clamp(Number(shapeSource.strokeWidth), 0, 20, 0),
                     cornerRadius: clamp(Number(shapeSource.cornerRadius), 0, 220, 24)
@@ -1440,8 +2117,10 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
                     overlayColor: normalizeHex(String(imageSource.overlayColor || ""), "#000000"),
                     overlayOpacity: clamp(Number(imageSource.overlayOpacity), 0, 1, 0),
                     aiGenerateEnabled: Boolean(imageSource.aiGenerateEnabled),
+                    aiModel: resolveAiImageModel(imageSource.aiModel),
                     aiPrompt: String(imageSource.aiPrompt || ""),
-                    aiStylePreset: String(imageSource.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE)
+                    aiStylePreset: String(imageSource.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE),
+                    aiImageOrientation: resolveAiImageOrientation(imageSource.aiImageOrientation)
                   } satisfies InstagramImageElement);
                   return items;
                 }
@@ -1453,11 +2132,12 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
                   ...core,
                   type: "text",
                   textMode,
+                  bindingKey: sanitizeTextBindingKey((textSource as { bindingKey?: string }).bindingKey),
                   text: String(textSource.text || (textMode === "plain" ? "텍스트 입력" : "{{subject}}")),
                   autoWrap: textSource.autoWrap !== false,
                   color: normalizeHex(String(textSource.color || ""), "#111111"),
                   fontFamily: normalizeStoredFontFamily(textSource.fontFamily),
-                  fontSize: clamp(Number(textSource.fontSize), 10, 240, 56),
+                  fontSize: normalizeTextFontSize(Number(textSource.fontSize), 56),
                   lineHeight: clamp(Number(textSource.lineHeight), 0.8, 3, 1.2),
                   letterSpacing: clamp(Number(textSource.letterSpacing), -2, 20, 0),
                   textAlign:
@@ -1474,6 +2154,7 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
                   shadowX: clamp(Number(textSource.shadowX), -40, 40, 0),
                   shadowY: clamp(Number(textSource.shadowY), -40, 40, 0),
                   backgroundColor: normalizeHex(String(textSource.backgroundColor || ""), "#FFFFFF"),
+                  backgroundOpacity: clamp(Number(textSource.backgroundOpacity), 0, 1, 1),
                   padding: clamp(Number(textSource.padding), 0, 40, 0)
                 } satisfies InstagramTextElement);
                 return items;
@@ -1506,6 +2187,7 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
   return {
     id: String(source.id || uid()),
     templateName: String(source.templateName || "Instagram Feed Template"),
+    mode: resolveTemplateMode(source.mode),
     sourceTitle: String(source.sourceTitle || "{{subject}}"),
     sourceTopic: String(source.sourceTopic || "{{description}}"),
     canvasPreset: String(source.canvasPreset || resolveCanvasPresetId(canvasWidth, canvasHeight)),
@@ -1569,6 +2251,16 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [bindingSelectedRowKey, setBindingSelectedRowKey] = useState("");
   const [bindingLoading, setBindingLoading] = useState(false);
   const [sampleData, setSampleData] = useState<Record<string, string>>({ ...DEFAULT_SAMPLE_DATA });
+  const [newsCountry, setNewsCountry] = useState("KR");
+  const [newsCount, setNewsCount] = useState("10");
+  const [newsTopic, setNewsTopic] = useState("all");
+  const [newsKeyword, setNewsKeyword] = useState("");
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsImageRefreshing, setNewsImageRefreshing] = useState(false);
+  const [newsError, setNewsError] = useState<string>();
+  const [newsItems, setNewsItems] = useState<GoogleNewsItem[]>([]);
+  const [selectedNewsItemKey, setSelectedNewsItemKey] = useState("");
+  const [newsFetchedAt, setNewsFetchedAt] = useState<string>();
   const [defaultTtsVoiceProvider, setDefaultTtsVoiceProvider] = useState<"openai" | "gemini" | "both">("both");
   const [availableVoiceOptions, setAvailableVoiceOptions] = useState(() => filterVoiceOptions("both"));
   const [localFontNames, setLocalFontNames] = useState<string[]>([]);
@@ -1630,6 +2322,183 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const loadingFontAliasRef = useRef<Set<string>>(new Set());
   const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
   const pendingAudioPreviewPlayRef = useRef(false);
+  const templateEditDraftLoadedRef = useRef(false);
+  const suppressAutoNewsBindingRef = useRef(false);
+  const isNewsMode = resolveTemplateMode(editor.mode) === "news";
+  const selectedNewsTopic = useMemo(
+    () => NEWS_TOPIC_OPTIONS.find((item) => item.value === newsTopic) || NEWS_TOPIC_OPTIONS[0],
+    [newsTopic]
+  );
+  const selectedNewsTopicQuery = useMemo(
+    () => resolveNewsTopicQuery(newsTopic, newsCountry),
+    [newsCountry, newsTopic]
+  );
+  const selectedNewsItem = useMemo(
+    () => newsItems.find((item, index) => buildNewsItemKey(item, index) === selectedNewsItemKey),
+    [newsItems, selectedNewsItemKey]
+  );
+  const selectedBindingRowValues = useMemo(
+    () => bindingRowOptions.find((item) => item.key === bindingSelectedRowKey)?.values,
+    [bindingRowOptions, bindingSelectedRowKey]
+  );
+  const applyNewsSampleData = useCallback(
+    (
+      item: GoogleNewsItem,
+      options?: {
+        generatedImageUrl?: string;
+        generatedImageUrls?: Record<string, string>;
+      }
+    ): void => {
+      const payload = buildNewsSamplePayload({
+        item,
+        country: newsCountry,
+        generatedImageUrl: options?.generatedImageUrl,
+        generatedImageUrls: options?.generatedImageUrls
+      });
+      setBindingFields((prev) => mergeNewsBindingFields([...prev, ...Object.keys(payload)]));
+      setSampleData((prev) => ({
+        ...DEFAULT_NEWS_SAMPLE_DATA,
+        ...prev,
+        ...payload
+      }));
+    },
+    [newsCountry]
+  );
+  const generateNewsImagesForTemplate = useCallback(
+    async (
+      item: GoogleNewsItem,
+      options?: {
+        maxTargets?: number;
+      }
+    ): Promise<{ generatedCount: number; pageImageUrls: Record<string, string>; primaryImageUrl: string }> => {
+      const resolvedMaxTargets =
+        typeof options?.maxTargets === "number" && Number.isFinite(options.maxTargets)
+          ? Math.max(1, Math.floor(options.maxTargets))
+          : Number.MAX_SAFE_INTEGER;
+      const targets = collectNewsImageTargets(editorRef.current, resolvedMaxTargets);
+      if (targets.length === 0) {
+        return { generatedCount: 0, pageImageUrls: {}, primaryImageUrl: "" };
+      }
+      const pageImageUrls: Record<string, string> = {};
+      for (const target of targets) {
+        const variantPrompt = buildNewsImageVariantPrompt({
+          item,
+          pageIndex: target.pageIndex,
+          totalTargets: targets.length
+        });
+        const imageUrl = await generateAiLayerImage(target.layerId, {
+          pageId: target.pageId,
+          prompt: variantPrompt,
+          orientation: target.orientation,
+          aiModel: target.aiModel
+        });
+        if (imageUrl) {
+          pageImageUrls[String(target.pageIndex + 1)] = imageUrl;
+        }
+      }
+      const primaryImageUrl = String(pageImageUrls["1"] || Object.values(pageImageUrls)[0] || "").trim();
+      return {
+        generatedCount: Object.keys(pageImageUrls).length,
+        pageImageUrls,
+        primaryImageUrl
+      };
+    },
+    [generateAiLayerImage]
+  );
+  const refreshNewsImagesForSelection = useCallback(async (): Promise<void> => {
+    if (!isNewsMode) {
+      setError("템플릿 모드를 뉴스로 바꾼 뒤 사용할 수 있습니다.");
+      return;
+    }
+    if (!selectedNewsItem) {
+      setError("뉴스 항목을 먼저 선택해 주세요.");
+      return;
+    }
+
+    setNewsImageRefreshing(true);
+    setNewsError(undefined);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const generated = await generateNewsImagesForTemplate(selectedNewsItem);
+      if (generated.generatedCount > 0) {
+        applyNewsSampleData(selectedNewsItem, {
+          generatedImageUrl: generated.primaryImageUrl,
+          generatedImageUrls: generated.pageImageUrls
+        });
+        setSuccess(`선택한 뉴스 기준으로 이미지 ${generated.generatedCount}장을 일괄 리프레시했습니다.`);
+      } else {
+        setSuccess("이미지 레이어를 찾지 못해 일괄 리프레시를 건너뛰었습니다.");
+      }
+    } catch (refreshError) {
+      const message = refreshError instanceof Error ? refreshError.message : "뉴스 이미지 일괄 리프레시에 실패했습니다.";
+      setNewsError(message);
+      setError(message);
+    } finally {
+      setNewsImageRefreshing(false);
+    }
+  }, [applyNewsSampleData, generateNewsImagesForTemplate, isNewsMode, selectedNewsItem]);
+  const loadNewsBindings = useCallback(async (): Promise<void> => {
+    suppressAutoNewsBindingRef.current = false;
+    setNewsLoading(true);
+    setNewsError(undefined);
+    setError(undefined);
+    try {
+      const params = new URLSearchParams();
+      params.set("country", newsCountry);
+      params.set("count", newsCount);
+      if (selectedNewsTopicQuery) {
+        params.set("topic", selectedNewsTopicQuery);
+      }
+      const trimmedKeyword = newsKeyword.trim();
+      if (trimmedKeyword) {
+        params.set("keyword", trimmedKeyword);
+      }
+      const response = await fetch(`/api/instagram/news?${params.toString()}`, { cache: "no-store" });
+      const data = (await response.json()) as InstagramNewsResponse;
+      if (!response.ok) {
+        throw new Error(data.error || "뉴스 데이터를 불러오지 못했습니다.");
+      }
+      const items = Array.isArray(data.items) ? data.items : [];
+      setNewsItems(items);
+      setNewsFetchedAt(data.fetchedAt || new Date().toISOString());
+      if (items.length === 0) {
+        setSelectedNewsItemKey("");
+        setNewsError("조회된 뉴스가 없습니다.");
+        return;
+      }
+      const nextKey =
+        items.find((item, index) => buildNewsItemKey(item, index) === selectedNewsItemKey) !== undefined
+          ? selectedNewsItemKey
+          : buildNewsItemKey(items[0], 0);
+      setSelectedNewsItemKey(nextKey);
+      const targetItem =
+        items.find((item, index) => buildNewsItemKey(item, index) === nextKey) || items[0];
+      applyNewsSampleData(targetItem);
+      const filterSummary = [selectedNewsTopicQuery ? `주제: ${selectedNewsTopic.label}` : "", trimmedKeyword ? `검색어: ${trimmedKeyword}` : ""]
+        .filter(Boolean)
+        .join(", ");
+      setSuccess(
+        `뉴스 ${items.length}건을 불러와 샘플 데이터에 반영했습니다.${filterSummary ? ` (${filterSummary})` : ""} 이미지는 자동 생성하지 않으며, 필요 시 '이미지 일괄 리프레시'를 눌러 생성해 주세요.`
+      );
+    } catch (newsLoadError) {
+      setNewsItems([]);
+      setSelectedNewsItemKey("");
+      const message = newsLoadError instanceof Error ? newsLoadError.message : "뉴스 데이터를 불러오지 못했습니다.";
+      setNewsError(message);
+      setError(message);
+    } finally {
+      setNewsLoading(false);
+    }
+  }, [
+    applyNewsSampleData,
+    newsCount,
+    newsCountry,
+    newsKeyword,
+    selectedNewsItemKey,
+    selectedNewsTopic.label,
+    selectedNewsTopicQuery
+  ]);
 
   useEffect(() => {
     editorRef.current = editor;
@@ -1732,6 +2601,52 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   }, [sheetName, bindingFields, sampleData, bindingSelectedRowKey]);
 
   useEffect(() => {
+    if (!isNewsMode) {
+      return;
+    }
+    setBindingFields((prev) => {
+      const merged = mergeNewsBindingFields(prev);
+      return isSameStringArray(merged, prev) ? prev : merged;
+    });
+    setSampleData((prev) => {
+      const missingDefaults = Object.keys(DEFAULT_NEWS_SAMPLE_DATA).some((key) => !(key in prev));
+      if (!missingDefaults) {
+        return prev;
+      }
+      return {
+        ...DEFAULT_NEWS_SAMPLE_DATA,
+        ...prev
+      };
+    });
+    if (suppressAutoNewsBindingRef.current) {
+      return;
+    }
+    if (newsItems.length === 0 && !newsLoading) {
+      void loadNewsBindings();
+    }
+    // loadNewsBindings is intentionally omitted to avoid callback identity churn causing effect loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNewsMode, newsItems.length, newsLoading]);
+
+  useEffect(() => {
+    if (isNewsMode) {
+      return;
+    }
+    setSampleData((prev) => {
+      const next = sanitizeGeneralSampleData(prev, selectedBindingRowValues);
+      const prevKeys = Object.keys(prev).sort();
+      const nextKeys = Object.keys(next).sort();
+      if (
+        prevKeys.length === nextKeys.length &&
+        prevKeys.every((key, index) => key === nextKeys[index] && prev[key] === next[key])
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, [isNewsMode, selectedBindingRowValues]);
+
+  useEffect(() => {
     const loadInstagramSheetDefault = async (): Promise<void> => {
       try {
         const response = await fetch("/api/settings", { cache: "no-store" });
@@ -1782,6 +2697,29 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     () => selectedPage?.elements.filter((item) => selectedElementIds.includes(item.id)) || [],
     [selectedElementIds, selectedPage]
   );
+  const selectedLayerOrder = useMemo(() => {
+    if (!selectedLayer || !selectedPage) {
+      return {
+        index: -1,
+        total: 0,
+        canMoveBack: false,
+        canMoveDown: false,
+        canMoveUp: false,
+        canMoveFront: false
+      };
+    }
+    const sorted = [...selectedPage.elements].sort((a, b) => a.zIndex - b.zIndex);
+    const index = sorted.findIndex((item) => item.id === selectedLayer.id);
+    const total = sorted.length;
+    return {
+      index,
+      total,
+      canMoveBack: index > 0,
+      canMoveDown: index > 0,
+      canMoveUp: index >= 0 && index < total - 1,
+      canMoveFront: index >= 0 && index < total - 1
+    };
+  }, [selectedLayer, selectedPage]);
   const hasMultiSelection = selectedLayers.length > 1;
   const selectedLayerRubyTokens = useMemo(
     () => (selectedLayer?.type === "text" ? extractRubyTokenMatches(selectedLayer.text) : []),
@@ -1834,6 +2772,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             shape: copiedShapeStyle.shape,
             fillEnabled: copiedShapeStyle.fillEnabled,
             fillColor: copiedShapeStyle.fillColor,
+            fillOpacity: copiedShapeStyle.fillOpacity,
             strokeColor: copiedShapeStyle.strokeColor,
             strokeWidth: copiedShapeStyle.strokeWidth,
             cornerRadius: copiedShapeStyle.cornerRadius,
@@ -1901,9 +2840,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     [selectedPage?.elements]
   );
 
+  const visibleBindingFields = useMemo(
+    () => (isNewsMode ? bindingFields : bindingFields.filter((field) => !NEWS_ONLY_BINDING_FIELD_SET.has(field))),
+    [bindingFields, isNewsMode]
+  );
   const filteredBindingFields = useMemo(
-    () => bindingFields.filter((field) => field.toLowerCase().includes(bindingSearch.trim().toLowerCase())),
-    [bindingFields, bindingSearch]
+    () => visibleBindingFields.filter((field) => field.toLowerCase().includes(bindingSearch.trim().toLowerCase())),
+    [bindingSearch, visibleBindingFields]
   );
   const customFontFamilies = useMemo(
     () => uniqueFontNames((editor.customFonts || []).map((font) => String(font.family || ""))),
@@ -2101,17 +3044,45 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }), options);
   }
 
+  function getUniqueBindingKeyForLayer(rawValue: string, layerId: string): string {
+    const desired = sanitizeTextBindingKey(rawValue);
+    const taken = new Set<string>();
+    editorRef.current.pages.forEach((page) => {
+      page.elements.forEach((element) => {
+        if (element.type !== "text" || element.id === layerId) {
+          return;
+        }
+        const key = sanitizeTextBindingKey(element.bindingKey);
+        if (!key) {
+          return;
+        }
+        taken.add(key.toLowerCase());
+      });
+    });
+    return ensureUniqueTextBindingKey(desired || buildAutoTextBindingKey(), taken);
+  }
+
   function setLayerOrder(
     page: InstagramFeedPage,
     layerId: string,
-    direction: "up" | "down"
+    direction: "up" | "down" | "front" | "back"
   ): InstagramFeedPage {
     const sorted = [...page.elements].sort((a, b) => a.zIndex - b.zIndex);
     const index = sorted.findIndex((item) => item.id === layerId);
     if (index < 0) return page;
-    const target = direction === "up" ? index + 1 : index - 1;
-    if (target < 0 || target >= sorted.length) return page;
-    [sorted[index], sorted[target]] = [sorted[target], sorted[index]];
+    if (direction === "front") {
+      if (index === sorted.length - 1) return page;
+      const [layer] = sorted.splice(index, 1);
+      sorted.push(layer);
+    } else if (direction === "back") {
+      if (index === 0) return page;
+      const [layer] = sorted.splice(index, 1);
+      sorted.unshift(layer);
+    } else {
+      const target = direction === "up" ? index + 1 : index - 1;
+      if (target < 0 || target >= sorted.length) return page;
+      [sorted[index], sorted[target]] = [sorted[target], sorted[index]];
+    }
     return {
       ...page,
       elements: sorted.map((item, idx) => ({ ...item, zIndex: idx }))
@@ -2717,6 +3688,91 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (loading || templateEditDraftLoadedRef.current) {
+      return;
+    }
+    templateEditDraftLoadedRef.current = true;
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY);
+      if (!raw) {
+        return;
+      }
+      window.localStorage.removeItem(INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY);
+
+      const parsed = normalizeTemplateEditDraft(JSON.parse(raw));
+      if (!parsed) {
+        return;
+      }
+
+      if (parsed.source === "instagram-feed") {
+        suppressAutoNewsBindingRef.current = true;
+        setNewsItems([]);
+        setSelectedNewsItemKey("");
+        setNewsError(undefined);
+      }
+
+      const draftTemplate = normalizeTemplateForEditor(parsed.template);
+      const targetPageId =
+        parsed.focusPageId && draftTemplate.pages.some((page) => page.id === parsed.focusPageId)
+          ? parsed.focusPageId
+          : draftTemplate.pages[0]?.id;
+      const targetPage = draftTemplate.pages.find((page) => page.id === targetPageId) || draftTemplate.pages[0];
+
+      setSelectedTemplateId("__new__");
+      clearHistory();
+      setEditor(draftTemplate);
+      setSelectedPageId(targetPage?.id || draftTemplate.pages[0]?.id || "");
+      setSelectedElementId(targetPage?.elements[0]?.id);
+      if (parsed.sampleData && Object.keys(parsed.sampleData).length > 0) {
+        setSampleData(parsed.sampleData);
+      }
+      if (resolveTemplateMode(draftTemplate.mode) === "news") {
+        setBindingFields((prev) => mergeNewsBindingFields(prev));
+      }
+      lastSavedSignatureRef.current = buildAutosaveSignature(draftTemplate);
+      setAutoSaveStatus("idle");
+      setAutoSaveMessage("피드 편집본을 템플릿 에디터로 불러왔습니다.");
+      setSuccess("피드에서 선택한 카드 구성을 템플릿 상세 편집으로 불러왔습니다.");
+    } catch {
+      // ignore invalid draft payload
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    let changed = false;
+    setEditor((current) => {
+      const nextPages = current.pages.map((page) => {
+        const nextElements = page.elements.map((element) => {
+          if (element.type !== "text") {
+            return element;
+          }
+          const expanded = autoExpandTextLayerIfNeeded(element);
+          if (expanded !== element) {
+            changed = true;
+          }
+          return expanded;
+        });
+        return nextElements === page.elements ? page : { ...page, elements: nextElements };
+      });
+      if (!changed) {
+        return current;
+      }
+      return normalizeTemplateForEditor({
+        ...current,
+        pages: nextPages,
+        pageCount: nextPages.length
+      });
+    });
+  }, [sampleData, canvasWidth, canvasHeight]);
+
+  useEffect(() => {
     if (loading) return;
     if (bindingAutoLoadedRef.current) return;
     bindingAutoLoadedRef.current = true;
@@ -3254,7 +4310,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     const token = `{{${field}}}`;
     updateLayerById(selectedLayer.id, (layer) =>
       layer.type === "text"
-        ? { ...layer, text: layer.text.includes(token) ? layer.text : `${layer.text}${layer.text ? " " : ""}${token}` }
+        ? {
+            ...layer,
+            bindingKey: getUniqueBindingKeyForLayer(field, layer.id),
+            text: layer.text.includes(token) ? layer.text : `${layer.text}${layer.text ? " " : ""}${token}`
+          }
         : layer
     );
     setSuccess(`{{${field}}} 토큰을 추가했습니다.`);
@@ -3384,18 +4444,46 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
   }
 
-  async function generateAiLayerImage(layerId: string): Promise<void> {
-    const page = editorRef.current.pages.find((item) => item.id === selectedPageIdRef.current);
-    const layer = page?.elements.find((item) => item.id === layerId);
+  async function generateAiLayerImage(
+    layerId: string,
+    options?: {
+      prompt?: string;
+      stylePreset?: string;
+      orientation?: InstagramAiImageOrientation;
+      aiModel?: string;
+      pageId?: string;
+    }
+  ): Promise<string | undefined> {
+    const candidatePages = options?.pageId
+      ? editorRef.current.pages.filter((item) => item.id === options.pageId)
+      : [
+          ...editorRef.current.pages.filter((item) => item.id === selectedPageIdRef.current),
+          ...editorRef.current.pages.filter((item) => item.id !== selectedPageIdRef.current)
+        ];
+    let pageId = "";
+    let layer: InstagramImageElement | undefined;
+    for (const page of candidatePages) {
+      const targetLayer = page.elements.find((item) => item.id === layerId);
+      if (targetLayer && targetLayer.type === "image") {
+        pageId = page.id;
+        layer = targetLayer;
+        break;
+      }
+    }
     if (!layer || layer.type !== "image") {
       setError("이미지 레이어를 선택해 주세요.");
-      return;
+      return undefined;
     }
-    const prompt = String(layer.aiPrompt || "").trim();
+    const prompt = String(options?.prompt || layer.aiPrompt || "").trim();
     if (!prompt) {
       setError("AI 이미지 프롬프트를 입력해 주세요.");
-      return;
+      return undefined;
     }
+    const stylePreset = String(options?.stylePreset || layer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE);
+    const orientation = resolveAiImageOrientation(options?.orientation || layer.aiImageOrientation);
+    const aiModel = resolveAiImageModel(options?.aiModel || layer.aiModel);
+    const orientedPrompt = applyOrientationToPrompt(prompt, orientation);
+    const imageAspectRatio = orientation === "horizontal" ? "16:9" : "9:16";
 
     setAiImageGeneratingLayerId(layerId);
     setError(undefined);
@@ -3405,8 +4493,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt,
-          stylePreset: layer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE,
+          prompt: orientedPrompt,
+          aiModel,
+          imageAspectRatio,
+          stylePreset,
           canvasWidth,
           canvasHeight
         })
@@ -3419,14 +4509,111 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       if (!imageUrl) {
         throw new Error("이미지 URL을 받지 못했습니다.");
       }
-      updateLayerById(layerId, (targetLayer) =>
-        targetLayer.type === "image" ? { ...targetLayer, imageUrl, mediaType: "image" } : targetLayer
+      updateLayerById(
+        layerId,
+        (targetLayer) =>
+          targetLayer.type === "image"
+            ? {
+                ...targetLayer,
+                imageUrl,
+                mediaType: "image",
+                fit: targetLayer.fit === "cover" ? "cover" : targetLayer.fit,
+                aiPrompt: prompt,
+                aiModel,
+                aiStylePreset: stylePreset,
+                aiImageOrientation: orientation
+              }
+            : targetLayer,
+        pageId
       );
       setSuccess("AI 이미지를 생성해 레이어에 적용했습니다.");
+      return imageUrl;
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : "AI 이미지 생성에 실패했습니다.");
+      return undefined;
     } finally {
       setAiImageGeneratingLayerId(undefined);
+    }
+  }
+
+  function fillImageLayerToCanvas(layerId: string): void {
+    updateLayerById(layerId, (layer) =>
+      layer.type === "image"
+        ? {
+            ...layer,
+            x: 50,
+            y: 50,
+            width: 100,
+            height: 100,
+            fit: "cover",
+            borderRadius: 0
+          }
+        : layer
+    );
+    setSuccess("이미지 레이어를 화면에 꽉 차게 배치했습니다.");
+  }
+
+  function setImageBoxFillMode(layerId: string, enabled: boolean): void {
+    updateLayerById(layerId, (layer) =>
+      layer.type === "image"
+        ? {
+            ...layer,
+            fit: enabled ? "cover" : "contain"
+          }
+        : layer
+    );
+    setSuccess(enabled ? "이미지 박스 꽉 채우기 모드를 적용했습니다." : "이미지 박스 원본 비율 모드로 전환했습니다.");
+  }
+
+  async function applyNewsImageToLayer(layerId: string): Promise<void> {
+    if (!isNewsMode) {
+      setError("템플릿 모드를 뉴스로 바꾸면 뉴스 이미지 적용 버튼을 사용할 수 있습니다.");
+      return;
+    }
+    if (!selectedNewsItem) {
+      setError("뉴스 항목을 먼저 선택해 주세요. (Data Binding > 뉴스 데이터)");
+      return;
+    }
+
+    const prompt = collapseWhitespace(selectedNewsItem.imagePrompt || NEWS_IMAGE_PROMPT_FALLBACK);
+    if (!prompt) {
+      setError("선택한 뉴스에 이미지 프롬프트가 없습니다.");
+      return;
+    }
+    const page = editorRef.current.pages.find((item) => item.id === selectedPageIdRef.current);
+    const currentImageLayer = page?.elements.find((item) => item.id === layerId);
+    const orientation =
+      currentImageLayer && currentImageLayer.type === "image"
+        ? resolveAiImageOrientation(currentImageLayer.aiImageOrientation)
+        : "vertical";
+
+    updateLayerById(layerId, (layer) =>
+      layer.type === "image"
+        ? {
+            ...layer,
+            aiGenerateEnabled: true,
+            aiPrompt: prompt,
+            aiModel: resolveAiImageModel(layer.aiModel),
+            aiStylePreset: layer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE,
+            aiImageOrientation: orientation,
+            fit: "cover",
+            x: 50,
+            y: 50,
+            width: 100,
+            height: 100,
+            borderRadius: 0
+          }
+        : layer
+    );
+    const imageUrl = await generateAiLayerImage(layerId, { prompt, orientation });
+    if (imageUrl) {
+      const pageNumber = String(Math.max(1, editorRef.current.pages.findIndex((item) => item.id === selectedPageIdRef.current) + 1));
+      const generatedImageUrls: Record<string, string> = { [pageNumber]: imageUrl };
+      applyNewsSampleData(selectedNewsItem, {
+        generatedImageUrl: imageUrl,
+        generatedImageUrls
+      });
+      setSuccess("뉴스 이미지 프롬프트로 AI 이미지를 생성해 적용했습니다.");
     }
   }
 
@@ -3459,7 +4646,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         const preferredKey = nextRowOptions.find((item) => item.key === bindingSelectedRowKey)?.key || nextRowOptions[0].key;
         const selectedRow = nextRowOptions.find((item) => item.key === preferredKey) || nextRowOptions[0];
         setBindingSelectedRowKey(preferredKey);
-        setSampleData((prev) => ({ ...prev, ...selectedRow.values }));
+        setSampleData((prev) =>
+          isNewsMode ? { ...prev, ...selectedRow.values } : sanitizeGeneralSampleData(prev, selectedRow.values)
+        );
       } else {
         setBindingSelectedRowKey("");
       }
@@ -3480,7 +4669,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setBindingSelectedRowKey(rowKey);
     const selectedRow = bindingRowOptions.find((item) => item.key === rowKey);
     if (!selectedRow) return;
-    setSampleData((prev) => ({ ...prev, ...selectedRow.values }));
+    setSampleData((prev) =>
+      isNewsMode ? { ...prev, ...selectedRow.values } : sanitizeGeneralSampleData(prev, selectedRow.values)
+    );
   }
 
   function onTemplateJsonFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
@@ -3768,54 +4959,89 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
   }
 
-  async function uploadCustomFontFile(file: File): Promise<void> {
+  async function uploadCustomFontFile(file: File): Promise<InstagramCustomFont> {
     const formData = new FormData();
     formData.append("file", file);
+    const response = await fetch("/api/instagram/fonts", {
+      method: "POST",
+      body: formData
+    });
+    const data = (await response.json()) as {
+      font?: InstagramCustomFont;
+      error?: string;
+    };
+    if (!response.ok || !data.font) {
+      throw new Error(data.error || "커스텀 폰트 업로드에 실패했습니다.");
+    }
+    const uploadedFont = {
+      ...data.font,
+      family: normalizeFontName(data.font.family),
+      fileName: String(data.font.fileName || data.font.family).trim() || data.font.family,
+      sourceUrl: String(data.font.sourceUrl || "").trim()
+    };
+    if (!uploadedFont.family || !uploadedFont.sourceUrl) {
+      throw new Error("업로드된 폰트 메타데이터가 올바르지 않습니다.");
+    }
+    return uploadedFont;
+  }
+
+  async function uploadCustomFontFiles(files: File[]): Promise<void> {
+    if (!files.length) return;
     setCustomFontUploading(true);
     setCustomFontMessage(undefined);
     setError(undefined);
+    const uploadedFonts: InstagramCustomFont[] = [];
+    const failed: string[] = [];
     try {
-      const response = await fetch("/api/instagram/fonts", {
-        method: "POST",
-        body: formData
-      });
-      const data = (await response.json()) as {
-        font?: InstagramCustomFont;
-        error?: string;
-      };
-      if (!response.ok || !data.font) {
-        throw new Error(data.error || "커스텀 폰트 업로드에 실패했습니다.");
+      for (const file of files) {
+        try {
+          const uploadedFont = await uploadCustomFontFile(file);
+          await ensureInstagramCustomFontsLoaded([uploadedFont]);
+          setEditor((current) => {
+            const existing = normalizeCustomTemplateFonts(current.customFonts);
+            const merged = normalizeCustomTemplateFonts([
+              uploadedFont,
+              ...existing.filter((font) => font.family.toLowerCase() !== uploadedFont.family.toLowerCase())
+            ]);
+            return {
+              ...current,
+              customFonts: merged
+            };
+          });
+          uploadedFonts.push(uploadedFont);
+        } catch (fontError) {
+          const message = fontError instanceof Error ? fontError.message : "커스텀 폰트 업로드에 실패했습니다.";
+          failed.push(`${file.name || "font"}: ${message}`);
+        }
       }
-      const uploadedFont = {
-        ...data.font,
-        family: normalizeFontName(data.font.family),
-        fileName: String(data.font.fileName || data.font.family).trim() || data.font.family,
-        sourceUrl: String(data.font.sourceUrl || "").trim()
-      };
-      if (!uploadedFont.family || !uploadedFont.sourceUrl) {
-        throw new Error("업로드된 폰트 메타데이터가 올바르지 않습니다.");
+
+      if (uploadedFonts.length > 0) {
+        const names = uploadedFonts.map((font) => font.family);
+        const title =
+          uploadedFonts.length === 1
+            ? `커스텀 폰트 업로드 완료: ${names[0]}`
+            : `커스텀 폰트 ${uploadedFonts.length}개 업로드 완료`;
+        setSuccess(title);
+        setCustomFontMessage(
+          uploadedFonts.length === 1
+            ? `업로드 완료: ${names[0]}`
+            : `업로드 완료 ${uploadedFonts.length}개 (${names.slice(0, 3).join(", ")}${
+                uploadedFonts.length > 3 ? " ..." : ""
+              })`
+        );
+        if (selectedLayer?.type === "text") {
+          await applySelectedTextFont(names[names.length - 1]);
+        }
       }
-      await ensureInstagramCustomFontsLoaded([uploadedFont]);
-      setEditor((current) => {
-        const existing = normalizeCustomTemplateFonts(current.customFonts);
-        const merged = normalizeCustomTemplateFonts([
-          uploadedFont,
-          ...existing.filter((font) => font.family.toLowerCase() !== uploadedFont.family.toLowerCase())
-        ]);
-        return {
-          ...current,
-          customFonts: merged
-        };
-      });
-      setCustomFontMessage(`업로드 완료: ${uploadedFont.family}`);
-      setSuccess(`커스텀 폰트 업로드 완료: ${uploadedFont.family}`);
-      if (selectedLayer?.type === "text") {
-        await applySelectedTextFont(uploadedFont.family);
+
+      if (failed.length > 0) {
+        const failedMessage =
+          failed.length === 1
+            ? failed[0]
+            : `실패 ${failed.length}개: ${failed.slice(0, 2).join(" / ")}${failed.length > 2 ? " ..." : ""}`;
+        setError(failedMessage);
+        setCustomFontMessage((prev) => (prev ? `${prev} · ${failedMessage}` : failedMessage));
       }
-    } catch (fontError) {
-      const message = fontError instanceof Error ? fontError.message : "커스텀 폰트 업로드에 실패했습니다.";
-      setError(message);
-      setCustomFontMessage(message);
     } finally {
       setCustomFontUploading(false);
     }
@@ -3824,12 +5050,12 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   async function handleCustomFontFileChange(
     event: React.ChangeEvent<HTMLInputElement>
   ): Promise<void> {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files || []);
     event.target.value = "";
-    if (!file) {
+    if (!files.length) {
       return;
     }
-    await uploadCustomFontFile(file);
+    await uploadCustomFontFiles(files);
   }
 
   function toggleFavoriteFont(fontName: string): void {
@@ -4004,7 +5230,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             삭제
           </Button>
         </div>
-        <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(220px,1fr)_minmax(180px,0.9fr)_minmax(240px,1fr)_120px_120px]">
+        <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(220px,1fr)_minmax(160px,0.8fr)_minmax(180px,0.9fr)_minmax(240px,1fr)_120px_120px]">
           <div className="space-y-1">
             <Label>템플릿 이름</Label>
             <Input
@@ -4012,6 +5238,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
               onChange={(event) => updateEditor((current) => ({ ...current, templateName: event.target.value }))}
               placeholder="Template name"
             />
+          </div>
+          <div className="space-y-1">
+            <Label>모드</Label>
+            <Select
+              value={resolveTemplateMode(editor.mode)}
+              onValueChange={(value) =>
+                updateEditor((current) => ({
+                  ...current,
+                  mode: resolveTemplateMode(value)
+                }))
+              }
+            >
+              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="general">일반</SelectItem>
+                <SelectItem value="news">뉴스 전용</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-1">
             <Label>기본 페이지 길이(초)</Label>
@@ -4096,6 +5342,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         {selectedTemplateId !== "__new__" ? (
           <p className="mt-1 text-xs text-muted-foreground">
             자동화 기본 지정: 대시보드 자동화 실행 시 기본으로 선택되는 템플릿입니다.
+          </p>
+        ) : null}
+        {isNewsMode ? (
+          <p className="mt-1 text-xs text-emerald-500">
+            뉴스 전용 모드: Data Binding 패널에서 뉴스 변수/프롬프트를 불러와 이미지 오브젝트에 바로 적용할 수 있습니다.
           </p>
         ) : null}
         <p
@@ -4688,6 +5939,55 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       </Button>
                     </div>
                   ) : null}
+                  <div className="mb-2 flex flex-wrap items-center gap-1 rounded-md border border-white/15 bg-black/25 px-2 py-2">
+                    <span className="mr-1 text-[11px] text-zinc-200">
+                      순서 {selectedLayerOrder.index >= 0 ? `${selectedLayerOrder.index + 1}/${selectedLayerOrder.total}` : ""}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "back"))}
+                      disabled={!selectedLayerOrder.canMoveBack}
+                      title="맨 뒤로"
+                    >
+                      맨 뒤로
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "down"))}
+                      disabled={!selectedLayerOrder.canMoveDown}
+                      title="뒤로"
+                    >
+                      뒤로
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "up"))}
+                      disabled={!selectedLayerOrder.canMoveUp}
+                      title="앞으로"
+                    >
+                      앞으로
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "front"))}
+                      disabled={!selectedLayerOrder.canMoveFront}
+                      title="맨 앞으로"
+                    >
+                      맨 앞으로
+                    </Button>
+                  </div>
                   {selectedLayer.type === "text" ? (
                     <div className="space-y-2">
                       <Textarea
@@ -4711,7 +6011,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           onChange={(event) =>
                             updateLayerById(selectedLayer.id, (layer) =>
                               layer.type === "text"
-                                ? { ...layer, textMode: event.target.value === "plain" ? "plain" : "variable" }
+                                ? {
+                                    ...layer,
+                                    textMode: event.target.value === "plain" ? "plain" : "variable",
+                                    bindingKey:
+                                      event.target.value === "plain"
+                                        ? sanitizeTextBindingKey(layer.bindingKey)
+                                        : getUniqueBindingKeyForLayer(String(layer.bindingKey || ""), layer.id)
+                                  }
                                 : layer
                             )
                           }
@@ -4720,6 +6027,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           <option value="variable">변수 텍스트 오브젝트</option>
                           <option value="plain">일반 텍스트 오브젝트</option>
                         </select>
+                        <Input
+                          value={String(selectedLayer.bindingKey || "")}
+                          onChange={(event) =>
+                            updateLayerById(selectedLayer.id, (layer) =>
+                              layer.type === "text"
+                                ? { ...layer, bindingKey: sanitizeTextBindingKey(event.target.value) }
+                                : layer
+                            )
+                          }
+                          onBlur={() =>
+                            updateLayerById(selectedLayer.id, (layer) =>
+                              layer.type === "text"
+                                ? { ...layer, bindingKey: getUniqueBindingKeyForLayer(String(layer.bindingKey || ""), layer.id) }
+                                : layer
+                            )
+                          }
+                          className="h-8 min-w-[180px] border-white/20 bg-black/30 text-xs text-white"
+                          placeholder="오브젝트 변수명 (예: newsBody)"
+                          title="텍스트 오브젝트 변수명: 중복 시 자동으로 _2, _3이 붙습니다."
+                        />
                         <Button type="button" variant="outline" size="sm" className="h-8" onClick={applyRubyToSelectedText}>
                           루비
                         </Button>
@@ -4793,7 +6120,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         className="h-8 px-2"
                         onClick={() => customFontInputRef.current?.click()}
                         disabled={customFontUploading}
-                        title="커스텀 폰트 파일 업로드"
+                        title="커스텀 폰트 파일 업로드(복수 선택 가능)"
                       >
                         <Upload className="mr-1 h-3.5 w-3.5" />
                         {customFontUploading ? "업로드 중..." : "폰트 업로드"}
@@ -4802,25 +6129,49 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         ref={customFontInputRef}
                         type="file"
                         accept={CUSTOM_FONT_ACCEPT}
+                        multiple
                         className="hidden"
                         onChange={(event) => void handleCustomFontFileChange(event)}
                       />
-                      <Input
-                        type="number"
-                        min={8}
-                        max={240}
-                        value={String(selectedLayer.fontSize)}
+                      <select
+                        value={String(normalizeTextFontSize(selectedLayer.fontSize, MIN_TEXT_FONT_SIZE))}
                         onChange={(event) =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text"
                               ? autoExpandTextLayerIfNeeded({
                                   ...layer,
-                                  fontSize: clamp(Number(event.target.value), 8, 240, layer.fontSize)
+                                  fontSize: normalizeTextFontSize(Number(event.target.value), layer.fontSize)
+                                })
+                              : layer
+                          )
+                        }
+                        className="h-8 min-w-[78px] rounded-md border border-white/20 bg-black/30 px-2 text-xs text-white"
+                        title="폰트 크기(2단위)"
+                      >
+                        {buildTextFontSizeOptions(selectedLayer.fontSize).map((size) => (
+                          <option key={size} value={size}>
+                            {size}px
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        type="number"
+                        min={MIN_TEXT_FONT_SIZE}
+                        max={MAX_TEXT_FONT_SIZE}
+                        step={1}
+                        value={String(normalizeTextFontSize(selectedLayer.fontSize, MIN_TEXT_FONT_SIZE))}
+                        onChange={(event) =>
+                          updateLayerById(selectedLayer.id, (layer) =>
+                            layer.type === "text"
+                              ? autoExpandTextLayerIfNeeded({
+                                  ...layer,
+                                  fontSize: normalizeTextFontSize(Number(event.target.value), layer.fontSize)
                                 })
                               : layer
                           )
                         }
                         className="h-8 w-20 border-white/20 bg-black/30 text-xs text-white"
+                        title="폰트 크기 직접 입력"
                       />
                       <Button
                         type="button"
@@ -4943,6 +6294,56 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         className="h-8 w-14 rounded border border-white/20 bg-black/30 p-1"
                         title="텍스트 색상"
                       />
+                      <input
+                        type="color"
+                        value={normalizeHex(selectedLayer.backgroundColor, "#FFFFFF")}
+                        onChange={(event) =>
+                          updateLayerById(selectedLayer.id, (layer) =>
+                            layer.type === "text" ? { ...layer, backgroundColor: event.target.value } : layer
+                          )
+                        }
+                        className="h-8 w-14 rounded border border-white/20 bg-black/30 p-1"
+                        title="텍스트 배경색"
+                      />
+                      <Label className="text-[11px] text-zinc-200">배경 투명도</Label>
+                      <Input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={String(clamp(Number(selectedLayer.backgroundOpacity), 0, 1, 1))}
+                        onChange={(event) =>
+                          updateLayerById(selectedLayer.id, (layer) =>
+                            layer.type === "text"
+                              ? {
+                                  ...layer,
+                                  backgroundOpacity: clamp(Number(event.target.value), 0, 1, layer.backgroundOpacity)
+                                }
+                              : layer
+                          )
+                        }
+                        className="h-8 w-24 flex-none sm:w-28"
+                        title="텍스트 배경 투명도"
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={String(clamp(Number(selectedLayer.backgroundOpacity), 0, 1, 1))}
+                        onChange={(event) =>
+                          updateLayerById(selectedLayer.id, (layer) =>
+                            layer.type === "text"
+                              ? {
+                                  ...layer,
+                                  backgroundOpacity: clamp(Number(event.target.value), 0, 1, layer.backgroundOpacity)
+                                }
+                              : layer
+                          )
+                        }
+                        className="h-8 w-16 border-white/20 bg-black/30 text-xs text-white"
+                        title="텍스트 배경 투명도(숫자)"
+                      />
                       <Button
                         type="button"
                         variant={selectedLayer.shadowEnabled ? "default" : "outline"}
@@ -5056,7 +6457,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             )
                           }
                         >
-                          Fill
+                          배경색
                         </Button>
                         <input
                           type="color"
@@ -5069,6 +6470,39 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           className="h-8 w-14 rounded border border-white/20 bg-black/30 p-1"
                           disabled={!selectedLayer.fillEnabled}
                           title="채우기 색상"
+                        />
+                        <Label className="ml-1 text-[11px] text-zinc-200">배경 투명도</Label>
+                        <Input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={String(clamp(Number(selectedLayer.fillOpacity), 0, 1, 1))}
+                          onChange={(event) =>
+                            updateLayerById(selectedLayer.id, (layer) =>
+                              layer.type === "shape"
+                                ? { ...layer, fillOpacity: clamp(Number(event.target.value), 0, 1, layer.fillOpacity) }
+                                : layer
+                            )
+                          }
+                          className="h-8 w-24 flex-none sm:w-28"
+                          disabled={!selectedLayer.fillEnabled}
+                        />
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={String(clamp(Number(selectedLayer.fillOpacity), 0, 1, 1))}
+                          onChange={(event) =>
+                            updateLayerById(selectedLayer.id, (layer) =>
+                              layer.type === "shape"
+                                ? { ...layer, fillOpacity: clamp(Number(event.target.value), 0, 1, layer.fillOpacity) }
+                                : layer
+                            )
+                          }
+                          className="h-8 w-16 border-white/20 bg-black/30 text-xs text-white"
+                          disabled={!selectedLayer.fillEnabled}
                         />
                         <input
                           type="color"
@@ -5228,16 +6662,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           <option value="cover">Cover</option>
                           <option value="contain">Contain</option>
                         </select>
+                        <Button
+                          type="button"
+                          variant={selectedLayer.fit === "cover" ? "default" : "outline"}
+                          size="sm"
+                          className="h-8"
+                          onClick={() => setImageBoxFillMode(selectedLayer.id, selectedLayer.fit !== "cover")}
+                        >
+                          {selectedLayer.fit === "cover" ? "박스 꽉 채우기 ON" : "박스 꽉 채우기 OFF"}
+                        </Button>
                         <label className="inline-flex items-center gap-1 rounded-md border border-white/20 px-2 py-1 text-xs text-zinc-100">
                           <input
                             type="checkbox"
                             checked={Boolean(selectedLayer.aiGenerateEnabled)}
                             onChange={(event) =>
                               updateLayerById(selectedLayer.id, (layer) =>
-                                layer.type === "image"
+                              layer.type === "image"
                                   ? {
                                       ...layer,
                                       aiGenerateEnabled: event.target.checked,
+                                      aiModel: resolveAiImageModel(layer.aiModel),
                                       aiStylePreset: layer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE
                                     }
                                   : layer
@@ -5269,6 +6713,27 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         >
                           제거
                         </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          onClick={() => fillImageLayerToCanvas(selectedLayer.id)}
+                        >
+                          화면 꽉 채우기
+                        </Button>
+                        {isNewsMode ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            onClick={() => void applyNewsImageToLayer(selectedLayer.id)}
+                            disabled={aiImageGeneratingLayerId === selectedLayer.id || newsLoading || !selectedNewsItem}
+                          >
+                            {aiImageGeneratingLayerId === selectedLayer.id ? "생성 중..." : "뉴스 만들기 이미지 적용"}
+                          </Button>
+                        ) : null}
                       </div>
                       {selectedLayer.aiGenerateEnabled ? (
                         <div className="space-y-2 rounded-md border border-white/10 bg-black/20 p-2">
@@ -5287,6 +6752,35 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             />
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
+                            <select
+                              value={resolveAiImageModel(selectedLayer.aiModel)}
+                              onChange={(event) =>
+                                updateLayerById(selectedLayer.id, (layer) =>
+                                  layer.type === "image" ? { ...layer, aiModel: resolveAiImageModel(event.target.value) } : layer
+                                )
+                              }
+                              className="h-8 min-w-[220px] rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                            >
+                              {INSTAGRAM_AI_MODEL_OPTIONS.map((option) => (
+                                <option key={`ig-ai-model-${option.value}`} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                            <select
+                              value={resolveAiImageOrientation(selectedLayer.aiImageOrientation)}
+                              onChange={(event) =>
+                                updateLayerById(selectedLayer.id, (layer) =>
+                                  layer.type === "image"
+                                    ? { ...layer, aiImageOrientation: resolveAiImageOrientation(event.target.value) }
+                                    : layer
+                                )
+                              }
+                              className="h-8 min-w-[140px] rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                            >
+                              <option value="vertical">세로 9:16</option>
+                              <option value="horizontal">가로 16:9</option>
+                            </select>
                             <select
                               value={selectedLayer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE}
                               onChange={(event) =>
@@ -5314,6 +6808,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               {aiImageGeneratingLayerId === selectedLayer.id ? "생성 중..." : "AI 이미지 생성"}
                             </Button>
                           </div>
+                          <p className="text-[10px] text-zinc-300">
+                            가로/세로 비율 선택 후 생성하면 해당 화면비를 우선 반영합니다. 카드 배경용은 `화면 꽉 채우기 + Cover`를 권장합니다.
+                          </p>
                         </div>
                       ) : null}
                       <p className="text-[10px] text-zinc-300">PNG/WebP 투명 배경 이미지를 그대로 지원합니다.</p>
@@ -5400,8 +6897,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         lineHeight: String(clamp(layer.lineHeight, 0.8, 3, 1.2)),
                         letterSpacing: toCanvasWidthUnit(layer.letterSpacing, canvasWidth),
                         backgroundColor:
-                          layer.padding > 0 || normalizeHex(layer.backgroundColor, "#FFFFFF") !== "#FFFFFF"
-                            ? withAlpha(layer.backgroundColor, 0.95)
+                          layer.padding > 0 ||
+                          normalizeHex(layer.backgroundColor, "#FFFFFF") !== "#FFFFFF" ||
+                          clamp(Number(layer.backgroundOpacity), 0, 1, 1) < 1
+                            ? withAlpha(layer.backgroundColor, clamp(Number(layer.backgroundOpacity), 0, 1, 1))
                             : "transparent",
                         padding: toCanvasWidthUnit(Math.max(0, layer.padding), canvasWidth),
                         overflow: "hidden",
@@ -5440,7 +6939,12 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               : "0px",
                         clipPath: isLineShape ? undefined : clipPath,
                         backgroundColor:
-                          isLineShape || layer.fillEnabled === false ? "transparent" : normalizeHex(layer.fillColor, "#F4F1EA"),
+                          isLineShape || layer.fillEnabled === false
+                            ? "transparent"
+                            : withAlpha(
+                                normalizeHex(layer.fillColor, "#F4F1EA"),
+                                clamp(Number(layer.fillOpacity), 0, 1, 1)
+                              ),
                         borderStyle: isLineShape ? undefined : "solid",
                         borderWidth: isLineShape ? undefined : `${Math.max(0, layer.strokeWidth || 0)}px`,
                         borderColor: isLineShape ? undefined : normalizeHex(layer.strokeColor, "#111111")
@@ -5502,7 +7006,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     {layer.imageUrl ? (
                       layer.mediaType === "video" || inferMediaTypeFromSource(layer.imageUrl) === "video" ? (
                         <video
-                          src={layer.imageUrl}
+                          src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                           className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
                           autoPlay
                           muted
@@ -5512,7 +7016,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         />
                       ) : (
                         <img
-                          src={layer.imageUrl}
+                          src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                           alt="layer"
                           className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
                           draggable={false}
@@ -5724,8 +7228,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   lineHeight: String(clamp(layer.lineHeight, 0.8, 3, 1.2)),
                                   letterSpacing: toCanvasWidthUnit(layer.letterSpacing, canvasWidth),
                                   backgroundColor:
-                                    layer.padding > 0 || normalizeHex(layer.backgroundColor, "#FFFFFF") !== "#FFFFFF"
-                                      ? withAlpha(layer.backgroundColor, 0.95)
+                                    layer.padding > 0 ||
+                                    normalizeHex(layer.backgroundColor, "#FFFFFF") !== "#FFFFFF" ||
+                                    clamp(Number(layer.backgroundOpacity), 0, 1, 1) < 1
+                                      ? withAlpha(layer.backgroundColor, clamp(Number(layer.backgroundOpacity), 0, 1, 1))
                                       : "transparent",
                                   padding: toCanvasWidthUnit(Math.max(0, layer.padding), canvasWidth),
                                   overflow: "hidden",
@@ -5758,7 +7264,12 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                         : "0px",
                                   clipPath: isLineShape ? undefined : clipPath,
                                   backgroundColor:
-                                    isLineShape || layer.fillEnabled === false ? "transparent" : normalizeHex(layer.fillColor, "#F4F1EA"),
+                                    isLineShape || layer.fillEnabled === false
+                                      ? "transparent"
+                                      : withAlpha(
+                                          normalizeHex(layer.fillColor, "#F4F1EA"),
+                                          clamp(Number(layer.fillOpacity), 0, 1, 1)
+                                        ),
                                   borderStyle: isLineShape ? undefined : "solid",
                                   borderWidth: isLineShape ? undefined : `${Math.max(0, layer.strokeWidth || 0)}px`,
                                   borderColor: isLineShape ? undefined : normalizeHex(layer.strokeColor, "#111111")
@@ -5789,7 +7300,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               {layer.imageUrl ? (
                                 layer.mediaType === "video" || inferMediaTypeFromSource(layer.imageUrl) === "video" ? (
                                   <video
-                                    src={layer.imageUrl}
+                                    src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                                     className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
                                     autoPlay
                                     muted
@@ -5799,7 +7310,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   />
                                 ) : (
                                   <img
-                                    src={layer.imageUrl}
+                                    src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                                     alt="layer"
                                     className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
                                     draggable={false}
@@ -6360,6 +7871,149 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     <p className="text-xs text-muted-foreground">시트 row를 불러오면 여기서 예시 row를 선택할 수 있습니다.</p>
                   )}
                 </div>
+                {isNewsMode ? (
+                  <div className="space-y-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2">
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="min-w-[150px] flex-1 space-y-1">
+                        <Label className="text-xs">뉴스 국가</Label>
+                        <Select value={newsCountry} onValueChange={setNewsCountry}>
+                          <SelectTrigger className="bg-card dark:bg-zinc-900">
+                            <SelectValue placeholder="국가 선택" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {NEWS_COUNTRY_OPTIONS.map((option) => (
+                              <SelectItem key={`ig-template-news-country-${option.value}`} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="w-[108px] space-y-1">
+                        <Label className="text-xs">개수</Label>
+                        <Select value={newsCount} onValueChange={setNewsCount}>
+                          <SelectTrigger className="bg-card dark:bg-zinc-900">
+                            <SelectValue placeholder="개수" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {NEWS_COUNT_OPTIONS.map((option) => (
+                              <SelectItem key={`ig-template-news-count-${option}`} value={option}>
+                                {option}개
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="min-w-[130px] flex-1 space-y-1">
+                        <Label className="text-xs">주제 (선택)</Label>
+                        <Select value={newsTopic} onValueChange={setNewsTopic}>
+                          <SelectTrigger className="bg-card dark:bg-zinc-900">
+                            <SelectValue placeholder="주제" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {NEWS_TOPIC_OPTIONS.map((option) => (
+                              <SelectItem key={`ig-template-news-topic-${option.value}`} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="min-w-[200px] flex-[1.5] space-y-1">
+                        <Label className="text-xs">검색어 (선택)</Label>
+                        <Input
+                          value={newsKeyword}
+                          onChange={(event) => setNewsKeyword(event.target.value)}
+                          placeholder="예: 이란 휴전, 반도체, AI 정책"
+                          className="h-9"
+                        />
+                      </div>
+                      <Button type="button" variant="outline" onClick={() => void loadNewsBindings()} disabled={newsLoading}>
+                        {newsLoading ? "불러오는 중..." : "뉴스 자료 불러오기"}
+                      </Button>
+                    </div>
+                    {newsItems.length > 0 ? (
+                      <div className="space-y-1">
+                        <Label className="text-xs">뉴스 선택</Label>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="min-w-[220px] flex-1">
+                            <Select
+                              value={selectedNewsItemKey || buildNewsItemKey(newsItems[0], 0)}
+                              onValueChange={(value) => {
+                                setSelectedNewsItemKey(value);
+                                const item = newsItems.find((candidate, index) => buildNewsItemKey(candidate, index) === value);
+                                if (item) {
+                                  setNewsError(undefined);
+                                  setError(undefined);
+                                  applyNewsSampleData(item);
+                                  setSuccess("선택한 뉴스로 변수 샘플값을 반영했습니다. 이미지는 수동 리프레시로 생성해 주세요.");
+                                }
+                              }}
+                            >
+                              <SelectTrigger className="bg-card dark:bg-zinc-900">
+                                <SelectValue placeholder="뉴스 항목 선택" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {newsItems.map((item, index) => {
+                                  const key = buildNewsItemKey(item, index);
+                                  const label = item.title || item.summaryKo || item.summaryOriginal || `뉴스 ${index + 1}`;
+                                  return (
+                                    <SelectItem key={`ig-template-news-item-${key}`} value={key}>
+                                      {`${index + 1}. ${truncateText(label, 70)}`}
+                                    </SelectItem>
+                                  );
+                                })}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="shrink-0"
+                            onClick={() => void refreshNewsImagesForSelection()}
+                            disabled={newsLoading || newsImageRefreshing || !selectedNewsItem}
+                          >
+                            <RefreshCw className={`h-4 w-4 ${newsImageRefreshing ? "animate-spin" : ""}`} />
+                            {newsImageRefreshing ? "이미지 생성 중..." : "이미지 일괄 리프레시"}
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {selectedNewsItem
+                            ? `${selectedNewsItem.source || "Google News"} · ${formatNewsDateTime(selectedNewsItem.publishedAt)}`
+                            : "뉴스를 선택하면 변수 샘플값과 이미지 프롬프트가 업데이트됩니다."}
+                          {selectedNewsTopicQuery ? ` · 주제: ${selectedNewsTopic.label}` : " · 주제: 전체"}
+                          {newsKeyword.trim() ? ` · 검색어: ${newsKeyword.trim()}` : ""}
+                          {newsFetchedAt ? ` · 조회: ${formatNewsDateTime(newsFetchedAt)}` : ""}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          화면 전환/뉴스 선택 시 이미지 자동 생성은 비활성화되어 있습니다. 필요할 때만 일괄 리프레시를 눌러 생성하세요.
+                        </p>
+                        {selectedNewsItem ? (
+                          <div className="space-y-2 rounded-md border border-border/60 bg-card/50 p-2">
+                            <p className="text-xs text-muted-foreground">
+                              추천 변수: <code>{"{{newsTitle}}"}</code> / <code>{"{{newsTitle_KR}}"}</code> /{" "}
+                              <code>{"{{newsBody}}"}</code> / <code>{"{{sourceArticleOriginal}}"}</code> /{" "}
+                              <code>{"{{newsImagePage1}}"}</code> / <code>{"{{newsImagePage2}}"}</code>
+                            </p>
+                            <p className="text-xs font-medium leading-relaxed">
+                              {selectedNewsItem.summaryKo || selectedNewsItem.detailKo || selectedNewsItem.summaryOriginal || selectedNewsItem.title}
+                            </p>
+                            <pre className="max-h-32 overflow-auto rounded bg-zinc-950 p-2 text-[11px] leading-relaxed text-zinc-100">
+                              <code>{selectedNewsItem.imagePrompt || NEWS_IMAGE_PROMPT_FALLBACK}</code>
+                            </pre>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        뉴스 자료를 불러오면 `{"{{newsTitle}}"}`, `{"{{newsTitle_KR}}"}`, `{"{{newsBody}}"}`,{" "}
+                        `{"{{sourceArticleOriginal}}"}`, `{"{{newsImagePage1}}"}`, `{"{{newsImagePage2}}"}`,{" "}
+                        `{"{{imagePrompt}}"}` 같은 뉴스 전용 변수를 바로 사용할 수 있습니다.
+                      </p>
+                    )}
+                    {newsError ? <p className="text-xs text-destructive">{newsError}</p> : null}
+                  </div>
+                ) : null}
                 <div className="flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-md border p-2">
                   {filteredBindingFields.map((field) => (
                     <Button key={field} type="button" size="sm" variant="outline" onClick={() => insertBindingToken(field)}>
@@ -6376,7 +8030,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
                 <div className="space-y-2 rounded-md border p-2">
                   <p className="text-xs font-semibold text-muted-foreground">미리보기 샘플값</p>
-                  {bindingFields.map((field) => (
+                  {visibleBindingFields.map((field) => (
                     <div key={field} className="grid grid-cols-[110px_minmax(0,1fr)] items-center gap-2">
                       <Label className="truncate text-xs">{field}</Label>
                       <Input

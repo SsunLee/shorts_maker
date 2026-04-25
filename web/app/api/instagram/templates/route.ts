@@ -26,6 +26,7 @@ const baseElementSchema = z.object({
 const textElementSchema = baseElementSchema.extend({
   type: z.literal("text"),
   textMode: z.enum(["variable", "plain"]).optional(),
+  bindingKey: z.string().optional(),
   text: z.string(),
   autoWrap: z.boolean().optional(),
   color: z.string(),
@@ -44,6 +45,7 @@ const textElementSchema = baseElementSchema.extend({
   shadowX: z.number().optional(),
   shadowY: z.number().optional(),
   backgroundColor: z.string(),
+  backgroundOpacity: z.number().optional(),
   padding: z.number()
 });
 
@@ -64,6 +66,7 @@ const shapeElementSchema = baseElementSchema.extend({
   ]),
   fillEnabled: z.boolean().optional(),
   fillColor: z.string(),
+  fillOpacity: z.number().optional(),
   strokeColor: z.string(),
   strokeWidth: z.number(),
   cornerRadius: z.number()
@@ -78,8 +81,10 @@ const imageElementSchema = baseElementSchema.extend({
   overlayColor: z.string(),
   overlayOpacity: z.number(),
   aiGenerateEnabled: z.boolean().optional(),
+  aiModel: z.string().optional(),
   aiPrompt: z.string().optional(),
-  aiStylePreset: z.string().optional()
+  aiStylePreset: z.string().optional(),
+  aiImageOrientation: z.enum(["vertical", "horizontal"]).optional()
 });
 
 const pageSchema = z.object({
@@ -101,6 +106,7 @@ const pageSchema = z.object({
 const templateSchema = z.object({
   id: z.string().min(1),
   templateName: z.string().min(1),
+  mode: z.enum(["general", "news"]).optional(),
   sourceTitle: z.string(),
   sourceTopic: z.string(),
   canvasPreset: z.string().optional(),

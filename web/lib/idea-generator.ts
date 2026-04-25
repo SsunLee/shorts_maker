@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
 import { resolveApiKeys, resolveModelForTask, resolveProviderForTask } from "@/lib/ai-provider";
+import { fetchLatestGoogleNews, type GoogleNewsCountryCode, type GoogleNewsItem } from "@/lib/google-news";
 import { IdeaDraftRow, IdeaLanguage } from "@/lib/types";
 
 type Provider = "openai" | "gemini";
@@ -9,6 +10,8 @@ type LatestNewsItem = {
   source: string;
   publishedAt: string;
   link: string;
+  summary?: string;
+  detail?: string;
 };
 
 type IdeaGenerationFailureCode =
@@ -61,6 +64,21 @@ function stripJsonFence(raw: string): string {
 
 function normalizeField(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+function collapseWhitespace(value: string): string {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function truncateForPrompt(value: string, maxLength: number): string {
+  const normalized = collapseWhitespace(value);
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
 function normalizeKeywordKey(value: unknown): string {
@@ -304,6 +322,7 @@ function parseLatestNewsItemsFromRss(xml: string, limit: number): LatestNewsItem
     let title = extractXmlTagValue(block, "title");
     const link = extractXmlTagValue(block, "link");
     const publishedAt = extractXmlTagValue(block, "pubDate");
+    const description = extractXmlTagValue(block, "description");
     let source = extractXmlTagValue(block, "source");
 
     if (!source && title.includes(" - ")) {
@@ -322,7 +341,9 @@ function parseLatestNewsItemsFromRss(xml: string, limit: number): LatestNewsItem
       title,
       source: source || "Unknown source",
       publishedAt,
-      link
+      link,
+      summary: truncateForPrompt(description, 220),
+      detail: truncateForPrompt(description, 420)
     });
   }
 
@@ -691,6 +712,146 @@ function requiresHardSpecificity(topic: string): boolean {
   );
 }
 
+function hasNewsIntent(topic: string): boolean {
+  const normalized = String(topic || "").toLowerCase();
+  return (
+    /(news|breaking|headline|headlines|latest)/.test(normalized) ||
+    /(뉴스|속보|헤드라인|최신)/u.test(topic) ||
+    /(ニュース|速報|最新|ヘッドライン)/u.test(topic) ||
+    /(noticias|últimas|titulares)/u.test(normalized) ||
+    /(समाचार|ताज़ा|सुर्खियां)/u.test(topic)
+  );
+}
+
+function isEntertainmentTopic(topic: string): boolean {
+  const normalized = String(topic || "").toLowerCase();
+  return (
+    /(entertainment|celebrity|idol|k-pop|kpop|movie|drama|tv show|music)/.test(normalized) ||
+    /(연예|아이돌|배우|가수|드라마|예능|영화|뮤직|음악)/u.test(topic) ||
+    /(芸能|アイドル|俳優|女優|ドラマ|映画|音楽)/u.test(topic)
+  );
+}
+
+function looksEntertainmentHeadline(title: string): boolean {
+  const normalized = String(title || "").toLowerCase();
+  return (
+    /(celebrity|entertainment|idol|k-pop|kpop|movie|drama|tv show|music|box office)/.test(normalized) ||
+    /(연예|아이돌|배우|가수|드라마|예능|영화|음악|컴백)/u.test(title) ||
+    /(芸能|アイドル|俳優|女優|ドラマ|映画|音楽|復帰|熱愛)/u.test(title)
+  );
+}
+
+function resolveNewsCountryByLanguage(language: IdeaLanguage): GoogleNewsCountryCode {
+  if (language === "ja") {
+    return "JP";
+  }
+  if (language === "hi") {
+    return "IN";
+  }
+  if (language === "ko") {
+    return "KR";
+  }
+  return "US";
+}
+
+function buildNewsSearchQuery(topic: string, language: IdeaLanguage): string {
+  const raw = collapseWhitespace(topic);
+  const genericTerms = new Set([
+    "latest",
+    "breaking",
+    "news",
+    "headline",
+    "headlines",
+    "trend",
+    "trending",
+    "최신",
+    "속보",
+    "뉴스",
+    "헤드라인",
+    "트렌드",
+    "最新",
+    "速報",
+    "ニュース",
+    "話題",
+    "trend",
+    "trending",
+    "noticias",
+    "últimas",
+    "titulares",
+    "समाचार"
+  ]);
+  const topicTerms = raw
+    .split(/\s+/u)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .filter((token) => {
+      const normalized = token.toLowerCase();
+      return !genericTerms.has(normalized) && !genericTerms.has(token);
+    });
+  const core = collapseWhitespace(topicTerms.join(" "));
+  const base = core || raw;
+  if (!base) {
+    return "latest news when:7d";
+  }
+  const exclusion =
+    isEntertainmentTopic(base) || isEntertainmentTopic(topic)
+      ? ""
+      : language === "ja"
+        ? "-芸能 -アイドル -ドラマ -映画"
+        : language === "ko"
+          ? "-연예 -아이돌 -드라마 -영화 -예능"
+          : language === "hi"
+            ? "-मनोरंजन -फिल्म -टीवी -सेलिब्रिटी"
+            : "-entertainment -celebrity -movie -drama -tv";
+  return collapseWhitespace(`${base} when:7d ${exclusion}`);
+}
+
+function parsePublishedAtTimestamp(value: string): number {
+  const timestamp = Date.parse(String(value || "").trim());
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function scoreLatestNewsItem(item: LatestNewsItem, topicAnchors: string[], entertainmentAllowed: boolean): number {
+  const title = collapseWhitespace(item.title);
+  const summary = collapseWhitespace(item.summary || "");
+  const detail = collapseWhitespace(item.detail || "");
+  const combined = `${title}\n${summary}\n${detail}`;
+  const titleAnchorHits = countAnchorHits(title, topicAnchors);
+  const bodyAnchorHits = countAnchorHits(combined, topicAnchors);
+  const publishedAt = parsePublishedAtTimestamp(item.publishedAt);
+  const ageHours = publishedAt > 0 ? Math.max(0, (Date.now() - publishedAt) / (1000 * 60 * 60)) : 48;
+  const freshnessScore = Math.max(0, 4 - ageHours / 24);
+  const entertainmentPenalty = !entertainmentAllowed && looksEntertainmentHeadline(title) ? 4 : 0;
+  const summaryPenalty = summary.length < 40 ? 0.6 : 0;
+  return titleAnchorHits * 4 + bodyAnchorHits * 2 + freshnessScore - entertainmentPenalty - summaryPenalty;
+}
+
+function rankLatestNewsItems(items: LatestNewsItem[], topic: string, topicAnchors: string[]): LatestNewsItem[] {
+  const entertainmentAllowed = isEntertainmentTopic(topic);
+  return [...items].sort((left, right) => {
+    const scoreDiff =
+      scoreLatestNewsItem(right, topicAnchors, entertainmentAllowed) -
+      scoreLatestNewsItem(left, topicAnchors, entertainmentAllowed);
+    if (scoreDiff !== 0) {
+      return scoreDiff;
+    }
+    return parsePublishedAtTimestamp(right.publishedAt) - parsePublishedAtTimestamp(left.publishedAt);
+  });
+}
+
+function mapGoogleNewsItemToLatestNews(item: GoogleNewsItem): LatestNewsItem {
+  const summary = truncateForPrompt(item.summaryOriginal || item.summaryKo || item.description || item.title, 220);
+  const detail = truncateForPrompt(item.detailOriginal || item.detailKo || item.description || item.title, 420);
+  return {
+    title: collapseWhitespace(item.title),
+    source: collapseWhitespace(item.source || "Google News"),
+    publishedAt: collapseWhitespace(item.publishedAt || ""),
+    link: collapseWhitespace(item.link || ""),
+    summary,
+    detail
+  };
+}
+
 type NewsLocale = { hl: string; gl: string; ceid: string };
 
 function isGlobalSportsTopic(topic: string): boolean {
@@ -745,12 +906,36 @@ async function fetchLatestNewsContext(topic: string, language: IdeaLanguage): Pr
     return [];
   }
 
+  const mergedLimit = parsePositiveInt(process.env.IDEA_NEWS_MERGED_LIMIT, 6);
+  const topicAnchors = normalizeTopicAnchorsForLanguage(extractTopicAnchors(topic), language);
+  const query = buildNewsSearchQuery(topic, language);
+
+  if (hasNewsIntent(topic)) {
+    const newsCountry = resolveNewsCountryByLanguage(language);
+    const detailedNewsCount = parsePositiveInt(
+      process.env.IDEA_NEWS_CONTEXT_COUNT,
+      Math.max(4, Math.min(10, mergedLimit))
+    );
+    try {
+      const enrichedItems = await fetchLatestGoogleNews({
+        country: newsCountry,
+        count: detailedNewsCount,
+        query
+      });
+      const mapped = enrichedItems.map((item) => mapGoogleNewsItemToLatestNews(item));
+      const ranked = rankLatestNewsItems(mapped, topic, topicAnchors);
+      const deduped = dedupeLatestNewsItems(ranked, mergedLimit);
+      if (deduped.length > 0) {
+        return deduped;
+      }
+    } catch {
+      // Fall through to lightweight RSS query fallback.
+    }
+  }
+
   const timeoutMs = parsePositiveInt(process.env.IDEA_NEWS_TIMEOUT_MS, 3500);
   const locales = resolveNewsLocales(language, topic);
-  const query = `${topic} when:7d`;
   const perLocaleLimit = parsePositiveInt(process.env.IDEA_NEWS_PER_LOCALE_LIMIT, 4);
-  const mergedLimit = parsePositiveInt(process.env.IDEA_NEWS_MERGED_LIMIT, 6);
-
   const fetched = await Promise.all(
     locales.map(async ({ hl, gl, ceid }) => {
       const endpoint =
@@ -776,7 +961,8 @@ async function fetchLatestNewsContext(topic: string, language: IdeaLanguage): Pr
     })
   );
 
-  const merged = dedupeLatestNewsItems(fetched.flat(), mergedLimit);
+  const ranked = rankLatestNewsItems(fetched.flat(), topic, topicAnchors);
+  const merged = dedupeLatestNewsItems(ranked, mergedLimit);
   if (merged.length > 0) {
     return merged;
   }
@@ -806,6 +992,14 @@ function buildPrompt(
       "  (e.g. material name like graphene, organization/lab, league/team/player, product line, event name).\n" +
       "- If the claim is future-looking or unconfirmed, phrase it as outlook/expectation (not confirmed fact).\n"
     : "";
+  const newsScriptModeRule = hasNewsIntent(topic)
+    ? "- Because this is a news-oriented request, write Narration in a YouTube news-script flow:\n" +
+      "  hook (1 sentence) -> context -> 2~4 concrete fact beats from context -> what-it-means/next-watch -> CTA.\n" +
+      "- Use concrete names, dates, numbers, and organizations from the context when available.\n"
+    : "";
+  const entertainmentBiasRule = isEntertainmentTopic(topic)
+    ? ""
+    : "- Do not default to celebrity/entertainment gossip angles unless the topic explicitly asks for entertainment.\n";
   const topicAnchorBlock =
     topicAnchors.length > 0
       ? "[Topic Anchors]\n" +
@@ -826,7 +1020,9 @@ function buildPrompt(
             const published = item.publishedAt ? ` | Published: ${item.publishedAt}` : "";
             const source = item.source ? ` | Source: ${item.source}` : "";
             const link = item.link ? ` | URL: ${item.link}` : "";
-            return `${index + 1}. ${item.title}${source}${published}${link}`;
+            const summary = item.summary ? `\n   Summary: ${truncateForPrompt(item.summary, 200)}` : "";
+            const detail = item.detail ? `\n   Key facts: ${truncateForPrompt(item.detail, 320)}` : "";
+            return `${index + 1}. ${item.title}${source}${published}${link}${summary}${detail}`;
           })
           .join("\n") +
         "\n\n[News Grounding Rules]\n" +
@@ -880,6 +1076,8 @@ function buildPrompt(
     domainSpecificityRule +
     specificityRule +
     hardSpecificityRule +
+    newsScriptModeRule +
+    entertainmentBiasRule +
     "- Use only the requested output language in Keyword, Subject, Description, and Narration.\n" +
     "- Never switch those fields back to Korean unless Korean is the requested language.\n" +
     "- Output JSON only, no markdown, no explanation"
@@ -902,6 +1100,9 @@ function buildRelatedKeywordPrompt(
     topicAnchors.length > 0
       ? `- Prefer terms closely connected to these anchors: ${topicAnchors.join(", ")}\n`
       : "";
+  const entertainmentBiasRule = isEntertainmentTopic(topic)
+    ? ""
+    : "- Avoid defaulting to celebrity/entertainment gossip keywords unless topic explicitly requests that domain.\n";
 
   const strategistRole = hardSpecificity
     ? "short-video trend strategist"
@@ -922,6 +1123,7 @@ function buildRelatedKeywordPrompt(
     "[Rules]\n" +
     topicDirection +
     anchorRule +
+    entertainmentBiasRule +
     "- Do not output the exact same phrase as the input topic\n" +
     duplicateRule +
     "- Keep each keyword under 20 characters when possible\n" +

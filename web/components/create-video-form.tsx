@@ -11,6 +11,14 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
 import { ImageStyleSnapshot } from "@/components/image-style-snapshot";
 import {
   ALL_VOICE_OPTIONS,
@@ -1158,6 +1166,15 @@ function isLocalHostName(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
+function isLikelySignedMediaUrl(parsed: URL): boolean {
+  const keys = Array.from(parsed.searchParams.keys()).map((key) => key.toLowerCase());
+  return (
+    keys.some((key) => key.startsWith("x-amz-")) ||
+    keys.includes("signature") ||
+    keys.includes("x-goog-signature")
+  );
+}
+
 function toDisplayMediaUrl(raw?: string, cacheTag?: string): string | undefined {
   if (!raw) {
     return undefined;
@@ -1168,7 +1185,7 @@ function toDisplayMediaUrl(raw?: string, cacheTag?: string): string | undefined 
 
   try {
     const parsed = new URL(raw, window.location.origin);
-    if (cacheTag && cacheTag.trim()) {
+    if (cacheTag && cacheTag.trim() && !isLikelySignedMediaUrl(parsed)) {
       parsed.searchParams.set("v", cacheTag.trim());
     }
     // Only rewrite web static generated assets.
@@ -1251,6 +1268,9 @@ export function CreateVideoForm(): React.JSX.Element {
   const [newTemplateName, setNewTemplateName] = useState("");
   const [selectedTemplatePresetId, setSelectedTemplatePresetId] = useState<string>("");
   const [regeneratingSceneIndexes, setRegeneratingSceneIndexes] = useState<number[]>([]);
+  const [regenerateModalOpen, setRegenerateModalOpen] = useState(false);
+  const [regenerateTargetSceneIndex, setRegenerateTargetSceneIndex] = useState<number>();
+  const [regeneratePromptDraft, setRegeneratePromptDraft] = useState("");
   const previewAudioRef = useRef<HTMLAudioElement>(null);
   const pendingPreviewPlayRef = useRef<boolean>(false);
   const previewBlobMetaRef = useRef<{ type: string; size: number } | undefined>(undefined);
@@ -1622,6 +1642,12 @@ export function CreateVideoForm(): React.JSX.Element {
       willChange: "transform, object-position"
     };
   }, [sceneMotionPreview]);
+  const regenerateTargetScene = useMemo(() => {
+    if (!workflow || workflow.stage !== "assets_review" || !regenerateTargetSceneIndex) {
+      return undefined;
+    }
+    return workflow.scenes.find((scene) => scene.index === regenerateTargetSceneIndex);
+  }, [workflow, regenerateTargetSceneIndex]);
 
   const refreshResumableWorkflows = useCallback(async (): Promise<void> => {
     setLoadingResumables(true);
@@ -3434,7 +3460,10 @@ export function CreateVideoForm(): React.JSX.Element {
     }
   }
 
-  async function regenerateSceneImage(sceneIndex: number): Promise<void> {
+  async function regenerateSceneImage(
+    sceneIndex: number,
+    imagePromptOverride?: string
+  ): Promise<void> {
     if (!workflow || workflow.stage !== "assets_review") {
       return;
     }
@@ -3448,7 +3477,13 @@ export function CreateVideoForm(): React.JSX.Element {
       const response = await fetch(
         workflowApiPath(workflow.id, `/scenes/${sceneIndex}/regenerate`),
         {
-          method: "POST"
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            imagePromptOverride && imagePromptOverride.trim()
+              ? { imagePrompt: imagePromptOverride.trim() }
+              : {}
+          )
         }
       );
       const data = (await response.json()) as VideoWorkflow | { error?: string };
@@ -3459,6 +3494,12 @@ export function CreateVideoForm(): React.JSX.Element {
       }
       setWorkflow(data);
       setRenderOptions(ensureRenderOptions(data.renderOptions));
+      if (regenerateTargetSceneIndex === sceneIndex) {
+        const updatedScene = data.scenes.find((scene) => scene.index === sceneIndex);
+        if (updatedScene) {
+          setRegeneratePromptDraft(updatedScene.imagePrompt || "");
+        }
+      }
     } catch (regenError) {
       setError(regenError instanceof Error ? regenError.message : "Unknown error");
     } finally {
@@ -3466,6 +3507,38 @@ export function CreateVideoForm(): React.JSX.Element {
         prev.filter((index) => index !== sceneIndex)
       );
     }
+  }
+
+  function openRegenerateSceneModal(sceneIndex: number): void {
+    if (!workflow || workflow.stage !== "assets_review") {
+      return;
+    }
+    const scene = workflow.scenes.find((item) => item.index === sceneIndex);
+    if (!scene) {
+      return;
+    }
+    setRegenerateTargetSceneIndex(sceneIndex);
+    setRegeneratePromptDraft(scene.imagePrompt || "");
+    setRegenerateModalOpen(true);
+  }
+
+  function closeRegenerateSceneModal(): void {
+    setRegenerateModalOpen(false);
+    setRegenerateTargetSceneIndex(undefined);
+    setRegeneratePromptDraft("");
+  }
+
+  async function submitRegenerateSceneModal(): Promise<void> {
+    if (!regenerateTargetSceneIndex) {
+      return;
+    }
+    const nextPrompt = regeneratePromptDraft.trim();
+    if (!nextPrompt) {
+      setError("이미지 프롬프트를 입력해 주세요.");
+      return;
+    }
+    await regenerateSceneImage(regenerateTargetSceneIndex, nextPrompt);
+    closeRegenerateSceneModal();
   }
 
   async function runNextStage(): Promise<void> {
@@ -4237,11 +4310,14 @@ export function CreateVideoForm(): React.JSX.Element {
                     {workflow.scenes.map((scene) => {
                       const isRegenerating = regeneratingSceneIndexes.includes(scene.index);
                       return (
-                        <div key={scene.index} className="space-y-2 rounded-md border p-2">
+                        <div
+                          key={`${scene.index}:${scene.imageUrl || ""}:${workflow.updatedAt || ""}`}
+                          className="space-y-2 rounded-md border p-2"
+                        >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           {scene.imageUrl ? (
                             <img
-                              src={toDisplayMediaUrl(scene.imageUrl)}
+                              src={toDisplayMediaUrl(scene.imageUrl, workflow.updatedAt)}
                               alt={`Scene ${scene.index}`}
                               className={`${sceneImageAspectClass} w-full rounded-md border object-cover`}
                             />
@@ -4257,7 +4333,7 @@ export function CreateVideoForm(): React.JSX.Element {
                               variant="outline"
                               size="sm"
                               disabled={isRegenerating || workflow.status === "processing"}
-                              onClick={() => void regenerateSceneImage(scene.index)}
+                              onClick={() => openRegenerateSceneModal(scene.index)}
                             >
                               {isRegenerating ? "Re-generating..." : "Re-generate"}
                             </Button>
@@ -6072,6 +6148,71 @@ export function CreateVideoForm(): React.JSX.Element {
               왼쪽 폼을 제출하면 1단계(장면 분할)부터 수동으로 진행할 수 있습니다.
             </p>
           )}
+          <Dialog
+            open={regenerateModalOpen}
+            onOpenChange={(open) => {
+              if (open) {
+                setRegenerateModalOpen(true);
+                return;
+              }
+              closeRegenerateSceneModal();
+            }}
+          >
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>
+                  Scene {regenerateTargetScene?.index ?? "-"} 이미지 프롬프트 재생성
+                </DialogTitle>
+                <DialogDescription>
+                  기존 프롬프트를 수정한 뒤 바로 Re-generate 할 수 있습니다.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-2">
+                <Label htmlFor="scene-regenerate-prompt">이미지 프롬프트</Label>
+                <Textarea
+                  id="scene-regenerate-prompt"
+                  rows={8}
+                  value={regeneratePromptDraft}
+                  onChange={(event) => setRegeneratePromptDraft(event.target.value)}
+                  placeholder="Scene 이미지 프롬프트를 입력해 주세요."
+                />
+                <p className="text-xs text-muted-foreground">
+                  예상 {formatTokenCount(estimateImagePromptTokens(regeneratePromptDraft || ""))} 토큰
+                </p>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={closeRegenerateSceneModal}
+                  disabled={Boolean(
+                    regenerateTargetSceneIndex &&
+                      regeneratingSceneIndexes.includes(regenerateTargetSceneIndex)
+                  )}
+                >
+                  취소
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void submitRegenerateSceneModal()}
+                  disabled={
+                    !regenerateTargetSceneIndex ||
+                    workflow?.status === "processing" ||
+                    Boolean(
+                      regenerateTargetSceneIndex &&
+                        regeneratingSceneIndexes.includes(regenerateTargetSceneIndex)
+                    ) ||
+                    !regeneratePromptDraft.trim()
+                  }
+                >
+                  {regenerateTargetSceneIndex &&
+                  regeneratingSceneIndexes.includes(regenerateTargetSceneIndex)
+                    ? "Re-generating..."
+                    : "Re-generate"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </CardContent>
         </Card>
       </div>
