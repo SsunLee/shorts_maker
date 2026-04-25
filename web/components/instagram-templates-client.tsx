@@ -1776,6 +1776,13 @@ function resolveLayerTokenText(
     if (matchedKeys.length === 1) {
       return String(sampleData[matchedKeys[0]] ?? "");
     }
+    const normalizedTokenKey = lower.replace(/[\s_-]+/g, "");
+    const normalizedMatchedKeys = keys.filter(
+      (key) => key.toLowerCase().replace(/[\s_-]+/g, "") === normalizedTokenKey
+    );
+    if (normalizedMatchedKeys.length === 1) {
+      return String(sampleData[normalizedMatchedKeys[0]] ?? "");
+    }
     return fullToken;
   });
 }

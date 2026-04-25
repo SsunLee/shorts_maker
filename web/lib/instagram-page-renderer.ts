@@ -157,6 +157,13 @@ export function resolveInstagramTemplateVariables(
     if (matchedKeys.length === 1) {
       return String(sampleData[matchedKeys[0]] ?? "");
     }
+    const normalizedTokenKey = tokenKey.toLowerCase().replace(/[\s_-]+/g, "");
+    const normalizedMatchedKeys = keys.filter(
+      (key) => key.toLowerCase().replace(/[\s_-]+/g, "") === normalizedTokenKey
+    );
+    if (normalizedMatchedKeys.length === 1) {
+      return String(sampleData[normalizedMatchedKeys[0]] ?? "");
+    }
     return fullToken;
   });
 }
@@ -172,7 +179,14 @@ function resolveSampleDataValueByKey(sampleData: Record<string, string>, key: st
   const matchedKey = Object.keys(sampleData).find(
     (candidate) => candidate.toLowerCase() === normalizedKey.toLowerCase()
   );
-  return matchedKey ? String(sampleData[matchedKey] ?? "") : undefined;
+  if (matchedKey) {
+    return String(sampleData[matchedKey] ?? "");
+  }
+  const relaxedKey = normalizedKey.toLowerCase().replace(/[\s_-]+/g, "");
+  const relaxedMatchedKey = Object.keys(sampleData).find(
+    (candidate) => candidate.toLowerCase().replace(/[\s_-]+/g, "") === relaxedKey
+  );
+  return relaxedMatchedKey ? String(sampleData[relaxedMatchedKey] ?? "") : undefined;
 }
 
 function resolveTextLayerContent(layer: InstagramTextElement, sampleData: Record<string, string>): string {

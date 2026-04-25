@@ -742,6 +742,44 @@ function extractInlineData(
   return null;
 }
 
+function summarizeGeminiResponseForLog(response: unknown): Record<string, unknown> {
+  const root = asRecord(response);
+  if (!root) {
+    return { type: typeof response };
+  }
+
+  const candidates = Array.isArray(root.candidates) ? root.candidates : [];
+  return {
+    promptFeedback: root.promptFeedback,
+    candidates: candidates.map((candidate, candidateIndex) => {
+      const candidateObj = asRecord(candidate);
+      const contentObj = candidateObj ? asRecord(candidateObj.content) : null;
+      const parts = contentObj && Array.isArray(contentObj.parts) ? contentObj.parts : [];
+      return {
+        index: candidateIndex,
+        finishReason: candidateObj?.finishReason,
+        safetyRatings: candidateObj?.safetyRatings,
+        contentRole: contentObj?.role,
+        partCount: parts.length,
+        parts: parts.map((part, partIndex) => {
+          const partObj = asRecord(part);
+          const inlineData = partObj ? asRecord(partObj.inlineData) : null;
+          const text = partObj && typeof partObj.text === "string" ? partObj.text : "";
+          const data = inlineData && typeof inlineData.data === "string" ? inlineData.data : "";
+          return {
+            index: partIndex,
+            hasText: Boolean(text),
+            textPreview: text ? text.slice(0, 180) : undefined,
+            inlineMimeType:
+              inlineData && typeof inlineData.mimeType === "string" ? inlineData.mimeType : undefined,
+            inlineDataChars: data ? data.length : 0
+          };
+        })
+      };
+    })
+  };
+}
+
 function extensionFromMime(mimeType: string | undefined, fallback: string): string {
   const mime = (mimeType || "").toLowerCase();
 
@@ -1171,6 +1209,7 @@ async function synthesizeSpeechAudio(args: {
 
   if (provider === "gemini") {
     const client = await getGeminiClient(args.userId);
+    const voiceName = toGeminiVoiceName(args.voice);
 
     const prompt =
       `Read this script naturally at about ${speed.toFixed(2)}x speed. ` +
@@ -1190,7 +1229,7 @@ async function synthesizeSpeechAudio(args: {
               speechConfig: {
                 voiceConfig: {
                   prebuiltVoiceConfig: {
-                    voiceName: toGeminiVoiceName(args.voice)
+                    voiceName
                   }
                 }
               }
@@ -1199,14 +1238,43 @@ async function synthesizeSpeechAudio(args: {
       });
 
     let response;
+    let requestedResponseMimeType: string | undefined = args.preferredMimeType || "audio/mp3";
     try {
-      response = await makeRequest(args.preferredMimeType || "audio/mp3");
-    } catch {
+      response = await makeRequest(requestedResponseMimeType);
+    } catch (error) {
+      console.warn("[gemini-tts] request failed with responseMimeType; retrying without it", {
+        model: ttsModel,
+        voiceName,
+        responseMimeType: requestedResponseMimeType,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      requestedResponseMimeType = undefined;
       response = await makeRequest(undefined);
     }
 
-    const inline = extractInlineData(response, "audio/");
+    let inline = extractInlineData(response, "audio/");
+    if (!inline && requestedResponseMimeType) {
+      console.warn("[gemini-tts] no audio inlineData with responseMimeType; retrying without it", {
+        model: ttsModel,
+        voiceName,
+        responseMimeType: requestedResponseMimeType,
+        response: summarizeGeminiResponseForLog(response)
+      });
+      requestedResponseMimeType = undefined;
+      response = await makeRequest(undefined);
+      inline = extractInlineData(response, "audio/");
+    }
+
     if (!inline) {
+      console.error("[gemini-tts] Gemini did not return audio bytes", {
+        model: ttsModel,
+        voiceName,
+        responseMimeType: requestedResponseMimeType || null,
+        speed,
+        inputChars: args.input.length,
+        promptChars: prompt.length,
+        response: summarizeGeminiResponseForLog(response)
+      });
       throw new Error("Gemini did not return audio bytes.");
     }
 

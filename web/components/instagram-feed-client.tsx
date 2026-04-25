@@ -162,12 +162,31 @@ function uid(): string {
   return `ig_${Math.random().toString(36).slice(2)}${Date.now()}`;
 }
 
+function normalizeTemplateKey(value: string): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
 function materialize(text: string, row: Record<string, string>): string {
-  let output = String(text || "");
-  for (const [key, value] of Object.entries(row || {})) {
-    output = output.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), String(value || ""));
-  }
-  return output;
+  const source = String(text || "");
+  const keys = Object.keys(row || {});
+  return source.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (fullToken, tokenRaw) => {
+    const token = String(tokenRaw || "").trim();
+    if (!token) return fullToken;
+    if (Object.prototype.hasOwnProperty.call(row, token)) {
+      return String(row[token] ?? "");
+    }
+    const lower = token.toLowerCase();
+    const caseMatched = keys.find((key) => key.toLowerCase() === lower);
+    if (caseMatched) {
+      return String(row[caseMatched] ?? "");
+    }
+    const normalized = normalizeTemplateKey(token);
+    const normalizedMatched = keys.find((key) => normalizeTemplateKey(key) === normalized);
+    return normalizedMatched ? String(row[normalizedMatched] ?? "") : fullToken;
+  });
 }
 
 function getColumnValue(row: Record<string, string>, column: string): string {
@@ -862,6 +881,7 @@ export function InstagramFeedClient(): React.JSX.Element {
           const pages = template.pages.map((page) => ({
             ...page,
             backgroundImageUrl: materialize(String(page.backgroundImageUrl || ""), payload),
+            audioPrompt: materialize(String(page.audioPrompt || ""), payload),
             elements: page.elements.map((element) =>
               element.type === "text"
                 ? { ...element, text: materialize(element.text, payload) }
@@ -1168,6 +1188,7 @@ export function InstagramFeedClient(): React.JSX.Element {
       });
 
       if (pageOutputKind(page) === "video") {
+        const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), sampleData).trim();
         const response = await fetch("/api/instagram/render-page-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1175,8 +1196,8 @@ export function InstagramFeedClient(): React.JSX.Element {
             templateName: selectedItem.templateName,
             pageName: page.name,
             imageDataUrl,
-            useAudio: Boolean(page.audioEnabled && String(page.audioPrompt || "").trim()),
-            audioPrompt: String(page.audioPrompt || "").trim() || undefined,
+            useAudio: Boolean(page.audioEnabled && resolvedAudioPrompt),
+            audioPrompt: resolvedAudioPrompt || undefined,
             ttsProvider:
               page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
             sampleData,

@@ -92,6 +92,13 @@ function parseDataUrl(input: string): DataUrlPayload {
   return { mime, body };
 }
 
+function normalizeTemplateKey(value: string): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
 function resolveTemplateVariables(rawText: string, sampleData: Record<string, string> = {}): string {
   const source = String(rawText || "");
   const keys = Object.keys(sampleData || {});
@@ -105,6 +112,11 @@ function resolveTemplateVariables(rawText: string, sampleData: Record<string, st
     const matchedKey = keys.find((key) => key.toLowerCase() === lower);
     if (matchedKey) {
       return String(sampleData[matchedKey] ?? "");
+    }
+    const normalized = normalizeTemplateKey(token);
+    const normalizedMatchedKey = keys.find((key) => normalizeTemplateKey(key) === normalized);
+    if (normalizedMatchedKey) {
+      return String(sampleData[normalizedMatchedKey] ?? "");
     }
     return full;
   });

@@ -163,11 +163,23 @@ function rowExpressionKey(row: InstagramSheetRow): string {
 }
 
 function materialize(text: string, row: Record<string, string>): string {
-  let out = String(text || "");
-  for (const [key, value] of Object.entries(row || {})) {
-    out = out.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "gi"), String(value || ""));
-  }
-  return out;
+  const source = String(text || "");
+  const keys = Object.keys(row || {});
+  return source.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (fullToken, tokenRaw) => {
+    const token = String(tokenRaw || "").trim();
+    if (!token) return fullToken;
+    if (Object.prototype.hasOwnProperty.call(row, token)) {
+      return String(row[token] ?? "");
+    }
+    const lower = token.toLowerCase();
+    const matchedKey = keys.find((key) => key.toLowerCase() === lower);
+    if (matchedKey) {
+      return String(row[matchedKey] ?? "");
+    }
+    const normalized = lower.replace(/[\s_-]+/g, "");
+    const normalizedMatchedKey = keys.find((key) => key.toLowerCase().replace(/[\s_-]+/g, "") === normalized);
+    return normalizedMatchedKey ? String(row[normalizedMatchedKey] ?? "") : fullToken;
+  });
 }
 
 function parseKeywordList(raw: string): string[] {

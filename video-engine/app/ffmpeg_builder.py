@@ -87,7 +87,7 @@ def _resolve_sfx_path(output_dir: Path) -> Path | None:
         generate_command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=False,
         check=False,
     )
     if completed.returncode != 0:
@@ -110,13 +110,13 @@ def probe_audio_duration(audio_path: Path) -> float:
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=False,
         check=False,
     )
     if completed.returncode != 0:
         return 30.0
     try:
-        return max(1.0, float(_safe_strip(completed.stdout)))
+        return max(1.0, float(_decode_output(completed.stdout)))
     except ValueError:
         return 30.0
 
@@ -138,12 +138,12 @@ def probe_video_dimensions(video_path: Path) -> tuple[int, int] | None:
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=False,
         check=False,
     )
     if completed.returncode != 0:
         return None
-    raw = _safe_strip(completed.stdout)
+    raw = _decode_output(completed.stdout)
     if "x" not in raw:
         return None
     try:
