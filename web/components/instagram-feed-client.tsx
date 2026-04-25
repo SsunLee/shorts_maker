@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
@@ -11,7 +11,8 @@ import {
   Download,
   ExternalLink,
   RefreshCw,
-  Upload
+  Upload,
+  Volume2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,10 +28,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  renderInstagramPageToPngDataUrl,
-  resolveInstagramTemplateVariables
-} from "@/lib/instagram-page-renderer";
+import { renderInstagramPageToPngDataUrl } from "@/lib/instagram-page-renderer";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
 import {
   INSTAGRAM_FEED_DRAFT_KEY,
@@ -432,6 +430,11 @@ export function InstagramFeedClient(): React.JSX.Element {
   const [downloading, setDownloading] = useState(false);
   const [uploadStageMessage, setUploadStageMessage] = useState<string>();
   const [uploadResult, setUploadResult] = useState<UploadResponse>();
+  const [audioPreviewPageId, setAudioPreviewPageId] = useState<string>();
+  const [audioPreviewUrl, setAudioPreviewUrl] = useState<string>();
+  const [audioPreviewLoadingPageId, setAudioPreviewLoadingPageId] = useState<string>();
+  const [audioPreviewError, setAudioPreviewError] = useState<string>();
+  const audioPreviewObjectUrlRef = useRef<string | undefined>(undefined);
   const [draggingPageId, setDraggingPageId] = useState<string>();
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
@@ -585,6 +588,10 @@ export function InstagramFeedClient(): React.JSX.Element {
     const missing = selectedItem.pages.filter((page) => !order.includes(page.id));
     return [...ordered, ...missing];
   }, [orderedPageIdsByItem, selectedItem]);
+  const selectedSampleData = useMemo(
+    () => (selectedItem ? buildSampleDataFromFeedItem(selectedItem, sheetRows) : {}),
+    [selectedItem, sheetRows]
+  );
   const selectedMediaDialogPage = useMemo(
     () => orderedPages.find((page) => page.id === mediaDialogPageId),
     [orderedPages, mediaDialogPageId]
@@ -633,17 +640,29 @@ export function InstagramFeedClient(): React.JSX.Element {
       orderedPages.map((page, index) => {
         const mediaUrl = pagePrimaryMediaUrl(page);
         const kind = pageOutputKind(page);
-        const resolvedAudioPrompt = resolveInstagramTemplateVariables(String(page.audioPrompt || ""), {}).trim();
+        const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), selectedSampleData).trim();
         const requiresAudioPrompt = Boolean(page.audioEnabled) && !resolvedAudioPrompt;
+        const hasUnresolvedAudioToken = Boolean(page.audioEnabled && /\{\{[^}]+\}\}/.test(resolvedAudioPrompt));
         return {
           pageId: page.id,
           index,
           mediaUrl,
           mediaKind: kind,
-          ready: !requiresAudioPrompt
+          resolvedAudioPrompt,
+          hasUnresolvedAudioToken,
+          ready: !requiresAudioPrompt && !hasUnresolvedAudioToken
         };
       }),
-    [orderedPages]
+    [orderedPages, selectedSampleData]
+  );
+
+  useEffect(
+    () => () => {
+      if (audioPreviewObjectUrlRef.current) {
+        URL.revokeObjectURL(audioPreviewObjectUrlRef.current);
+      }
+    },
+    []
   );
 
   useEffect(() => {
@@ -1152,6 +1171,56 @@ export function InstagramFeedClient(): React.JSX.Element {
     }
   }
 
+  async function previewPageAudio(page: InstagramFeedPage): Promise<void> {
+    const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), selectedSampleData).trim();
+    setAudioPreviewError(undefined);
+    setError(undefined);
+
+    if (!page.audioEnabled) {
+      setAudioPreviewError("오디오가 켜진 비디오 페이지에서만 미리듣기할 수 있습니다.");
+      return;
+    }
+    if (!resolvedAudioPrompt) {
+      setAudioPreviewError(`${page.name} 오디오 스크립트가 비어 있습니다.`);
+      return;
+    }
+    if (/\{\{[^}]+\}\}/.test(resolvedAudioPrompt)) {
+      setAudioPreviewError(`${page.name} 오디오 스크립트에 치환되지 않은 변수가 남아 있습니다: ${resolvedAudioPrompt}`);
+      return;
+    }
+
+    setAudioPreviewLoadingPageId(page.id);
+    try {
+      const response = await fetch("/api/voice-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          voice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
+          speed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
+          provider: page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
+          text: resolvedAudioPrompt.slice(0, 320)
+        })
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "음성 미리듣기에 실패했습니다.");
+      }
+      const blob = await response.blob();
+      const playableBlob = blob.type && blob.type.startsWith("audio/") ? blob : new Blob([blob], { type: "audio/wav" });
+      const nextUrl = URL.createObjectURL(playableBlob);
+      if (audioPreviewObjectUrlRef.current) {
+        URL.revokeObjectURL(audioPreviewObjectUrlRef.current);
+      }
+      audioPreviewObjectUrlRef.current = nextUrl;
+      setAudioPreviewPageId(page.id);
+      setAudioPreviewUrl(nextUrl);
+    } catch (previewError) {
+      setAudioPreviewError(previewError instanceof Error ? previewError.message : "음성 미리듣기에 실패했습니다.");
+    } finally {
+      setAudioPreviewLoadingPageId(undefined);
+    }
+  }
+
   async function buildRenderedMediaAssets(): Promise<
     Array<{
       pageId: string;
@@ -1252,6 +1321,13 @@ export function InstagramFeedClient(): React.JSX.Element {
     setUploadStageMessage("페이지 렌더링 준비 중...");
     setUploadResult(undefined);
     try {
+      const blockedPlan = mediaPlan.filter((item) => !item.ready);
+      if (blockedPlan.length > 0) {
+        const names = blockedPlan
+          .map((item) => orderedPages[item.index]?.name || `Page ${item.index + 1}`)
+          .join(", ");
+        throw new Error(`오디오 스크립트 확인이 필요한 페이지가 있습니다: ${names}`);
+      }
       const renderedAssets = await buildRenderedMediaAssets();
       if (renderedAssets.length === 0) {
         throw new Error("업로드에 사용할 렌더 결과가 없습니다.");
@@ -1651,6 +1727,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                           setError(undefined);
                           setSuccess(undefined);
                           setUploadStageMessage(undefined);
+                          setAudioPreviewError(undefined);
                           setUploadConfirmOpen(true);
                         }}
                         disabled={uploading || orderedPages.length === 0}
@@ -1735,17 +1812,45 @@ export function InstagramFeedClient(): React.JSX.Element {
                           {mediaPlan.map((item) => (
                             <div
                               key={`upload-plan-${item.pageId}`}
-                              className="flex items-center justify-between rounded border px-2 py-1"
+                              className="rounded border px-2 py-2"
                             >
-                              <span>
-                                {item.index + 1}. {orderedPages[item.index]?.name}
-                              </span>
-                              <span className={item.ready ? "text-emerald-500" : "text-amber-500"}>
-                                {item.ready ? `준비됨 (${item.mediaKind})` : "오디오 스크립트 확인 필요"}
-                              </span>
+                              <div className="flex items-center justify-between gap-2">
+                                <span>
+                                  {item.index + 1}. {orderedPages[item.index]?.name}
+                                </span>
+                                <span className={item.ready ? "text-emerald-500" : "text-amber-500"}>
+                                  {item.ready ? `준비됨 (${item.mediaKind})` : "오디오 스크립트 확인 필요"}
+                                </span>
+                              </div>
+                              {item.mediaKind === "video" ? (
+                                <div className="mt-2 space-y-2">
+                                  <p className="max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-2 text-xs">
+                                    {item.resolvedAudioPrompt || "(치환 후 오디오 스크립트 없음)"}
+                                  </p>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => {
+                                        const page = orderedPages[item.index];
+                                        if (page) void previewPageAudio(page);
+                                      }}
+                                      disabled={audioPreviewLoadingPageId === item.pageId || !item.ready}
+                                    >
+                                      <Volume2 className="mr-1 h-3.5 w-3.5" />
+                                      {audioPreviewLoadingPageId === item.pageId ? "생성 중..." : "음성 미리듣기"}
+                                    </Button>
+                                    {audioPreviewPageId === item.pageId && audioPreviewUrl ? (
+                                      <audio src={audioPreviewUrl} controls className="h-8 w-full max-w-sm" />
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ) : null}
                             </div>
                           ))}
                         </div>
+                        {audioPreviewError ? <p className="mt-2 text-xs text-destructive">{audioPreviewError}</p> : null}
                       </div>
                       {uploadStageMessage ? (
                         <div className="rounded-lg border p-3">
