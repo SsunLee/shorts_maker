@@ -144,5 +144,6 @@ export interface InstagramGeneratedFeedItem {
   subject: string;
   keyword: string;
   generatedAt: string;
+  sampleData?: Record<string, string>;
   pages: InstagramFeedPage[];
 }

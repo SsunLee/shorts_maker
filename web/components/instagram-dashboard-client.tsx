@@ -756,6 +756,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
             subject: row.subject,
             keyword: row.keyword,
             generatedAt: new Date().toISOString(),
+            sampleData: payload,
             pages
           });
         }

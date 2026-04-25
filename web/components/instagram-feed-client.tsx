@@ -399,14 +399,16 @@ function buildSampleDataFromFeedItem(
   rows: SheetRowsResponse["rows"]
 ): Record<string, string> {
   const matchedRow = rows?.find((row) => String(row.id) === String(item.rowId));
+  const snapshot = item.sampleData || {};
   return {
+    ...snapshot,
     ...(matchedRow?.raw || {}),
     id: String(matchedRow?.id || item.rowId || ""),
     status: String(matchedRow?.status || "준비"),
-    keyword: String(matchedRow?.keyword || item.keyword || ""),
-    subject: String(matchedRow?.subject || item.subject || ""),
-    description: String(matchedRow?.description || ""),
-    narration: String(matchedRow?.narration || "")
+    keyword: String(matchedRow?.keyword || item.keyword || snapshot.keyword || ""),
+    subject: String(matchedRow?.subject || item.subject || snapshot.subject || ""),
+    description: String(matchedRow?.description || snapshot.description || ""),
+    narration: String(matchedRow?.narration || snapshot.narration || "")
   };
 }
 
@@ -902,6 +904,7 @@ export function InstagramFeedClient(): React.JSX.Element {
             subject: row.subject,
             keyword: row.keyword,
             generatedAt: new Date().toISOString(),
+            sampleData: payload,
             pages
           });
         }
