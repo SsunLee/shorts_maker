@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   ChevronDown,
+  ChevronRight,
   Clapperboard,
   Film,
   Home,
@@ -15,6 +16,7 @@ import {
   LogOut,
   Moon,
   Newspaper,
+  MoreHorizontal,
   MessageCircle,
   PanelLeftClose,
   PanelLeftOpen,
@@ -51,6 +53,8 @@ type NavSection = {
   links: NavLinkItem[];
 };
 
+type MobileTabId = "youtube" | "instagram" | "settings" | "more";
+
 const NAV_SECTIONS: NavSection[] = [
   {
     id: "youtube",
@@ -83,8 +87,11 @@ export function AppNav(): React.JSX.Element {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [isCompactViewport, setIsCompactViewport] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
   const [navSearch, setNavSearch] = useState("");
+  const [mobileTab, setMobileTab] = useState<MobileTabId>("youtube");
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
   const [theme, setTheme] = useState<AppTheme>("light");
   const [accountLabel, setAccountLabel] = useState("계정");
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
@@ -111,6 +118,15 @@ export function AppNav(): React.JSX.Element {
     const applyCompact = () => setIsCompactViewport(media.matches);
     applyCompact();
     const listener = () => applyCompact();
+    media.addEventListener("change", listener);
+    return () => media.removeEventListener("change", listener);
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const applyMobile = () => setIsMobileViewport(media.matches);
+    applyMobile();
+    const listener = () => applyMobile();
     media.addEventListener("change", listener);
     return () => media.removeEventListener("change", listener);
   }, []);
@@ -221,6 +237,16 @@ export function AppNav(): React.JSX.Element {
     };
   }, [pathname]);
 
+  const activeTabFromPath = useMemo<MobileTabId>(() => {
+    if (pathname.startsWith("/instagram")) {
+      return "instagram";
+    }
+    if (pathname.startsWith("/settings") || pathname.startsWith("/admin")) {
+      return "settings";
+    }
+    return "youtube";
+  }, [pathname]);
+
   useEffect(() => {
     setExpandedSections((current) => {
       const next: Record<string, boolean> = {};
@@ -244,6 +270,16 @@ export function AppNav(): React.JSX.Element {
       return changed ? next : current;
     });
   }, [sections, isLinkActive, pathname]);
+
+  useEffect(() => {
+    setMobileTab((current) => (current === "more" ? current : activeTabFromPath));
+  }, [activeTabFromPath]);
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      setMobilePanelOpen(false);
+    }
+  }, [isMobileViewport]);
 
   function toggleCollapsed(): void {
     setCollapsed((prev) => {
@@ -272,6 +308,165 @@ export function AppNav(): React.JSX.Element {
 
   if (hideForAuthRoute) {
     return <></>;
+  }
+
+  const youtubeSection = sections.find((section) => section.id === "youtube");
+  const instagramSection = sections.find((section) => section.id === "instagram");
+  const settingsSection = sections.find((section) => section.id === "global");
+
+  const mobileTabItems: Array<{
+    id: MobileTabId;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }> = [
+    { id: "youtube", label: "유튜브", icon: Film },
+    { id: "instagram", label: "인스타그램", icon: Instagram },
+    { id: "settings", label: "설정", icon: Settings },
+    { id: "more", label: "더보기", icon: MoreHorizontal }
+  ];
+
+  const mobilePanelTitle =
+    mobileTab === "youtube"
+      ? "유튜브 메뉴"
+      : mobileTab === "instagram"
+        ? "인스타그램 메뉴"
+        : mobileTab === "settings"
+          ? "설정 메뉴"
+          : "전체 메뉴";
+
+  const mobilePanelLinks =
+    mobileTab === "youtube"
+      ? youtubeSection?.links || []
+      : mobileTab === "instagram"
+        ? instagramSection?.links || []
+        : mobileTab === "settings"
+          ? settingsSection?.links || []
+          : [];
+
+  function handleMobileTabSelect(nextTab: MobileTabId): void {
+    if (mobileTab === nextTab) {
+      setMobilePanelOpen((prev) => !prev);
+      return;
+    }
+    setMobileTab(nextTab);
+    setMobilePanelOpen(true);
+  }
+
+  if (isMobileViewport) {
+    return (
+      <>
+        {mobilePanelOpen ? (
+          <div className="fixed inset-x-0 bottom-[74px] z-40 max-h-[58vh] overflow-y-auto border-t border-border/70 bg-card/95 px-4 pb-4 pt-3 backdrop-blur-sm">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold">{mobilePanelTitle}</p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setMobilePanelOpen(false)}
+              >
+                닫기
+              </Button>
+            </div>
+            {mobileTab === "more" ? (
+              <div className="space-y-3">
+                {sections.map((section) => (
+                  <div key={section.id} className="space-y-1 rounded-xl border border-border/60 p-2">
+                    <p className="px-1 text-xs font-semibold text-muted-foreground">{section.label}</p>
+                    {section.links.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          className={cn(
+                            "flex items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors",
+                            isLinkActive(item) ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+                          )}
+                          onClick={() => setMobilePanelOpen(false)}
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            <Icon className="h-4 w-4" />
+                            <span className="truncate">{item.label}</span>
+                          </span>
+                          <ChevronRight className="h-4 w-4 opacity-70" />
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ))}
+                <div className="space-y-2 rounded-xl border border-border/60 p-2">
+                  <p className="px-1 text-xs font-semibold text-muted-foreground">계정/앱</p>
+                  <div className="rounded-lg border border-border/60 bg-background/60 px-2 py-2 text-xs text-muted-foreground">
+                    {accountLabel} (로그인됨)
+                  </div>
+                  <Button type="button" variant="outline" className="w-full justify-start" onClick={toggleTheme}>
+                    {theme === "dark" ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}
+                    {theme === "dark" ? "Light Mode" : "Dark Mode"}
+                  </Button>
+                  <Button type="button" variant="outline" className="w-full justify-start" onClick={() => void onLogout()}>
+                    <LogOut className="mr-2 h-4 w-4" />
+                    로그아웃
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {mobilePanelLinks.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className={cn(
+                        "flex items-center justify-between rounded-lg px-2 py-2 text-sm transition-colors",
+                        isLinkActive(item) ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+                      )}
+                      onClick={() => setMobilePanelOpen(false)}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Icon className="h-4 w-4" />
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      <ChevronRight className="h-4 w-4 opacity-70" />
+                    </Link>
+                  );
+                })}
+                {mobilePanelLinks.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border/70 px-3 py-4 text-xs text-muted-foreground">
+                    표시할 메뉴가 없습니다.
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        <div className="fixed inset-x-0 bottom-0 z-50 border-t border-border/70 bg-card/95 px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-sm">
+          <div className="grid grid-cols-4 gap-1">
+            {mobileTabItems.map((item) => {
+              const Icon = item.icon;
+              const active = mobileTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={cn(
+                    "inline-flex flex-col items-center justify-center rounded-lg px-1 py-2 text-[11px] font-medium transition-colors",
+                    active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"
+                  )}
+                  onClick={() => handleMobileTabSelect(item.id)}
+                >
+                  <Icon className="mb-1 h-4 w-4" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </>
+    );
   }
 
   return (

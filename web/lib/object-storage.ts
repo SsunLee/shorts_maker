@@ -54,6 +54,39 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function resolveRemoteFetchTimeoutMs(): number {
+  const parsed = Number.parseInt(
+    String(process.env.REMOTE_ASSET_FETCH_TIMEOUT_MS || "45000"),
+    10
+  );
+  if (!Number.isFinite(parsed)) {
+    return 45_000;
+  }
+  return Math.max(5_000, Math.min(180_000, parsed));
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init?: RequestInit & { timeoutMs?: number }
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1, Number(init?.timeoutMs || resolveRemoteFetchTimeoutMs()));
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Remote fetch timed out after ${timeoutMs}ms: ${url}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function isMissingS3CredentialError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error || "");
   const normalized = message.toLowerCase();
@@ -408,7 +441,7 @@ export async function storeGeneratedAssetFromRemote(args: {
   cacheControl?: string;
   userId?: string;
 }): Promise<StorageResult> {
-  const response = await fetch(args.sourceUrl);
+  const response = await fetchWithTimeout(args.sourceUrl, { timeoutMs: resolveRemoteFetchTimeoutMs() });
   if (!response.ok) {
     throw new Error(`Unable to download remote asset: ${args.sourceUrl}`);
   }
@@ -449,22 +482,36 @@ export async function mirrorRenderedVideoToStorage(args: {
   const retryableStatuses = new Set([404, 408, 425, 429, 500, 502, 503, 504]);
   let response: Response | undefined;
   let lastStatus: number | undefined;
+  let lastErrorMessage: string | undefined;
   const maxAttempts = 8;
+  const fetchTimeoutMs = resolveRemoteFetchTimeoutMs();
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    response = await fetch(sourceUrl, { cache: "no-store" });
-    if (response.ok) {
-      break;
-    }
-    lastStatus = response.status;
-    if (!retryableStatuses.has(response.status) || attempt === maxAttempts) {
-      break;
+    try {
+      response = await fetchWithTimeout(sourceUrl, {
+        cache: "no-store",
+        timeoutMs: fetchTimeoutMs
+      });
+      if (response.ok) {
+        break;
+      }
+      lastStatus = response.status;
+      if (!retryableStatuses.has(response.status) || attempt === maxAttempts) {
+        break;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lastErrorMessage = message;
+      if (attempt === maxAttempts) {
+        break;
+      }
     }
     await sleep(Math.min(2500, attempt * 350));
   }
   if (!response || !response.ok) {
     throw new Error(
       `Unable to download rendered video from ${sourceUrl}` +
-        (lastStatus ? ` (HTTP ${lastStatus})` : "")
+        (lastStatus ? ` (HTTP ${lastStatus})` : "") +
+        (lastErrorMessage ? ` (${lastErrorMessage})` : "")
     );
   }
   const body = Buffer.from(await response.arrayBuffer());

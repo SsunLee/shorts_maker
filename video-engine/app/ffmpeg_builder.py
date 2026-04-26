@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 import math
@@ -12,6 +14,19 @@ import unicodedata
 
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
+
+
+def _resolve_cmd_timeout_sec(env_key: str, default_sec: int) -> int:
+    raw = str(os.getenv(env_key, str(default_sec)) or "").strip()
+    try:
+        parsed = int(float(raw))
+    except (TypeError, ValueError):
+        parsed = default_sec
+    return max(10, min(60 * 60, parsed))
+
+
+FFMPEG_CMD_TIMEOUT_SEC = _resolve_cmd_timeout_sec("FFMPEG_CMD_TIMEOUT_SEC", 12 * 60)
+FFPROBE_CMD_TIMEOUT_SEC = _resolve_cmd_timeout_sec("FFPROBE_CMD_TIMEOUT_SEC", 60)
 
 
 def _safe_strip(value: Any) -> str:
@@ -40,21 +55,67 @@ def _decode_output(value: Any) -> str:
     return str(value).strip()
 
 
-def run_cmd(command: list[str]) -> None:
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,
-        check=False,
+def _tail_text(value: str, max_chars: int = 4000) -> str:
+    text = (value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
+
+
+def _append_ffmpeg_log(log_path: Path | None, message: str) -> None:
+    if log_path is None:
+        return
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}Z] {message}\n")
+    except OSError:
+        return
+
+
+def run_cmd(command: list[str], log_path: Path | None = None, label: str = "ffmpeg") -> None:
+    started = time.monotonic()
+    command_text = _to_ffmpeg_command_string(command)
+    _append_ffmpeg_log(
+        log_path,
+        f"[{label}] START timeout={FFMPEG_CMD_TIMEOUT_SEC}s cmd={command_text}",
     )
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            check=False,
+            timeout=FFMPEG_CMD_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.monotonic() - started
+        stderr_text = _tail_text(_decode_output(exc.stderr))
+        stdout_text = _tail_text(_decode_output(exc.output))
+        output_text = stderr_text or stdout_text or "(no output captured)"
+        _append_ffmpeg_log(
+            log_path,
+            f"[{label}] TIMEOUT elapsed={elapsed:.2f}s cmd={command_text}\n{output_text}",
+        )
+        raise RuntimeError(
+            f"Command timed out after {FFMPEG_CMD_TIMEOUT_SEC}s: {' '.join(command)}"
+        ) from exc
     if completed.returncode != 0:
+        elapsed = time.monotonic() - started
         stderr_text = _decode_output(completed.stderr)
         stdout_text = _decode_output(completed.stdout)
         combined = stderr_text or stdout_text or "(ffmpeg returned non-zero with no output)"
+        _append_ffmpeg_log(
+            log_path,
+            f"[{label}] FAIL rc={completed.returncode} elapsed={elapsed:.2f}s cmd={command_text}\n{_tail_text(combined)}",
+        )
         raise RuntimeError(
             f"Command failed: {' '.join(command)}\n{combined}"
         )
+    elapsed = time.monotonic() - started
+    _append_ffmpeg_log(log_path, f"[{label}] OK elapsed={elapsed:.2f}s")
 
 
 def _to_ffmpeg_command_string(command: list[str]) -> str:
@@ -89,6 +150,7 @@ def _resolve_sfx_path(output_dir: Path) -> Path | None:
         stderr=subprocess.PIPE,
         text=False,
         check=False,
+        timeout=FFMPEG_CMD_TIMEOUT_SEC,
     )
     if completed.returncode != 0:
         return None
@@ -106,13 +168,17 @@ def probe_audio_duration(audio_path: Path) -> float:
         "default=noprint_wrappers=1:nokey=1",
         str(audio_path),
     ]
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            check=False,
+            timeout=FFPROBE_CMD_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return 30.0
     if completed.returncode != 0:
         return 30.0
     try:
@@ -134,13 +200,17 @@ def probe_video_dimensions(video_path: Path) -> tuple[int, int] | None:
         "csv=s=x:p=0",
         str(video_path),
     ]
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            check=False,
+            timeout=FFPROBE_CMD_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if completed.returncode != 0:
         return None
     raw = _decode_output(completed.stdout)
@@ -1122,6 +1192,15 @@ def render_short_video(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     commands: list[str] = []
+    ffmpeg_log_path = output_dir / "ffmpeg.log"
+    _append_ffmpeg_log(
+        ffmpeg_log_path,
+        (
+            "Render start "
+            f"images={len(image_paths)} use_sfx={use_sfx} "
+            f"target_duration_sec={target_duration_sec}"
+        ),
+    )
 
     audio_duration = probe_audio_duration(tts_path)
     if target_duration_sec is not None:
@@ -1195,7 +1274,7 @@ def render_short_video(
             "yuv420p",
             str(segment_path),
         ]
-        run_cmd(command)
+        run_cmd(command, log_path=ffmpeg_log_path, label=f"segment-{idx}")
         commands.append(_to_ffmpeg_command_string(command))
         segments.append(segment_path)
 
@@ -1310,7 +1389,7 @@ def render_short_video(
             str(final_output),
         ])
 
-    run_cmd(final_command)
+    run_cmd(final_command, log_path=ffmpeg_log_path, label="final-merge")
     commands.append(_to_ffmpeg_command_string(final_command))
     dimensions = probe_video_dimensions(final_output)
     if dimensions:
