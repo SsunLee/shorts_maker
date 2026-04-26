@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Volume2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +20,8 @@ interface UploadModalProps {
   topic?: string;
   narration?: string;
   videoUrl?: string;
+  voice?: string;
+  voiceSpeed?: number;
   tags: string[];
   onUpload: (data: {
     title: string;
@@ -46,12 +49,18 @@ export function UploadModal({
   topic,
   narration,
   videoUrl,
+  voice,
+  voiceSpeed,
   tags,
   onUpload
 }: UploadModalProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string>();
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string>();
+  const previewAudioRef = useRef<HTMLAudioElement>(null);
+  const previewAudioUrlRef = useRef<string | undefined>(undefined);
   const defaultDescription = useMemo(
     () => buildUploadDescription(topic, narration, tags),
     [topic, narration, tags]
@@ -60,18 +69,33 @@ export function UploadModal({
   const [localTitle, setLocalTitle] = useState(title);
   const [description, setDescription] = useState(defaultDescription);
   const [tagText, setTagText] = useState(defaultTags);
+  const previewText = useMemo(() => {
+    const source = (narration || topic || title || "").replace(/\s+/g, " ").trim();
+    return source.slice(0, 320) || "This is a voice preview for your short-form content.";
+  }, [narration, topic, title]);
 
   const disabled = !videoUrl || uploading;
+  const previewDisabled = previewLoading || uploading || !previewText;
 
   useEffect(() => {
     if (!open) {
       return;
     }
     setUploadError(undefined);
+    setPreviewError(undefined);
     setLocalTitle(title);
     setDescription(defaultDescription);
     setTagText(defaultTags);
   }, [open, title, defaultDescription, defaultTags]);
+
+  useEffect(() => {
+    return () => {
+      if (previewAudioUrlRef.current) {
+        URL.revokeObjectURL(previewAudioUrlRef.current);
+        previewAudioUrlRef.current = undefined;
+      }
+    };
+  }, []);
 
   async function submit(): Promise<void> {
     setUploading(true);
@@ -94,6 +118,49 @@ export function UploadModal({
     }
   }
 
+  async function previewVoice(): Promise<void> {
+    setPreviewLoading(true);
+    setPreviewError(undefined);
+    try {
+      const response = await fetch("/api/voice-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          voice: (voice || "alloy").trim() || "alloy",
+          speed: Number.isFinite(voiceSpeed) ? voiceSpeed : 1,
+          text: previewText
+        })
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "Failed to generate preview audio.");
+      }
+
+      const blob = await response.blob();
+      const playableBlob =
+        blob.type && blob.type.startsWith("audio/")
+          ? blob
+          : new Blob([blob], { type: "audio/wav" });
+      const url = URL.createObjectURL(playableBlob);
+      if (previewAudioUrlRef.current) {
+        URL.revokeObjectURL(previewAudioUrlRef.current);
+      }
+      previewAudioUrlRef.current = url;
+
+      const audio = previewAudioRef.current;
+      if (!audio) {
+        throw new Error("Voice preview player is unavailable.");
+      }
+      audio.src = url;
+      audio.load();
+      await audio.play();
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : "Voice preview failed.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -103,12 +170,31 @@ export function UploadModal({
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Upload to YouTube</DialogTitle>
+          <div className="flex items-center justify-between gap-3">
+            <DialogTitle>Upload to YouTube</DialogTitle>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 shrink-0 p-0"
+              onClick={previewVoice}
+              disabled={previewDisabled}
+              title="Voice preview"
+              aria-label="Voice preview"
+            >
+              {previewLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Volume2 className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
           <DialogDescription>
             Configure metadata and start upload with your saved OAuth credentials.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
+          <audio ref={previewAudioRef} className="hidden" />
           <div className="space-y-2">
             <label htmlFor="upload-title" className="text-sm font-medium">Title</label>
             <Input
@@ -138,6 +224,9 @@ export function UploadModal({
             <p className="text-sm text-destructive">
               {uploadError} {uploadError.includes("credentials") ? "먼저 /settings 에서 YouTube 값을 입력해 주세요." : ""}
             </p>
+          ) : null}
+          {previewError ? (
+            <p className="text-sm text-destructive">{previewError}</p>
           ) : null}
         </div>
         <DialogFooter>

@@ -101,6 +101,21 @@ type GenerateImageResponse = {
   error?: string;
 };
 
+type RenderPageVideoResponse = {
+  outputUrl?: string;
+  audioUrl?: string;
+  error?: string;
+};
+
+type RenderedFeedAsset = {
+  pageId: string;
+  pageName: string;
+  index: number;
+  mediaKind: "image" | "video";
+  mediaUrl: string;
+  audioUrl?: string;
+};
+
 const INSTAGRAM_MEDIA_PROXY_PATH = "/api/instagram/media-proxy";
 
 function isRenderableMediaUrl(url: string): boolean {
@@ -435,6 +450,9 @@ export function InstagramFeedClient(): React.JSX.Element {
   const [audioPreviewLoadingPageId, setAudioPreviewLoadingPageId] = useState<string>();
   const [audioPreviewError, setAudioPreviewError] = useState<string>();
   const audioPreviewObjectUrlRef = useRef<string | undefined>(undefined);
+  const [renderedVideoCache, setRenderedVideoCache] = useState<
+    Record<string, { fingerprint: string; asset: RenderedFeedAsset }>
+  >({});
   const [draggingPageId, setDraggingPageId] = useState<string>();
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
@@ -1171,6 +1189,84 @@ export function InstagramFeedClient(): React.JSX.Element {
     }
   }
 
+  function buildPageRenderFingerprint(page: InstagramFeedPage, index: number): string {
+    const matchedTemplate = templates.find((template) => template.id === selectedItem?.templateId);
+    const canvasWidth = normalizeCanvasWidth(Number(matchedTemplate?.canvasWidth || 1080));
+    const canvasHeight = normalizeCanvasHeight(Number(matchedTemplate?.canvasHeight || 1350));
+    return JSON.stringify({
+      itemId: selectedItem?.id || "",
+      templateId: selectedItem?.templateId || "",
+      page,
+      index,
+      sampleData: selectedSampleData,
+      canvasWidth,
+      canvasHeight
+    });
+  }
+
+  async function renderPageVideoAsset(page: InstagramFeedPage, index: number): Promise<RenderedFeedAsset> {
+    if (!selectedItem) {
+      throw new Error("업로드할 피드를 선택해 주세요.");
+    }
+
+    const fingerprint = buildPageRenderFingerprint(page, index);
+    const cached = renderedVideoCache[page.id];
+    if (cached?.fingerprint === fingerprint) {
+      return cached.asset;
+    }
+
+    const matchedTemplate = templates.find((template) => template.id === selectedItem.templateId);
+    const canvasWidth = normalizeCanvasWidth(Number(matchedTemplate?.canvasWidth || 1080));
+    const canvasHeight = normalizeCanvasHeight(Number(matchedTemplate?.canvasHeight || 1350));
+    const pageName = sanitizeDownloadName(page.name || `page-${index + 1}`);
+    await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
+
+    const imageDataUrl = await renderInstagramPageToPngDataUrl({
+      page: toFeedPreviewPage(page),
+      sampleData: selectedSampleData,
+      canvasWidth,
+      canvasHeight
+    });
+    const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), selectedSampleData).trim();
+    const response = await fetch("/api/instagram/render-page-video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        templateName: selectedItem.templateName,
+        pageName: page.name,
+        imageDataUrl,
+        useAudio: Boolean(page.audioEnabled && resolvedAudioPrompt),
+        audioPrompt: resolvedAudioPrompt || undefined,
+        ttsProvider:
+          page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
+        sampleData: selectedSampleData,
+        audioVoice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
+        audioSpeed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
+        durationSec: Math.max(1, Number(page.durationSec) || 4),
+        outputWidth: canvasWidth,
+        outputHeight: canvasHeight
+      })
+    });
+    const data = (await response.json()) as RenderPageVideoResponse;
+    if (!response.ok || !data.outputUrl) {
+      throw new Error(data.error || `${page.name} MP4 렌더링에 실패했습니다.`);
+    }
+
+    const asset: RenderedFeedAsset = {
+      pageId: page.id,
+      pageName,
+      index,
+      mediaKind: "video",
+      mediaUrl: data.outputUrl,
+      audioUrl: data.audioUrl
+    };
+    setRenderedVideoCache((prev) => ({
+      ...prev,
+      [page.id]: { fingerprint, asset }
+    }));
+    return asset;
+  }
+
   async function previewPageAudio(page: InstagramFeedPage): Promise<void> {
     const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), selectedSampleData).trim();
     setAudioPreviewError(undefined);
@@ -1191,29 +1287,14 @@ export function InstagramFeedClient(): React.JSX.Element {
 
     setAudioPreviewLoadingPageId(page.id);
     try {
-      const response = await fetch("/api/voice-preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          voice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
-          speed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
-          provider: page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
-          text: resolvedAudioPrompt.slice(0, 320)
-        })
-      });
-      if (!response.ok) {
-        const data = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error || "음성 미리듣기에 실패했습니다.");
-      }
-      const blob = await response.blob();
-      const playableBlob = blob.type && blob.type.startsWith("audio/") ? blob : new Blob([blob], { type: "audio/wav" });
-      const nextUrl = URL.createObjectURL(playableBlob);
       if (audioPreviewObjectUrlRef.current) {
         URL.revokeObjectURL(audioPreviewObjectUrlRef.current);
+        audioPreviewObjectUrlRef.current = undefined;
       }
-      audioPreviewObjectUrlRef.current = nextUrl;
+      const index = orderedPages.findIndex((candidate) => candidate.id === page.id);
+      const asset = await renderPageVideoAsset(page, Math.max(0, index));
       setAudioPreviewPageId(page.id);
-      setAudioPreviewUrl(nextUrl);
+      setAudioPreviewUrl(asset.audioUrl || asset.mediaUrl);
     } catch (previewError) {
       setAudioPreviewError(previewError instanceof Error ? previewError.message : "음성 미리듣기에 실패했습니다.");
     } finally {
@@ -1221,15 +1302,7 @@ export function InstagramFeedClient(): React.JSX.Element {
     }
   }
 
-  async function buildRenderedMediaAssets(): Promise<
-    Array<{
-      pageId: string;
-      pageName: string;
-      index: number;
-      mediaKind: "image" | "video";
-      mediaUrl: string;
-    }>
-  > {
+  async function buildRenderedMediaAssets(): Promise<RenderedFeedAsset[]> {
     if (!selectedItem) {
       return [];
     }
@@ -1240,17 +1313,17 @@ export function InstagramFeedClient(): React.JSX.Element {
     const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows);
     await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
 
-    const renderedAssets: Array<{
-      pageId: string;
-      pageName: string;
-      index: number;
-      mediaKind: "image" | "video";
-      mediaUrl: string;
-    }> = [];
+    const renderedAssets: RenderedFeedAsset[] = [];
 
     for (let index = 0; index < orderedPages.length; index += 1) {
       const page = orderedPages[index];
       const pageName = sanitizeDownloadName(page.name || `page-${index + 1}`);
+
+      if (pageOutputKind(page) === "video") {
+        renderedAssets.push(await renderPageVideoAsset(page, index));
+        continue;
+      }
+
       const previewPage = toFeedPreviewPage(page);
       const imageDataUrl = await renderInstagramPageToPngDataUrl({
         page: previewPage,
@@ -1258,42 +1331,6 @@ export function InstagramFeedClient(): React.JSX.Element {
         canvasWidth,
         canvasHeight
       });
-
-      if (pageOutputKind(page) === "video") {
-        const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), sampleData).trim();
-        const response = await fetch("/api/instagram/render-page-video", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            templateName: selectedItem.templateName,
-            pageName: page.name,
-            imageDataUrl,
-            useAudio: Boolean(page.audioEnabled && resolvedAudioPrompt),
-            audioPrompt: resolvedAudioPrompt || undefined,
-            ttsProvider:
-              page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
-            sampleData,
-            audioVoice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
-            audioSpeed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
-            durationSec: Math.max(1, Number(page.durationSec) || 4),
-            outputWidth: canvasWidth,
-            outputHeight: canvasHeight
-          })
-        });
-        const data = (await response.json()) as { outputUrl?: string; error?: string };
-        if (!response.ok || !data.outputUrl) {
-          throw new Error(data.error || `${page.name} MP4 렌더링에 실패했습니다.`);
-        }
-        renderedAssets.push({
-          pageId: page.id,
-          pageName,
-          index,
-          mediaKind: "video",
-          mediaUrl: data.outputUrl
-        });
-        continue;
-      }
-
       renderedAssets.push({
         pageId: page.id,
         pageName,
@@ -1839,7 +1876,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                                       disabled={audioPreviewLoadingPageId === item.pageId || !item.ready}
                                     >
                                       <Volume2 className="mr-1 h-3.5 w-3.5" />
-                                      {audioPreviewLoadingPageId === item.pageId ? "생성 중..." : "음성 미리듣기"}
+                                      {audioPreviewLoadingPageId === item.pageId ? "렌더링 중..." : "실제 음성 듣기"}
                                     </Button>
                                     {audioPreviewPageId === item.pageId && audioPreviewUrl ? (
                                       <audio src={audioPreviewUrl} controls className="h-8 w-full max-w-sm" />

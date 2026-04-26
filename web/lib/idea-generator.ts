@@ -62,6 +62,93 @@ function stripJsonFence(raw: string): string {
   return withoutStart.replace(/\s*```$/, "").trim();
 }
 
+function extractFirstJsonArray(raw: string): string {
+  const text = String(raw || "");
+  const start = text.indexOf("[");
+  if (start < 0) {
+    return "";
+  }
+  let inString = false;
+  let escaping = false;
+  let depth = 0;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "[") {
+      depth += 1;
+      continue;
+    }
+    if (char !== "]") {
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0) {
+      return text.slice(start, index + 1).trim();
+    }
+  }
+  return "";
+}
+
+function collectJsonArrayCandidates(raw: string): string[] {
+  const trimmed = String(raw || "").trim().replace(/^\uFEFF/, "");
+  if (!trimmed) {
+    return [];
+  }
+  const candidates = new Set<string>();
+  const addCandidate = (value: string) => {
+    const normalized = String(value || "").trim();
+    if (normalized) {
+      candidates.add(normalized);
+    }
+  };
+
+  addCandidate(trimmed);
+  addCandidate(stripJsonFence(trimmed));
+  addCandidate(extractFirstJsonArray(trimmed));
+  addCandidate(extractFirstJsonArray(stripJsonFence(trimmed)));
+
+  const fencedBlocks = trimmed.match(/```(?:json)?\s*[\s\S]*?\s*```/gi) || [];
+  fencedBlocks.forEach((block) => {
+    const stripped = stripJsonFence(block);
+    addCandidate(stripped);
+    addCandidate(extractFirstJsonArray(stripped));
+  });
+
+  return Array.from(candidates);
+}
+
+function parseJsonArray(raw: string): unknown[] {
+  const candidates = collectJsonArrayCandidates(raw);
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return [];
+}
+
 function normalizeField(value: unknown): string {
   return String(value ?? "").trim();
 }
@@ -351,62 +438,48 @@ function parseLatestNewsItemsFromRss(xml: string, limit: number): LatestNewsItem
 }
 
 function safeParseIdeaRows(raw: string): IdeaDraftRow[] {
-  try {
-    const parsed = JSON.parse(stripJsonFence(raw));
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed
-      .map((item) => {
-        if (!item || typeof item !== "object") {
-          return null;
-        }
-        const record = item as Record<string, unknown>;
-        const status = normalizeField((record.Status ?? record.status) || "준비");
-        const keyword = normalizeField(record.Keyword ?? record.keyword);
-        const subject = normalizeField(record.Subject ?? record.subject);
-        const description = normalizeField(record.Description ?? record.description);
-        const narration = normalizeField(record.Narration ?? record.narration);
-        const publish = normalizeField((record.publish ?? record.Publish) || "대기중");
-        if (!keyword || !subject || !description || !narration) {
-          return null;
-        }
-        return {
-          Status: status || "준비",
-          Keyword: keyword,
-          Subject: subject,
-          Description: description,
-          Narration: narration,
-          publish: publish || "대기중"
-        } satisfies IdeaDraftRow;
-      })
-      .filter((item): item is IdeaDraftRow => Boolean(item));
-  } catch {
-    return [];
-  }
+  const parsed = parseJsonArray(raw);
+  return parsed
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      const status = normalizeField((record.Status ?? record.status) || "준비");
+      const keyword = normalizeField(record.Keyword ?? record.keyword);
+      const subject = normalizeField(record.Subject ?? record.subject);
+      const description = normalizeField(record.Description ?? record.description);
+      const narration = normalizeField(record.Narration ?? record.narration);
+      const publish = normalizeField((record.publish ?? record.Publish) || "대기중");
+      if (!keyword || !subject || !description || !narration) {
+        return null;
+      }
+      return {
+        Status: status || "준비",
+        Keyword: keyword,
+        Subject: subject,
+        Description: description,
+        Narration: narration,
+        publish: publish || "대기중"
+      } satisfies IdeaDraftRow;
+    })
+    .filter((item): item is IdeaDraftRow => Boolean(item));
 }
 
 function safeParseKeywordList(raw: string): string[] {
-  try {
-    const parsed = JSON.parse(stripJsonFence(raw));
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    const seen = new Set<string>();
-    return parsed
-      .map((item) => normalizeField(item))
-      .filter((item) => item.length > 0)
-      .filter((item) => {
-        const key = normalizeKeywordKey(item);
-        if (!key || seen.has(key)) {
-          return false;
-        }
-        seen.add(key);
-        return true;
-      });
-  } catch {
-    return [];
-  }
+  const parsed = parseJsonArray(raw);
+  const seen = new Set<string>();
+  return parsed
+    .map((item) => normalizeField(item))
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      const key = normalizeKeywordKey(item);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
 }
 
 function formatExcludedKeywords(values: string[]): string {

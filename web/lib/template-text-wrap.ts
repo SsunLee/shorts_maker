@@ -159,7 +159,7 @@ export function wrapTemplateTextLikeEngine(args: {
   }
 
   const widthPercent = clampNumber(args.widthPercent, 10, 100, 60);
-  const fontSize = clampNumber(args.fontSize, 12, 120, 48);
+  const fontSize = clampNumber(args.fontSize, 12, 250, 48);
   const widthPx = 1080 * (widthPercent / 100);
   const effectiveWidthPx = widthPx * 0.94;
   const wrapMultiplier = textWrapSafetyMultiplier(text);

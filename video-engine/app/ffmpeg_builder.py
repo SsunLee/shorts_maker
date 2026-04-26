@@ -965,7 +965,7 @@ def _build_title_template_filter(
     shadow_opacity = max(0.0, min(1.0, shadow_opacity))
     shadow_color_expr = f"{shadow_color}@{shadow_opacity:.2f}"
     font_thickness = int(template.get("fontThickness") or 0)
-    font_thickness = max(0, min(8, font_thickness))
+    font_thickness = max(0, min(10, font_thickness))
     thickness_expr = (
         f"borderw={font_thickness}:bordercolor={color}:"
         if font_thickness > 0

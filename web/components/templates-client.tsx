@@ -283,6 +283,67 @@ function clampNumber(value: number, min: number, max: number, fallback: number):
   return Math.max(min, Math.min(max, value));
 }
 
+type NumberStepperProps = {
+  value: string;
+  min: number;
+  max: number;
+  step: number;
+  disabled?: boolean;
+  ariaLabel: string;
+  onChange: (value: string) => void;
+};
+
+function NumberStepper({
+  value,
+  min,
+  max,
+  step,
+  disabled = false,
+  ariaLabel,
+  onChange
+}: NumberStepperProps): React.JSX.Element {
+  const parsedValue = Number(value);
+  const safeValue = clampNumber(parsedValue, min, max, min);
+  const updateBy = (delta: number) => {
+    const baseValue = Number.isFinite(parsedValue) ? parsedValue : safeValue;
+    onChange(String(clampNumber(baseValue + delta, min, max, safeValue)));
+  };
+
+  return (
+    <div className="flex h-9 min-w-0 overflow-hidden rounded-md border bg-background">
+      <button
+        type="button"
+        className="flex w-8 shrink-0 items-center justify-center border-r text-sm text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={disabled}
+        aria-label={`${ariaLabel} 줄이기`}
+        onClick={() => updateBy(-step)}
+      >
+        -
+      </button>
+      <Input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        className="h-9 min-w-0 flex-1 rounded-none border-0 px-1 text-center focus-visible:ring-0"
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <button
+        type="button"
+        className="flex w-8 shrink-0 items-center justify-center border-l text-sm text-muted-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={disabled}
+        aria-label={`${ariaLabel} 늘리기`}
+        onClick={() => updateBy(step)}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 function formatPercentString(value: number, digits = 2): string {
   const normalized = Number.isFinite(value) ? value : 0;
   const fixed = normalized.toFixed(digits);
@@ -348,7 +409,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       x: clampNumber(Number(editor.primaryX), 0, 100, 50),
       y: clampNumber(Number(editor.primaryY), 0, 100, 20),
       width: clampNumber(Number(editor.primaryWidth), 20, 100, 80),
-      fontSize: clampNumber(Number(editor.primaryFontSize), 12, 120, 52),
+      fontSize: clampNumber(Number(editor.primaryFontSize), 12, 250, 52),
       color: normalizeHex(editor.primaryColor, "#FFFFFF"),
       backgroundColor,
       backgroundOpacity,
@@ -358,7 +419,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowY: 2,
       shadowColor: "#000000",
       shadowOpacity: 1,
-      fontThickness: clampNumber(Number(editor.primaryFontThickness), 0, 8, 0),
+      fontThickness: clampNumber(Number(editor.primaryFontThickness), 0, 10, 0),
       fontName,
       fontBold: primaryBold,
       fontItalic: primaryItalic
@@ -371,7 +432,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
             x: clampNumber(Number(editor.secondaryX), 0, 100, 50),
             y: clampNumber(Number(editor.secondaryY), 0, 100, 33),
             width: clampNumber(Number(editor.secondaryWidth), 20, 100, 76),
-            fontSize: clampNumber(Number(editor.secondaryFontSize), 12, 120, 40),
+            fontSize: clampNumber(Number(editor.secondaryFontSize), 12, 250, 40),
             color: normalizeHex(editor.secondaryColor, "#FFF200"),
             backgroundColor,
             backgroundOpacity,
@@ -381,7 +442,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
             shadowY: 2,
             shadowColor: "#000000",
             shadowOpacity: 1,
-            fontThickness: clampNumber(Number(editor.secondaryFontThickness), 0, 8, 0),
+            fontThickness: clampNumber(Number(editor.secondaryFontThickness), 0, 10, 0),
             fontName,
             fontBold: secondaryBold,
             fontItalic: secondaryItalic
@@ -397,7 +458,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       x: clampNumber(Number(editor.badgeX), 0, 100, 72),
       y: clampNumber(Number(editor.badgeY), 0, 100, 10),
       width: clampNumber(Number(editor.badgeWidth), 20, 100, 40),
-      fontSize: clampNumber(Number(editor.badgeFontSize), 12, 60, 16),
+      fontSize: clampNumber(Number(editor.badgeFontSize), 12, 250, 16),
       color: normalizeHex(editor.badgeColor, "#FFFFFF"),
       backgroundColor,
       backgroundOpacity,
@@ -407,7 +468,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       shadowY: 1,
       shadowColor: "#000000",
       shadowOpacity: 0.8,
-      fontThickness: clampNumber(Number(editor.badgeFontThickness), 0, 8, 0),
+      fontThickness: clampNumber(Number(editor.badgeFontThickness), 0, 10, 0),
       fontName,
       fontBold: badgeBold,
       fontItalic: badgeItalic
@@ -422,8 +483,8 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       x: clampNumber(Number(layer.x), 0, 100, 50),
       y: clampNumber(Number(layer.y), 0, 100, 50),
       width: clampNumber(Number(layer.width), 20, 100, 60),
-      fontSize: clampNumber(Number(layer.fontSize), 12, 120, 28),
-      fontThickness: clampNumber(Number(layer.fontThickness), 0, 8, 0),
+      fontSize: clampNumber(Number(layer.fontSize), 12, 250, 28),
+      fontThickness: clampNumber(Number(layer.fontThickness), 0, 10, 0),
       color: normalizeHex(layer.color, "#FFFFFF"),
       backgroundColor: normalizeHex(layer.backgroundColor, backgroundColor),
       backgroundOpacity: clampNumber(Number(layer.backgroundOpacity), 0, 1, backgroundOpacity),
@@ -459,7 +520,7 @@ function buildRenderOptionsFromEditor(editor: TemplateEditorState): RenderOption
       titleFontName: fontName,
       titleFontBold: primaryBold,
       titleFontItalic: primaryItalic,
-      titleFontSize: clampNumber(Number(editor.primaryFontSize), 12, 120, 52),
+      titleFontSize: clampNumber(Number(editor.primaryFontSize), 12, 250, 52),
       titleColor: normalizeHex(editor.primaryColor, "#FFFFFF"),
       sceneMotionPreset: editor.motionPreset,
       motionSpeedPercent: clampNumber(Number(editor.motionSpeedPercent), 60, 220, 135),
@@ -493,9 +554,9 @@ function extractLayerNumber(
 ): string {
   const found = (renderOptions.overlay.titleTemplates || []).find((item) => item.id === id);
   if (field === "fontThickness") {
-    return String(clampNumber(Number(found?.[field]), 0, 8, fallback));
+    return String(clampNumber(Number(found?.[field]), 0, 10, fallback));
   }
-  return String(clampNumber(Number(found?.[field]), 12, 200, fallback));
+  return String(clampNumber(Number(found?.[field]), 12, 250, fallback));
 }
 
 function extractLayerMetric(
@@ -551,8 +612,8 @@ function editorFromTemplate(item: AutomationTemplateItem): TemplateEditorState {
       x: formatPercentString(clampNumber(Number(layer.x), 0, 100, 50)),
       y: formatPercentString(clampNumber(Number(layer.y), 0, 100, 50)),
       width: formatPercentString(clampNumber(Number(layer.width), 20, 100, 60)),
-      fontSize: String(clampNumber(Number(layer.fontSize), 12, 120, 28)),
-      fontThickness: String(clampNumber(Number(layer.fontThickness), 0, 8, 0)),
+      fontSize: String(clampNumber(Number(layer.fontSize), 12, 250, 28)),
+      fontThickness: String(clampNumber(Number(layer.fontThickness), 0, 10, 0)),
       color: normalizeHex(layer.color || "", "#FFFFFF"),
       fontBold: Boolean(layer.fontBold),
       fontItalic: Boolean(layer.fontItalic),
@@ -2193,15 +2254,15 @@ export function TemplatesClient(): React.JSX.Element {
             ) : null}
           </div>
 
-          <div className="grid gap-2 md:grid-cols-4">
-            <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <Label>폰트명</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="col-span-2 min-w-0 space-y-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label className="whitespace-nowrap">폰트명</Label>
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="h-7 px-2 text-xs"
+                  className="h-7 shrink-0 px-2 text-xs"
                   onClick={() => void loadLocalFonts()}
                   disabled={localFontLoading}
                 >
@@ -2218,7 +2279,7 @@ export function TemplatesClient(): React.JSX.Element {
                   setTemplateFontQuery("");
                 }}
               >
-                <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectTrigger className="min-w-0 bg-card dark:bg-zinc-900">
                   <SelectValue placeholder="폰트 선택" />
                 </SelectTrigger>
                 <SelectContent>
@@ -2247,9 +2308,9 @@ export function TemplatesClient(): React.JSX.Element {
                 <p className="text-xs text-muted-foreground">{localFontMessage}</p>
               ) : null}
             </div>
-            <div className="space-y-1">
-              <Label>폰트 스타일</Label>
-              <div className="flex items-center gap-2">
+            <div className="min-w-0 space-y-1">
+              <Label className="whitespace-nowrap">폰트 스타일</Label>
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   type="button"
                   size="sm"
@@ -2290,10 +2351,11 @@ export function TemplatesClient(): React.JSX.Element {
                 </Button>
               </div>
             </div>
-            <div className="space-y-1">
-              <Label>텍스트 배경색</Label>
+            <div className="min-w-0 space-y-1">
+              <Label className="whitespace-nowrap">텍스트 배경색</Label>
               <Input
                 type="color"
+                className="h-9 w-full p-1"
                 value={normalizeHex(editor.backgroundColor, "#000000")}
                 onChange={(event) =>
                   setEditor((prev) => ({
@@ -2303,8 +2365,8 @@ export function TemplatesClient(): React.JSX.Element {
                 }
               />
             </div>
-            <div className="space-y-1">
-              <Label>배경 투명도(%)</Label>
+            <div className="min-w-0 space-y-1">
+              <Label className="whitespace-nowrap">배경 투명도(%)</Label>
               <Input
                 type="number"
                 min={0}
@@ -2339,17 +2401,17 @@ export function TemplatesClient(): React.JSX.Element {
             </div>
           ) : null}
 
-          <div className="grid gap-2 md:grid-cols-2">
-            <div className="space-y-1">
-              <Label>기준 제목(치환 기준)</Label>
+          <div className="grid gap-2">
+            <div className="min-w-0 space-y-1">
+              <Label className="whitespace-nowrap">기준 제목(치환 기준)</Label>
               <Input
                 value={editor.sourceTitle}
                 onChange={(event) => setEditor((prev) => ({ ...prev, sourceTitle: event.target.value }))}
                 placeholder="{{title}}"
               />
             </div>
-            <div className="space-y-1">
-              <Label>기준 주제(치환 기준)</Label>
+            <div className="min-w-0 space-y-1">
+              <Label className="whitespace-nowrap">기준 주제(치환 기준)</Label>
               <Input
                 value={editor.sourceTopic}
                 onChange={(event) => setEditor((prev) => ({ ...prev, sourceTopic: event.target.value }))}
@@ -2358,11 +2420,11 @@ export function TemplatesClient(): React.JSX.Element {
             </div>
           </div>
 
-          <div className="grid gap-2 md:grid-cols-2">
-            <div className="space-y-1">
-              <Label>이미지 스타일 프리셋</Label>
+          <div className="grid gap-2">
+            <div className="min-w-0 space-y-1">
+              <Label className="whitespace-nowrap">이미지 스타일 프리셋</Label>
               <Select value={editor.imageStylePreset} onValueChange={onImageStylePresetChange}>
-                <SelectTrigger className="bg-card dark:bg-zinc-900">
+                <SelectTrigger className="min-w-0 bg-card dark:bg-zinc-900">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -2375,8 +2437,8 @@ export function TemplatesClient(): React.JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1">
-              <Label>이미지 스타일 프롬프트</Label>
+            <div className="min-w-0 space-y-1">
+              <Label className="whitespace-nowrap">이미지 스타일 프롬프트</Label>
               <Input
                 value={editor.imageStyle}
                 onChange={(event) =>
@@ -2397,7 +2459,7 @@ export function TemplatesClient(): React.JSX.Element {
           <ImageStyleSnapshot styleText={editor.imageStyle} />
 
           <div className="rounded-md border p-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <Label className="text-sm font-semibold">오디오 보이스</Label>
               <Button
                 type="button"
@@ -2412,9 +2474,9 @@ export function TemplatesClient(): React.JSX.Element {
             </div>
             {voiceSectionOpen ? (
               <div className="mt-3">
-                <div className="grid items-end gap-2 md:grid-cols-[1fr,140px,auto]">
-                  <div className="space-y-1">
-                    <Label>오디오 보이스</Label>
+                <div className="grid gap-2">
+                  <div className="min-w-0 space-y-1">
+                    <Label className="whitespace-nowrap">오디오 보이스</Label>
                     <Select
                       value={editor.voice}
                       onValueChange={(value) =>
@@ -2424,7 +2486,7 @@ export function TemplatesClient(): React.JSX.Element {
                         }))
                       }
                     >
-                      <SelectTrigger className="bg-card dark:bg-zinc-900">
+                      <SelectTrigger className="min-w-0 bg-card dark:bg-zinc-900">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -2436,8 +2498,8 @@ export function TemplatesClient(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-1">
-                    <Label>보이스 배속</Label>
+                  <div className="min-w-0 space-y-1">
+                    <Label className="whitespace-nowrap">보이스 배속</Label>
                     <Select
                       value={editor.voiceSpeed}
                       onValueChange={(value) =>
@@ -2447,7 +2509,7 @@ export function TemplatesClient(): React.JSX.Element {
                         }))
                       }
                     >
-                      <SelectTrigger className="bg-card dark:bg-zinc-900">
+                      <SelectTrigger className="min-w-0 bg-card dark:bg-zinc-900">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -2459,10 +2521,11 @@ export function TemplatesClient(): React.JSX.Element {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex items-end">
+                  <div className="min-w-0">
                     <Button
                       type="button"
                       variant="outline"
+                      className="w-full"
                       onClick={() => void previewVoice()}
                       disabled={previewLoading}
                     >
@@ -2470,7 +2533,9 @@ export function TemplatesClient(): React.JSX.Element {
                     </Button>
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">선택 보이스 특성: {selectedVoiceHint}</p>
+                <p className="mt-2 break-words text-xs text-muted-foreground">
+                  선택 보이스 특성: {selectedVoiceHint}
+                </p>
                 <div className="mt-2 space-y-2">
                   <Label>미리듣기 텍스트</Label>
                   <Textarea
@@ -2494,7 +2559,7 @@ export function TemplatesClient(): React.JSX.Element {
             ) : null}
           </div>
 
-          <div className="grid gap-2 md:grid-cols-3">
+          <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label>레이아웃</Label>
               <Select
@@ -2587,7 +2652,7 @@ export function TemplatesClient(): React.JSX.Element {
                 영상 생성의 모션 옵션과 동일하게 적용됩니다. 중심점, 이동 범위, 줌 강도를 템플릿 단계에서 미리 저장할 수 있습니다.
               </p>
             </div>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label>포커스 X(%)</Label>
                 <Input
@@ -2652,7 +2717,7 @@ export function TemplatesClient(): React.JSX.Element {
               </div>
             </div>
           </div>
-          <div className="grid gap-2 md:grid-cols-2">
+          <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label>16:9 패널 상단 위치(%)</Label>
               <Input
@@ -2686,8 +2751,8 @@ export function TemplatesClient(): React.JSX.Element {
           </div>
 
           <div className="grid gap-3 rounded-md border p-3">
-            <div className="grid gap-2 2xl:grid-cols-[1fr,110px,110px,120px,90px,90px,90px]">
-              <div className="space-y-1">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-3 space-y-1">
                 <div className="flex items-center justify-between gap-2">
                   <Label>기본 타이틀 텍스트</Label>
                   <div className="flex items-center gap-2">
@@ -2736,24 +2801,24 @@ export function TemplatesClient(): React.JSX.Element {
               </div>
               <div className="space-y-1">
                 <Label>크기</Label>
-                <Input
-                  type="number"
-                  min={12}
-                  max={120}
+                <NumberStepper
                   value={editor.primaryFontSize}
-                  onChange={(event) => setEditor((prev) => ({ ...prev, primaryFontSize: event.target.value }))}
+                  min={12}
+                  max={250}
+                  step={2}
+                  ariaLabel="기본 타이틀 크기"
+                  onChange={(value) => setEditor((prev) => ({ ...prev, primaryFontSize: value }))}
                 />
               </div>
               <div className="space-y-1">
                 <Label>굵기</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  max={8}
+                <NumberStepper
                   value={editor.primaryFontThickness}
-                  onChange={(event) =>
-                    setEditor((prev) => ({ ...prev, primaryFontThickness: event.target.value }))
-                  }
+                  min={0}
+                  max={10}
+                  step={1}
+                  ariaLabel="기본 타이틀 굵기"
+                  onChange={(value) => setEditor((prev) => ({ ...prev, primaryFontThickness: value }))}
                 />
               </div>
               <div className="space-y-1">
@@ -2761,6 +2826,7 @@ export function TemplatesClient(): React.JSX.Element {
                 <Input
                   type="color"
                   value={normalizeHex(editor.primaryColor, "#FFFFFF")}
+                  className="h-9 w-full p-1"
                   onChange={(event) => setEditor((prev) => ({ ...prev, primaryColor: event.target.value }))}
                 />
               </div>
@@ -2789,8 +2855,8 @@ export function TemplatesClient(): React.JSX.Element {
                 />
               </div>
             </div>
-            <div className="grid gap-2 2xl:grid-cols-[1fr,110px,110px,120px,90px,90px,90px]">
-              <div className="space-y-1">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-3 space-y-1">
                 <div className="flex items-center justify-between gap-2">
                   <Label>보조 타이틀 텍스트</Label>
                   <div className="flex items-center gap-2">
@@ -2855,26 +2921,26 @@ export function TemplatesClient(): React.JSX.Element {
               </div>
               <div className="space-y-1">
                 <Label>크기</Label>
-                <Input
-                  type="number"
-                  min={12}
-                  max={120}
+                <NumberStepper
                   value={editor.secondaryFontSize}
+                  min={12}
+                  max={250}
+                  step={2}
                   disabled={!editor.secondaryEnabled}
-                  onChange={(event) => setEditor((prev) => ({ ...prev, secondaryFontSize: event.target.value }))}
+                  ariaLabel="보조 타이틀 크기"
+                  onChange={(value) => setEditor((prev) => ({ ...prev, secondaryFontSize: value }))}
                 />
               </div>
               <div className="space-y-1">
                 <Label>굵기</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  max={8}
+                <NumberStepper
                   value={editor.secondaryFontThickness}
+                  min={0}
+                  max={10}
+                  step={1}
                   disabled={!editor.secondaryEnabled}
-                  onChange={(event) =>
-                    setEditor((prev) => ({ ...prev, secondaryFontThickness: event.target.value }))
-                  }
+                  ariaLabel="보조 타이틀 굵기"
+                  onChange={(value) => setEditor((prev) => ({ ...prev, secondaryFontThickness: value }))}
                 />
               </div>
               <div className="space-y-1">
@@ -2883,6 +2949,7 @@ export function TemplatesClient(): React.JSX.Element {
                   type="color"
                   value={normalizeHex(editor.secondaryColor, "#FFF200")}
                   disabled={!editor.secondaryEnabled}
+                  className="h-9 w-full p-1"
                   onChange={(event) => setEditor((prev) => ({ ...prev, secondaryColor: event.target.value }))}
                 />
               </div>
@@ -2914,8 +2981,8 @@ export function TemplatesClient(): React.JSX.Element {
                 />
               </div>
             </div>
-            <div className="grid gap-2 2xl:grid-cols-[1fr,110px,110px,120px,90px,90px,90px]">
-              <div className="space-y-1">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-3 space-y-1">
                 <div className="flex items-center justify-between gap-2">
                   <Label>상단 배지 텍스트 (선택)</Label>
                   <div className="flex items-center gap-2">
@@ -2963,24 +3030,24 @@ export function TemplatesClient(): React.JSX.Element {
               </div>
               <div className="space-y-1">
                 <Label>크기</Label>
-                <Input
-                  type="number"
-                  min={12}
-                  max={60}
+                <NumberStepper
                   value={editor.badgeFontSize}
-                  onChange={(event) => setEditor((prev) => ({ ...prev, badgeFontSize: event.target.value }))}
+                  min={12}
+                  max={250}
+                  step={2}
+                  ariaLabel="상단 배지 크기"
+                  onChange={(value) => setEditor((prev) => ({ ...prev, badgeFontSize: value }))}
                 />
               </div>
               <div className="space-y-1">
                 <Label>굵기</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  max={8}
+                <NumberStepper
                   value={editor.badgeFontThickness}
-                  onChange={(event) =>
-                    setEditor((prev) => ({ ...prev, badgeFontThickness: event.target.value }))
-                  }
+                  min={0}
+                  max={10}
+                  step={1}
+                  ariaLabel="상단 배지 굵기"
+                  onChange={(value) => setEditor((prev) => ({ ...prev, badgeFontThickness: value }))}
                 />
               </div>
               <div className="space-y-1">
@@ -2988,6 +3055,7 @@ export function TemplatesClient(): React.JSX.Element {
                 <Input
                   type="color"
                   value={normalizeHex(editor.badgeColor, "#FFFFFF")}
+                  className="h-9 w-full p-1"
                   onChange={(event) => setEditor((prev) => ({ ...prev, badgeColor: event.target.value }))}
                 />
               </div>
@@ -3067,8 +3135,8 @@ export function TemplatesClient(): React.JSX.Element {
                       </Button>
                     </div>
                   </div>
-                  <div className="grid gap-2 2xl:grid-cols-[1fr,110px,110px,120px,90px,90px,90px]">
-                    <div className="space-y-1">
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="col-span-3 space-y-1">
                       <Label>텍스트</Label>
                       <Textarea
                         rows={2}
@@ -3088,30 +3156,26 @@ export function TemplatesClient(): React.JSX.Element {
                           : "고정 텍스트: 항상 동일하게 노출됩니다."}
                       </p>
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-1" onFocus={() => setSelectedPreviewLayerId(layer.id)}>
                       <Label>크기</Label>
-                      <Input
-                        type="number"
-                        min={12}
-                        max={120}
+                      <NumberStepper
                         value={layer.fontSize}
-                        onFocus={() => setSelectedPreviewLayerId(layer.id)}
-                        onChange={(event) =>
-                          updateCustomLayer(layer.id, { fontSize: event.target.value })
-                        }
+                        min={12}
+                        max={250}
+                        step={2}
+                        ariaLabel={`레이어 ${index + 1} 크기`}
+                        onChange={(value) => updateCustomLayer(layer.id, { fontSize: value })}
                       />
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-1" onFocus={() => setSelectedPreviewLayerId(layer.id)}>
                       <Label>굵기</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={8}
+                      <NumberStepper
                         value={layer.fontThickness}
-                        onFocus={() => setSelectedPreviewLayerId(layer.id)}
-                        onChange={(event) =>
-                          updateCustomLayer(layer.id, { fontThickness: event.target.value })
-                        }
+                        min={0}
+                        max={10}
+                        step={1}
+                        ariaLabel={`레이어 ${index + 1} 굵기`}
+                        onChange={(value) => updateCustomLayer(layer.id, { fontThickness: value })}
                       />
                     </div>
                     <div className="space-y-1">
@@ -3119,6 +3183,7 @@ export function TemplatesClient(): React.JSX.Element {
                       <Input
                         type="color"
                         value={normalizeHex(layer.color, "#FFFFFF")}
+                        className="h-9 w-full p-1"
                         onFocus={() => setSelectedPreviewLayerId(layer.id)}
                         onChange={(event) =>
                           updateCustomLayer(layer.id, { color: event.target.value })
@@ -3194,16 +3259,16 @@ export function TemplatesClient(): React.JSX.Element {
                 </div>
               ))}
             </div>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(90px,0.6fr)_minmax(120px,0.8fr)_minmax(130px,0.9fr)_minmax(110px,0.8fr)]">
-              <div className="min-w-0 space-y-1">
-                <Label className="whitespace-nowrap">자막 예시 텍스트</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="col-span-2 min-w-0 space-y-1">
+                <Label className="text-xs leading-tight">자막 예시 텍스트</Label>
                 <Input
                   value={editor.subtitleSampleText}
                   onChange={(event) => setEditor((prev) => ({ ...prev, subtitleSampleText: event.target.value }))}
                 />
               </div>
               <div className="min-w-0 space-y-1">
-                <Label className="whitespace-nowrap">자막 위치</Label>
+                <Label className="text-xs leading-tight">자막 위치</Label>
                 <Select
                   value={editor.subtitlePosition}
                   onValueChange={(value) =>
@@ -3227,7 +3292,7 @@ export function TemplatesClient(): React.JSX.Element {
                 </Select>
               </div>
               <div className="min-w-0 space-y-1">
-                <Label className="whitespace-nowrap">자막 굵게</Label>
+                <Label className="text-xs leading-tight">자막 굵게</Label>
                 <Button
                   type="button"
                   variant={editor.subtitleBold ? "default" : "outline"}
@@ -3243,7 +3308,7 @@ export function TemplatesClient(): React.JSX.Element {
                 </Button>
               </div>
               <div className="min-w-0 space-y-1">
-                <Label className="whitespace-nowrap">자막 크기</Label>
+                <Label className="text-xs leading-tight">자막 크기</Label>
                 <Input
                   type="number"
                   min={8}
@@ -3258,7 +3323,7 @@ export function TemplatesClient(): React.JSX.Element {
                 />
               </div>
               <div className="min-w-0 space-y-1">
-                <Label className="whitespace-nowrap">자막 최대 글자수</Label>
+                <Label className="text-xs leading-tight">자막 최대 글자수</Label>
                 <Input
                   type="number"
                   min={8}
@@ -3273,7 +3338,7 @@ export function TemplatesClient(): React.JSX.Element {
                 />
               </div>
               <div className="min-w-0 space-y-1">
-                <Label className="whitespace-nowrap">자막 Y(%)</Label>
+                <Label className="text-xs leading-tight">자막 Y(%)</Label>
                 <Input
                   type="number"
                   value={editor.subtitleYPercent}
@@ -3471,7 +3536,7 @@ export function TemplatesClient(): React.JSX.Element {
                 const text = wrapTemplateTextLikeEngine({
                   text: baseText,
                   widthPercent: clampNumber(Number(item.width), 20, 100, 70),
-                  fontSize: clampNumber(Number(item.fontSize), 12, 120, 28)
+                  fontSize: clampNumber(Number(item.fontSize), 12, 250, 28)
                 });
                 const hint = dynamicHint({
                   text: item.text || "",
@@ -3490,7 +3555,7 @@ export function TemplatesClient(): React.JSX.Element {
                       top: `${clampNumber(Number(item.y), 0, 100, 50)}%`,
                       width: `${clampNumber(Number(item.width), 20, 100, 70)}%`,
                       color: normalizeHex(item.color || "#FFFFFF", "#FFFFFF"),
-                      fontSize: `${clampNumber(Number(item.fontSize), 12, 120, 28) * titlePreviewRenderScale}px`,
+                      fontSize: `${clampNumber(Number(item.fontSize), 12, 250, 28) * titlePreviewRenderScale}px`,
                       fontFamily: item.fontName || editor.fontName || "Noto Sans KR",
                       fontWeight: item.fontBold ? 700 : 400,
                       fontStyle: item.fontItalic ? "italic" : "normal",
@@ -3500,7 +3565,7 @@ export function TemplatesClient(): React.JSX.Element {
                       overflow: "hidden",
                       textShadow: "0 1px 2px rgba(0,0,0,0.8)",
                       WebkitTextStrokeWidth: `${
-                        clampNumber(Number(item.fontThickness), 0, 8, 0) *
+                        clampNumber(Number(item.fontThickness), 0, 10, 0) *
                         (0.2 * (titlePreviewRenderScale / 0.42))
                       }px`,
                       WebkitTextStrokeColor: "rgba(0,0,0,0.85)",

@@ -124,6 +124,8 @@ export function VideoCard({
           topic={row.topic}
           narration={row.narration}
           videoUrl={row.videoUrl}
+          voice={row.voice}
+          voiceSpeed={row.voiceSpeed}
           tags={row.tags}
           onUpload={(payload) => onUpload(row, payload)}
         />

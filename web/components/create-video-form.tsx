@@ -1049,7 +1049,7 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
     x: clampPercent(Number(item.x) || 50),
     y: clampPercent(Number(item.y) || 10),
     width: clampNumber(Number(item.width), 10, 100, 60),
-    fontSize: clampNumber(Number(item.fontSize), 12, 120, Number(overlayDefaults.titleFontSize) || 48),
+    fontSize: clampNumber(Number(item.fontSize), 12, 250, Number(overlayDefaults.titleFontSize) || 48),
     color: item.color || overlayDefaults.titleColor || "#FFFFFF",
     backgroundColor: item.backgroundColor || "#000000",
     backgroundOpacity: clampNumber(Number(item.backgroundOpacity), 0, 1, 0),
@@ -1059,7 +1059,7 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
     shadowY: clampNumber(Number(item.shadowY), -20, 20, 2),
     shadowColor: item.shadowColor || "#000000",
     shadowOpacity: clampNumber(Number(item.shadowOpacity), 0, 1, 1),
-    fontThickness: clampNumber(Number(item.fontThickness), 0, 8, 0),
+    fontThickness: clampNumber(Number(item.fontThickness), 0, 10, 0),
     fontBold: Boolean(item.fontBold),
     fontItalic: Boolean(item.fontItalic)
   }));
@@ -1082,7 +1082,7 @@ function ensureRenderOptions(value?: RenderOptions): RenderOptions {
         shadowY: 2,
         shadowColor: "#000000",
         shadowOpacity: 1,
-        fontThickness: 0,
+        fontThickness: 1,
         fontName: overlayDefaults.titleFontName,
         fontBold: Boolean(overlayDefaults.titleFontBold),
         fontItalic: Boolean(overlayDefaults.titleFontItalic),
@@ -3043,7 +3043,7 @@ export function CreateVideoForm(): React.JSX.Element {
       shadowY: 2,
       shadowColor: "#000000",
       shadowOpacity: 1,
-      fontThickness: 0,
+      fontThickness: 1,
       fontBold: false,
       fontItalic: false,
       fontName: renderOptions.overlay.titleFontName,
@@ -5155,13 +5155,13 @@ export function CreateVideoForm(): React.JSX.Element {
                                   const text = wrapTemplateTextLikeEngine({
                                     text: materializedText,
                                     widthPercent: clampNumber(Number(item.width), 10, 100, 60),
-                                    fontSize: clampNumber(Number(item.fontSize), 12, 120, 44)
+                                    fontSize: clampNumber(Number(item.fontSize), 12, 250, 44)
                                   });
                                   const titleColor = normalizeHexColor(item.color, "#FFFFFF");
                                   const titleTextShadow = [
                                     ...buildTextThicknessShadow(
                                       titleColor,
-                                      clampNumber(Number(item.fontThickness), 0, 8, 0)
+                                      clampNumber(Number(item.fontThickness), 0, 10, 0)
                                     ),
                                     `${(item.shadowX ?? 2) * vrewPreviewScale}px ${(item.shadowY ?? 2) * vrewPreviewScale}px ${Math.max(1, 4 * vrewPreviewScale)}px ${hexToRgba(
                                       item.shadowColor,
@@ -5560,7 +5560,7 @@ export function CreateVideoForm(): React.JSX.Element {
                                 const wrappedText = wrapTemplateTextLikeEngine({
                                   text: materializedText,
                                   widthPercent: clampNumber(Number(item.width), 10, 100, 60),
-                                  fontSize: clampNumber(Number(item.fontSize), 12, 120, 44)
+                                  fontSize: clampNumber(Number(item.fontSize), 12, 250, 44)
                                 });
                                 return (
                               <div
@@ -5594,7 +5594,7 @@ export function CreateVideoForm(): React.JSX.Element {
                                   textShadow: [
                                     ...buildTextThicknessShadow(
                                       normalizeHexColor(item.color, "#FFFFFF"),
-                                      clampNumber(Number(item.fontThickness), 0, 8, 0)
+                                      clampNumber(Number(item.fontThickness), 0, 10, 0)
                                     ),
                                     `${item.shadowX ?? 2}px ${item.shadowY ?? 2}px 4px ${hexToRgba(
                                       item.shadowColor,
@@ -5747,8 +5747,8 @@ export function CreateVideoForm(): React.JSX.Element {
                                 />
                               </div>
 
-                              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                                <div className="min-w-0 space-y-1 xl:col-span-2">
+                              <div className="space-y-3">
+                                <div className="min-w-0 space-y-1">
                                   <Label className="text-xs text-muted-foreground">폰트</Label>
                                   <Select
                                     value={detectFontPreset(item.fontName, availableTitleFonts)}
@@ -5777,55 +5777,40 @@ export function CreateVideoForm(): React.JSX.Element {
                                     </SelectContent>
                                   </Select>
                                 </div>
+
+                                <div className="grid grid-cols-3 gap-2">
                                 <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">레이어 폭(%)</Label>
-                                  <Input
-                                    type="number"
-                                    min={10}
-                                    max={100}
-                                    value={item.width}
-                                    onChange={(event) =>
-                                      updateTemplateItem(item.id, {
-                                        width: clampNumber(Number(event.target.value), 10, 100, 60)
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">폰트 크기</Label>
+                                  <Label className="text-xs text-muted-foreground">크기</Label>
                                   <Input
                                     type="number"
                                     min={12}
-                                    max={120}
+                                    max={250}
+                                    step={2}
                                     value={item.fontSize}
                                     onChange={(event) =>
                                       updateTemplateItem(item.id, {
-                                        fontSize: clampNumber(Number(event.target.value), 12, 120, 44)
+                                        fontSize: clampNumber(Number(event.target.value), 12, 250, 44)
                                       })
                                     }
                                   />
                                 </div>
                                 <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">텍스트 두께</Label>
+                                  <Label className="text-xs text-muted-foreground">굵기</Label>
                                   <Input
                                     type="number"
                                     min={0}
-                                    max={8}
-                                    value={clampNumber(Number(item.fontThickness), 0, 8, 0)}
+                                    max={10}
+                                    step={1}
+                                    value={clampNumber(Number(item.fontThickness), 0, 10, 0)}
                                     onChange={(event) =>
                                       updateTemplateItem(item.id, {
-                                        fontThickness: clampNumber(
-                                          Number(event.target.value),
-                                          0,
-                                          8,
-                                          0
-                                        )
+                                        fontThickness: clampNumber(Number(event.target.value), 0, 10, 0)
                                       })
                                     }
                                   />
                                 </div>
                                 <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">텍스트 색상</Label>
+                                  <Label className="text-xs text-muted-foreground">색상</Label>
                                   <Input
                                     type="color"
                                     className="h-10 p-1"
@@ -5837,6 +5822,55 @@ export function CreateVideoForm(): React.JSX.Element {
                                     }
                                   />
                                 </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">X(%)</Label>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    step={0.1}
+                                    value={Number(item.x).toFixed(2)}
+                                    onChange={(event) =>
+                                      updateTemplateItem(item.id, {
+                                        x: clampNumber(Number(event.target.value), 0, 100, 50)
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">Y(%)</Label>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    step={0.1}
+                                    value={Number(item.y).toFixed(2)}
+                                    onChange={(event) =>
+                                      updateTemplateItem(item.id, {
+                                        y: clampNumber(Number(event.target.value), 0, 100, 20)
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-xs text-muted-foreground">폭(%)</Label>
+                                  <Input
+                                    type="number"
+                                    min={10}
+                                    max={100}
+                                    step={0.1}
+                                    value={Number(item.width).toFixed(2)}
+                                    onChange={(event) =>
+                                      updateTemplateItem(item.id, {
+                                        width: clampNumber(Number(event.target.value), 10, 100, 60)
+                                      })
+                                    }
+                                  />
+                                </div>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                                 <div className="space-y-1">
                                   <Label className="text-xs text-muted-foreground">배경 색상</Label>
                                   <Input

@@ -28,6 +28,7 @@ export type RenderInstagramPageVideoArgs = {
 export type RenderInstagramPageVideoResult = {
   jobId: string;
   outputUrl: string;
+  audioUrl?: string;
   ttsProviderUsed: "openai" | "gemini" | "auto" | "silent";
 };
 
@@ -324,9 +325,11 @@ export async function renderInstagramPageVideo(
     throw new Error("MP4 출력 URL을 받지 못했습니다.");
   }
   const signedOutputUrl = await toSignedStorageReadUrl(result.outputUrl, 60 * 60 * 6);
+  const signedAudioUrl = await toSignedStorageReadUrl(audioUrl, 60 * 60 * 6);
   return {
     jobId,
     outputUrl: signedOutputUrl,
+    audioUrl: signedAudioUrl,
     ttsProviderUsed: resolvedAudio.providerUsed
   };
 }

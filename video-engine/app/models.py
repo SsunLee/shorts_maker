@@ -57,7 +57,7 @@ class TitleTemplate(BaseModel):
     x: float = Field(default=50.0, ge=0.0, le=100.0)
     y: float = Field(default=10.0, ge=0.0, le=100.0)
     width: float = Field(default=60.0, ge=10.0, le=100.0)
-    fontSize: int = Field(default=48, ge=12, le=120)
+    fontSize: int = Field(default=48, ge=12, le=250)
     color: str = Field(default="#FFFFFF", min_length=4, max_length=16)
     backgroundColor: str = Field(default="#000000", min_length=4, max_length=16)
     backgroundOpacity: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -67,7 +67,7 @@ class TitleTemplate(BaseModel):
     shadowY: int = Field(default=2, ge=-20, le=20)
     shadowColor: str = Field(default="#000000", min_length=4, max_length=16)
     shadowOpacity: float = Field(default=1.0, ge=0.0, le=1.0)
-    fontThickness: int = Field(default=0, ge=0, le=8)
+    fontThickness: int = Field(default=0, ge=0, le=10)
     fontName: str | None = Field(default=None, max_length=80)
     fontBold: bool = False
     fontItalic: bool = False
