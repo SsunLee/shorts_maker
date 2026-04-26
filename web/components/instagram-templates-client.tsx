@@ -415,7 +415,9 @@ const INSTAGRAM_AI_IMAGE_STYLE_PRESETS = [
 const INSTAGRAM_AI_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "auto", label: "자동 (설정값)" },
   { value: "openai:gpt-image-1", label: "OpenAI · gpt-image-1" },
-  { value: "gemini:gemini-2.5-flash-image", label: "Gemini · gemini-2.5-flash-image" }
+  { value: "gemini:gemini-3.1-flash-image-preview", label: "Gemini · gemini-3.1-flash-image-preview" },
+  { value: "gemini:gemini-3-pro-image-preview", label: "Gemini · gemini-3-pro-image-preview" },
+  { value: "gemini:gemini-2.5-flash-image", label: "Gemini · gemini-2.5-flash-image (저비용)" }
 ];
 
 const CANVAS_PRESETS: Array<{ id: string; label: string; width: number; height: number }> = [

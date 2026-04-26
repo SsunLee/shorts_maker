@@ -138,8 +138,12 @@ const GEMINI_TEXT_MODEL_OPTIONS: ModelOption[] = [
 ];
 
 const GEMINI_IMAGE_MODEL_OPTIONS: ModelOption[] = [
+  {
+    value: "gemini-3.1-flash-image-preview",
+    label: "gemini-3.1-flash-image-preview (최신 · 빠름 · Preview)"
+  },
   { value: "gemini-3-pro-image-preview", label: "gemini-3-pro-image-preview (최신 · Preview)" },
-  { value: "gemini-2.5-flash-image", label: "gemini-2.5-flash-image (안정 · Nano Banana)" }
+  { value: "gemini-2.5-flash-image", label: "gemini-2.5-flash-image (저비용 추천 · 안정)" }
 ];
 
 const GEMINI_TTS_MODEL_OPTIONS: ModelOption[] = [

@@ -968,7 +968,7 @@ export function DashboardClient(): React.JSX.Element {
     );
   }
 
-  const recentAutomationLogs = automation?.logs?.slice(-10).reverse() || [];
+  const recentAutomationLogs = automation?.logs?.slice(-50).reverse() || [];
 
   return (
     <div className="space-y-4">

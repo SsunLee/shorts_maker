@@ -1081,8 +1081,10 @@ export async function generateImages(
   const imageModel = String(options?.imageModelOverride || resolvedImageModel).trim() || resolvedImageModel;
   const textModel = await resolveModelForTask(provider, "text", userId);
   const urls: string[] = [];
-  const timeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 90000);
-  const retryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 1);
+  const openAiTimeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 90000);
+  const openAiRetryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 1);
+  const geminiTimeoutMs = parsePositiveInt(process.env.GEMINI_IMAGE_TIMEOUT_MS, 45000);
+  const geminiRetryCount = parsePositiveInt(process.env.GEMINI_IMAGE_RETRY_COUNT, 0);
   const startIndex = Math.max(0, options?.startIndex ?? 0);
   const imageAspectRatio = options?.imageAspectRatio === "16:9" ? "16:9" : "9:16";
   const visualPolicy = options?.visualPolicy === "news_strict" ? "news_strict" : "default";
@@ -1106,8 +1108,8 @@ export async function generateImages(
         client,
         prompt: sanitizedPrompts[index],
         imageAspectRatio,
-        timeoutMs,
-        retryCount,
+        timeoutMs: geminiTimeoutMs,
+        retryCount: geminiRetryCount,
         promptIndex: index,
         imageModel,
         textModel
@@ -1139,8 +1141,8 @@ export async function generateImages(
       client,
       prompt: sanitizedPrompts[index],
       imageAspectRatio,
-      timeoutMs,
-      retryCount,
+      timeoutMs: openAiTimeoutMs,
+      retryCount: openAiRetryCount,
       promptIndex: index,
       imageModel,
       textModel
