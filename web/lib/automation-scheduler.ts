@@ -372,7 +372,7 @@ export async function runAutomationScheduleTick(
     return state;
   }
 
-  const automationState = getAutomationState(userId);
+  const automationState = await getAutomationState(userId);
   let lastResult: AutomationScheduleState["lastResult"] = "started";
   let lastError: string | undefined;
   try {
@@ -380,7 +380,7 @@ export async function runAutomationScheduleTick(
       lastResult = "skipped_running";
       lastError = "기존 자동화가 실행 중이라 이번 스케줄은 건너뛰었습니다.";
     } else {
-      startAutomationRun(userId, {
+      await startAutomationRun(userId, {
         sheetName: state.config.sheetName,
         privacyStatus: state.config.privacyStatus,
         uploadMode: state.config.uploadMode,

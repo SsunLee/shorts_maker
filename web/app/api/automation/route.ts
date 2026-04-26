@@ -32,7 +32,7 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   await ensureAutomationSchedulerStarted(userId);
-  return NextResponse.json({ state: getAutomationState(userId) });
+  return NextResponse.json({ state: await getAutomationState(userId) });
 }
 
 /** Start batch automation run (ready rows -> render -> upload loop). */
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
     const body = await request.json().catch(() => ({}));
     const payload = startSchema.parse(body || {});
-    const state = startAutomationRun(userId, payload);
+    const state = await startAutomationRun(userId, payload);
 
     // Serverless runtimes cannot safely keep background loops alive after response is sent.
     // Continue the run after the response so the browser is not blocked until render/upload finishes.
@@ -76,6 +76,6 @@ export async function DELETE(): Promise<NextResponse> {
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const state = requestAutomationStop(userId);
+  const state = await requestAutomationStop(userId);
   return NextResponse.json({ state });
 }

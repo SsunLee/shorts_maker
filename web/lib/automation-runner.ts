@@ -13,6 +13,11 @@ import {
   getAutomationTemplateSnapshot
 } from "@/lib/automation-template-store";
 import {
+  readAutomationRunState,
+  writeAutomationRunState
+} from "@/lib/automation-run-state-store";
+import { resolveModelForTask, resolveProviderForTask } from "@/lib/ai-provider";
+import {
   AutomationLogEntry,
   AutomationRunState,
   AutomationTemplateMode,
@@ -93,6 +98,7 @@ const DEFAULTS: AutomationDefaults = {
 declare global {
   var __shortsAutomationStates__: Record<string, AutomationRunState> | undefined;
   var __shortsAutomationPromises__: Record<string, Promise<void> | undefined> | undefined;
+  var __shortsAutomationStatePersistTimers__: Record<string, ReturnType<typeof setTimeout> | undefined> | undefined;
 }
 
 function createInitialState(): AutomationRunState {
@@ -127,6 +133,13 @@ function getPromiseStore(): Record<string, Promise<void> | undefined> {
   return globalThis.__shortsAutomationPromises__;
 }
 
+function getPersistTimerStore(): Record<string, ReturnType<typeof setTimeout> | undefined> {
+  if (!globalThis.__shortsAutomationStatePersistTimers__) {
+    globalThis.__shortsAutomationStatePersistTimers__ = {};
+  }
+  return globalThis.__shortsAutomationStatePersistTimers__;
+}
+
 function getStateRef(userId?: string): AutomationRunState {
   const key = getUserKey(userId);
   const store = getStateStore();
@@ -152,6 +165,7 @@ function pushLog(userId: string | undefined, level: "info" | "error", message: s
     message
   };
   state.logs = [...state.logs, entry].slice(-MAX_LOGS);
+  schedulePersistState(userId);
 }
 
 function logServer(
@@ -293,6 +307,85 @@ function buildSignatureFromReadyRow(row: SheetReadyRow): ContentSignature {
     createdAtMs: Date.now(),
     source: "ready"
   };
+}
+
+function normalizeLoadedState(input: Partial<AutomationRunState> | undefined): AutomationRunState {
+  const base = createInitialState();
+  if (!input || typeof input !== "object") {
+    return base;
+  }
+  return {
+    ...base,
+    ...input,
+    logs: Array.isArray(input.logs) ? input.logs.slice(-MAX_LOGS) : []
+  };
+}
+
+function hasMeaningfulState(state: AutomationRunState | undefined): boolean {
+  if (!state) {
+    return false;
+  }
+  return Boolean(
+    state.phase !== "idle" ||
+      state.logs.length > 0 ||
+      state.startedAt ||
+      state.finishedAt ||
+      state.processed ||
+      state.totalDiscovered ||
+      state.lastError
+  );
+}
+
+async function hydrateStateFromStore(userId?: string): Promise<AutomationRunState> {
+  const key = getUserKey(userId);
+  const store = getStateStore();
+  const current = store[key];
+  if (hasMeaningfulState(current)) {
+    return current;
+  }
+
+  const loaded = normalizeLoadedState(await readAutomationRunState(userId));
+  store[key] = loaded;
+  return loaded;
+}
+
+function schedulePersistState(userId?: string): void {
+  const key = getUserKey(userId);
+  const timers = getPersistTimerStore();
+  if (timers[key]) {
+    clearTimeout(timers[key]);
+  }
+  timers[key] = setTimeout(() => {
+    const snapshot = snapshotState(userId);
+    void writeAutomationRunState(snapshot, userId).catch((error) => {
+      console.error("[automation-runner] failed to persist state", {
+        userId: userId || "",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    });
+  }, 120);
+}
+
+async function persistStateNow(userId?: string): Promise<void> {
+  const key = getUserKey(userId);
+  const timers = getPersistTimerStore();
+  if (timers[key]) {
+    clearTimeout(timers[key]);
+    delete timers[key];
+  }
+  await writeAutomationRunState(snapshotState(userId), userId);
+}
+
+function isRunningLikePhase(phase: AutomationRunState["phase"] | undefined): boolean {
+  return phase === "running" || phase === "stopping";
+}
+
+async function hasRunOwnership(userId: string | undefined, runId: string | undefined): Promise<boolean> {
+  if (!runId) {
+    return true;
+  }
+  const persisted = normalizeLoadedState(await readAutomationRunState(userId));
+  return persisted.runId === runId && isRunningLikePhase(persisted.phase);
 }
 
 function buildSignatureFromVideoRow(row: VideoRow): ContentSignature {
@@ -809,6 +902,12 @@ function requestStopInternal(userId: string | undefined, reason: StopReason, err
   } else {
     state.phase = "idle";
   }
+  void persistStateNow(userId).catch((error) => {
+    console.error("[automation-runner] failed to persist stop state", {
+      userId: userId || "",
+      message: error instanceof Error ? error.message : String(error)
+    });
+  });
 }
 
 async function processOneRow(args: {
@@ -870,9 +969,28 @@ async function processOneRow(args: {
 
     let guard = 0;
     while (workflow.stage !== "final_ready" && workflow.status !== "failed" && guard < 6) {
+      const beforeStage = workflow.stage;
+      const beforeStatus = workflow.status;
+      if (workflow.stage === "scene_split_review") {
+        const imageProvider = await resolveProviderForTask("image", args.userId);
+        const imageModel = await resolveModelForTask(imageProvider, "image", args.userId);
+        pushLog(
+          args.userId,
+          "info",
+          `[${row.id}] image_generate 대기중 (${imageProvider}:${imageModel})`
+        );
+      } else if (workflow.stage === "assets_review") {
+        pushLog(args.userId, "info", `[${row.id}] video_rendering 대기중 (video-engine 요청 준비)`);
+      } else if (workflow.stage === "video_review") {
+        pushLog(args.userId, "info", `[${row.id}] final_render 대기중 (최종 렌더 요청 준비)`);
+      }
       workflow = await runNextWorkflowStage(workflow.id, args.userId);
       guard += 1;
-      pushLog(args.userId, "info", `[${row.id}] 단계 진행 -> ${workflow.stage} (${workflow.status})`);
+      pushLog(
+        args.userId,
+        "info",
+        `[${row.id}] 단계 진행 ${beforeStage}(${beforeStatus}) -> ${workflow.stage}(${workflow.status}) [${guard}/6]`
+      );
     }
 
     if (workflow.status === "failed") {
@@ -966,6 +1084,7 @@ async function processOneRow(args: {
 
 async function runAutomationLoop(args: {
   userId?: string;
+  runId?: string;
   sheetName?: string;
   privacyStatus: "private" | "public" | "unlisted";
   uploadMode: "youtube" | "pre_upload";
@@ -978,7 +1097,15 @@ async function runAutomationLoop(args: {
   autoIdeaIdBase?: string;
 }): Promise<void> {
   const state = getStateRef(args.userId);
+  const ownedRunId = args.runId || state.runId;
   try {
+    if (!(await hasRunOwnership(args.userId, ownedRunId))) {
+      logServer("info", "run:ownership-lost-before-start", {
+        userId: args.userId || "",
+        runId: ownedRunId || ""
+      });
+      return;
+    }
     logServer("info", "run:start", {
       userId: args.userId || "",
       sheetName: args.sheetName || "",
@@ -1065,6 +1192,13 @@ async function runAutomationLoop(args: {
     }
 
     while (!state.stopRequested) {
+      if (!(await hasRunOwnership(args.userId, ownedRunId))) {
+        logServer("info", "run:ownership-lost", {
+          userId: args.userId || "",
+          runId: ownedRunId || ""
+        });
+        return;
+      }
       const effectiveMaxItems = args.autoIdeaEnabled ? autoIdeaRunLimit : maxItems;
       const rows = await listSheetContentRows(args.sheetName, args.userId);
       state.remaining = rows.length;
@@ -1131,6 +1265,15 @@ async function runAutomationLoop(args: {
       state.currentRowTitle = row.subject || row.keyword || row.id;
       pushLog(args.userId, "info", `[${row.id}] 처리 시작 (${state.currentRowTitle})`);
 
+      if (!(await hasRunOwnership(args.userId, ownedRunId))) {
+        logServer("info", "run:ownership-lost-before-row", {
+          userId: args.userId || "",
+          runId: ownedRunId || "",
+          rowId: row.id
+        });
+        return;
+      }
+
       const result = await processOneRow({
         userId: args.userId,
         row,
@@ -1170,36 +1313,50 @@ async function runAutomationLoop(args: {
   }
 }
 
-export function getAutomationState(userId?: string): AutomationRunState {
+export async function getAutomationState(userId?: string): Promise<AutomationRunState> {
+  await hydrateStateFromStore(userId);
   return snapshotState(userId);
 }
 
-export function requestAutomationStop(userId?: string): AutomationRunState {
+export async function requestAutomationStop(userId?: string): Promise<AutomationRunState> {
+  await hydrateStateFromStore(userId);
   const state = getStateRef(userId);
   if (state.phase === "running") {
     state.stopRequested = true;
     state.phase = "stopping";
     pushLog(userId, "info", "사용자 중지 요청을 수신했습니다.");
+    await persistStateNow(userId);
   }
   return snapshotState(userId);
 }
 
-export function startAutomationRun(userId: string | undefined, args: StartAutomationArgs): AutomationRunState {
-  const key = getUserKey(userId);
-  const state = getStateRef(userId);
-  if (state.phase === "running" || state.phase === "stopping") {
+export async function startAutomationRun(
+  userId: string | undefined,
+  args: StartAutomationArgs
+): Promise<AutomationRunState> {
+  await hydrateStateFromStore(userId);
+  const persisted = normalizeLoadedState(await readAutomationRunState(userId));
+  if (isRunningLikePhase(persisted.phase)) {
     throw new Error("Automation is already running.");
   }
+  const key = getUserKey(userId);
+  const state = getStateRef(userId);
+  if (isRunningLikePhase(state.phase)) {
+    throw new Error("Automation is already running.");
+  }
+  const startedAt = new Date().toISOString();
+  const runId = startedAt;
+  const previousLogs = Array.isArray(persisted.logs) ? persisted.logs.slice(-MAX_LOGS) : [];
 
   const nextState: AutomationRunState = {
     phase: "running",
-    runId: new Date().toISOString(),
+    runId,
     uploadMode: args.uploadMode === "pre_upload" ? "pre_upload" : "youtube",
     templateMode:
       args.templateMode === "none" || args.templateMode === "latest_workflow"
         ? args.templateMode
         : "applied_template",
-    startedAt: new Date().toISOString(),
+    startedAt,
     finishedAt: undefined,
     stopRequested: false,
     currentRowId: undefined,
@@ -1210,10 +1367,16 @@ export function startAutomationRun(userId: string | undefined, args: StartAutoma
     failed: 0,
     remaining: 0,
     lastError: undefined,
-    logs: [],
+    logs: previousLogs,
     defaultsSummary: undefined
   };
   getStateStore()[key] = nextState;
+  await persistStateNow(userId);
+  const confirmed = normalizeLoadedState(await readAutomationRunState(userId));
+  if (confirmed.runId !== runId || !isRunningLikePhase(confirmed.phase)) {
+    getStateStore()[key] = confirmed;
+    throw new Error("Automation is already running.");
+  }
   pushLog(userId, "info", "자동화 작업을 생성했습니다.");
   logServer("info", "run:queued", {
     userId: userId || "",
@@ -1223,6 +1386,7 @@ export function startAutomationRun(userId: string | undefined, args: StartAutoma
 
   getPromiseStore()[key] = runAutomationLoop({
     userId,
+    runId,
     sheetName: args.sheetName?.trim() || undefined,
     privacyStatus: args.privacyStatus || "private",
     uploadMode: args.uploadMode === "pre_upload" ? "pre_upload" : "youtube",
@@ -1246,6 +1410,7 @@ export function startAutomationRun(userId: string | undefined, args: StartAutoma
 export async function waitForAutomationRunCompletion(
   userId?: string
 ): Promise<AutomationRunState> {
+  await hydrateStateFromStore(userId);
   const key = getUserKey(userId);
   const running = getPromiseStore()[key];
   if (!running) {
