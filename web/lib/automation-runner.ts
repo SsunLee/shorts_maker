@@ -1326,10 +1326,28 @@ export async function getAutomationState(userId?: string): Promise<AutomationRun
 export async function requestAutomationStop(userId?: string): Promise<AutomationRunState> {
   await hydrateStateFromStore(userId);
   const state = getStateRef(userId);
-  if (state.phase === "running") {
+  const key = getUserKey(userId);
+  if (state.phase === "running" || state.phase === "stopping") {
+    const wasRunning = state.phase === "running";
     state.stopRequested = true;
     state.phase = "stopping";
-    pushLog(userId, "info", "사용자 중지 요청을 수신했습니다.");
+    pushLog(
+      userId,
+      "info",
+      wasRunning
+        ? "사용자 중지 요청을 수신했습니다."
+        : "사용자 중지 요청이 재수신되어 종료 상태를 재확인합니다."
+    );
+    const running = getPromiseStore()[key];
+    if (!running) {
+      pushLog(
+        userId,
+        "info",
+        "실행 컨텍스트를 찾을 수 없어 자동화를 즉시 종료 처리합니다."
+      );
+      requestStopInternal(userId, "requested");
+      return snapshotState(userId);
+    }
     await persistStateNow(userId);
   }
   return snapshotState(userId);
