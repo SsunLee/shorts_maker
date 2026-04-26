@@ -26,6 +26,21 @@ const WORKFLOW_STAGE_ORDER: WorkflowStage[] = [
   "final_ready"
 ];
 
+function parseBoundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
+}
+
+const WORKFLOW_STAGE_TIMEOUT_MS = parseBoundedInt(
+  process.env.WORKFLOW_STAGE_TIMEOUT_MS,
+  240_000,
+  30_000,
+  600_000
+);
+
 type RenderOptionsInput = {
   subtitle?: Partial<RenderOptions["subtitle"]>;
   overlay?: Partial<RenderOptions["overlay"]>;
@@ -249,6 +264,32 @@ function isStaleProcessing(workflow: VideoWorkflow): boolean {
     return true;
   }
   return Date.now() - updated > PROCESSING_STALE_MS;
+}
+
+async function withStageTimeout<T>(
+  task: Promise<T>,
+  args: { workflowId: string; stage: WorkflowStage; action: string; timeoutMs?: number }
+): Promise<T> {
+  const timeoutMs = Math.max(1, Number(args.timeoutMs || WORKFLOW_STAGE_TIMEOUT_MS));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Error(
+              `[${args.workflowId}] ${args.stage}/${args.action} timed out after ${timeoutMs}ms`
+            )
+          );
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function validateScenes(scenes: WorkflowScene[]): void {
@@ -576,32 +617,46 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
       validateScenes(workflow.scenes);
       await upsertRow({ id, status: "generating_images", progress: 45 }, userId);
       const imageAspectRatio = resolveImageAspectRatioForWorkflow(workflow);
-      const imageUrls = await generateImages(
-        workflow.id,
-        workflow.scenes.map((scene) => scene.imagePrompt),
-        {
-          imageAspectRatio,
-          visualPolicy: "news_strict",
-          imageStyle: workflow.input.imageStyle,
-          fileNameSuffix: `batch-${Date.now()}`,
-          onProgress: async (completed, total) => {
-            const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
-            await upsertRow({
-              id,
-              status: "generating_images",
-              progress
-            }, userId);
+      const imageUrls = await withStageTimeout(
+        generateImages(
+          workflow.id,
+          workflow.scenes.map((scene) => scene.imagePrompt),
+          {
+            imageAspectRatio,
+            visualPolicy: "news_strict",
+            imageStyle: workflow.input.imageStyle,
+            fileNameSuffix: `batch-${Date.now()}`,
+            onProgress: async (completed, total) => {
+              const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
+              await upsertRow({
+                id,
+                status: "generating_images",
+                progress
+              }, userId);
+            }
           }
+        , userId),
+        {
+          workflowId: workflow.id,
+          stage: workflow.stage,
+          action: "generate_images"
         }
-      , userId);
+      );
 
       await upsertRow({ id, status: "generating_tts" }, userId);
-      const tts = await generateTtsAudio({
-        jobId: workflow.id,
-        narration: workflow.narration,
-        voice: workflow.input.voice,
-        speed: workflow.input.voiceSpeed
-      }, userId);
+      const tts = await withStageTimeout(
+        generateTtsAudio({
+          jobId: workflow.id,
+          narration: workflow.narration,
+          voice: workflow.input.voice,
+          speed: workflow.input.voiceSpeed
+        }, userId),
+        {
+          workflowId: workflow.id,
+          stage: workflow.stage,
+          action: "generate_tts"
+        }
+      );
 
       const scenes = workflow.scenes.map((scene, index) => ({
         ...scene,
@@ -644,17 +699,24 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
       );
 
       const previewRenderId = `${workflow.id}-preview-${Date.now()}`;
-      const preview = await buildVideoWithEngine({
-        jobId: previewRenderId,
-        imageUrls: workflow.scenes.map((scene) => scene.imageUrl || ""),
-        ttsPath: workflow.ttsUrl,
-        subtitlesText: workflow.narration,
-        titleText: workflow.input.title,
-        topicText: workflow.input.topic,
-        useSfx: workflow.input.useSfx,
-        targetDurationSec: workflow.input.videoLengthSec,
-        renderOptions: renderOptionsForVideo
-      }, userId);
+      const preview = await withStageTimeout(
+        buildVideoWithEngine({
+          jobId: previewRenderId,
+          imageUrls: workflow.scenes.map((scene) => scene.imageUrl || ""),
+          ttsPath: workflow.ttsUrl,
+          subtitlesText: workflow.narration,
+          titleText: workflow.input.title,
+          topicText: workflow.input.topic,
+          useSfx: workflow.input.useSfx,
+          targetDurationSec: workflow.input.videoLengthSec,
+          renderOptions: renderOptionsForVideo
+        }, userId),
+        {
+          workflowId: workflow.id,
+          stage: workflow.stage,
+          action: "build_preview_video"
+        }
+      );
 
       const updated = withTimestamps(
         {
@@ -695,17 +757,24 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
       } else {
         await upsertRow({ id, status: "video_rendering" }, userId);
         const finalRenderId = `${workflow.id}-final-${Date.now()}`;
-        const finalVideo = await buildVideoWithEngine({
-          jobId: finalRenderId,
-          imageUrls: workflow.scenes.map((scene) => scene.imageUrl || ""),
-          ttsPath: workflow.ttsUrl,
-          subtitlesText: workflow.narration,
-          titleText: workflow.input.title,
-          topicText: workflow.input.topic,
-          useSfx: workflow.input.useSfx,
-          targetDurationSec: workflow.input.videoLengthSec,
-          renderOptions: normalizedRenderOptions
-        }, userId);
+        const finalVideo = await withStageTimeout(
+          buildVideoWithEngine({
+            jobId: finalRenderId,
+            imageUrls: workflow.scenes.map((scene) => scene.imageUrl || ""),
+            ttsPath: workflow.ttsUrl,
+            subtitlesText: workflow.narration,
+            titleText: workflow.input.title,
+            topicText: workflow.input.topic,
+            useSfx: workflow.input.useSfx,
+            targetDurationSec: workflow.input.videoLengthSec,
+            renderOptions: normalizedRenderOptions
+          }, userId),
+          {
+            workflowId: workflow.id,
+            stage: workflow.stage,
+            action: "build_final_video"
+          }
+        );
         finalVideoUrl = finalVideo.outputUrl || finalVideo.outputPath;
       }
 

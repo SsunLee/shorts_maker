@@ -984,6 +984,11 @@ async function processOneRow(args: {
       } else if (workflow.stage === "video_review") {
         pushLog(args.userId, "info", `[${row.id}] final_render 대기중 (최종 렌더 요청 준비)`);
       }
+      pushLog(
+        args.userId,
+        "info",
+        `[${row.id}] 단계 실행 시작: ${beforeStage} (${beforeStatus})`
+      );
       workflow = await runNextWorkflowStage(workflow.id, args.userId);
       guard += 1;
       pushLog(
