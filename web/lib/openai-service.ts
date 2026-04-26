@@ -1081,7 +1081,7 @@ export async function generateImages(
   const imageModel = String(options?.imageModelOverride || resolvedImageModel).trim() || resolvedImageModel;
   const textModel = await resolveModelForTask(provider, "text", userId);
   const urls: string[] = [];
-  const openAiTimeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 45000);
+  const openAiTimeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 120000);
   const openAiRetryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 0);
   const geminiTimeoutMs = parsePositiveInt(process.env.GEMINI_IMAGE_TIMEOUT_MS, 45000);
   const geminiRetryCount = parsePositiveInt(process.env.GEMINI_IMAGE_RETRY_COUNT, 0);
