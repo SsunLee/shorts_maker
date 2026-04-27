@@ -1121,7 +1121,10 @@ export function DashboardClient(): React.JSX.Element {
             type="button"
             variant="outline"
             onClick={() => void stopAutomation()}
-            disabled={automationBusy || automation?.phase !== "running"}
+            disabled={
+              automationBusy ||
+              (automation?.phase !== "running" && automation?.phase !== "stopping")
+            }
           >
             중지 요청
           </Button>
