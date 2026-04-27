@@ -40,6 +40,12 @@ const WORKFLOW_STAGE_TIMEOUT_MS = parseBoundedInt(
   30_000,
   600_000
 );
+const WORKFLOW_GENERATE_IMAGES_TIMEOUT_MS = parseBoundedInt(
+  process.env.WORKFLOW_GENERATE_IMAGES_TIMEOUT_MS,
+  1_800_000,
+  60_000,
+  3_600_000
+);
 
 type RenderOptionsInput = {
   subtitle?: Partial<RenderOptions["subtitle"]>;
@@ -639,7 +645,8 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         {
           workflowId: workflow.id,
           stage: workflow.stage,
-          action: "generate_images"
+          action: "generate_images",
+          timeoutMs: WORKFLOW_GENERATE_IMAGES_TIMEOUT_MS
         }
       );
 
