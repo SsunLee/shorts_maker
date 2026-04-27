@@ -989,7 +989,9 @@ async function processOneRow(args: {
         "info",
         `[${row.id}] 단계 실행 시작: ${beforeStage} (${beforeStatus})`
       );
-      workflow = await runNextWorkflowStage(workflow.id, args.userId);
+      workflow = await runNextWorkflowStage(workflow.id, args.userId, (message) => {
+        pushLog(args.userId, "info", message);
+      });
       guard += 1;
       pushLog(
         args.userId,

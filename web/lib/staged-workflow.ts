@@ -573,7 +573,11 @@ export async function regenerateWorkflowSceneImage(
 }
 
 /** Move one step forward: scene split -> assets -> preview video -> final video. */
-export async function runNextWorkflowStage(id: string, userId?: string): Promise<VideoWorkflow> {
+export async function runNextWorkflowStage(
+  id: string,
+  userId?: string,
+  onLog?: (message: string) => void
+): Promise<VideoWorkflow> {
   let workflow = await getWorkflow(id, userId);
   if (!workflow) {
     throw new Error("Workflow not found.");
@@ -620,7 +624,9 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
 
   try {
     if (workflow.stage === "scene_split_review") {
+      onLog?.(`[${id}] scene_split_review 시작: 장면 유효성 검사`);
       validateScenes(workflow.scenes);
+      onLog?.(`[${id}] scene_split_review 진행: 이미지 생성 요청 준비 (${workflow.scenes.length}개)`);
       await upsertRow({ id, status: "generating_images", progress: 45 }, userId);
       const imageAspectRatio = resolveImageAspectRatioForWorkflow(workflow);
       const imageUrls = await withStageTimeout(
@@ -633,6 +639,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
             imageStyle: workflow.input.imageStyle,
             fileNameSuffix: `batch-${Date.now()}`,
             onProgress: async (completed, total) => {
+              onLog?.(`[${id}] scene_split_review 진행: 이미지 ${completed}/${total} 생성 완료`);
               const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
               await upsertRow({
                 id,
@@ -649,6 +656,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
           timeoutMs: WORKFLOW_GENERATE_IMAGES_TIMEOUT_MS
         }
       );
+      onLog?.(`[${id}] scene_split_review 진행: 이미지 생성 완료, TTS 시작`);
 
       await upsertRow({ id, status: "generating_tts" }, userId);
       const tts = await withStageTimeout(
@@ -664,6 +672,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
           action: "generate_tts"
         }
       );
+      onLog?.(`[${id}] scene_split_review 완료: TTS 생성 완료, assets_review로 전환`);
 
       const scenes = workflow.scenes.map((scene, index) => ({
         ...scene,
@@ -693,17 +702,20 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
     }
 
     if (workflow.stage === "assets_review") {
+      onLog?.(`[${id}] assets_review 시작: 입력 자산 검증`);
       validateScenes(workflow.scenes);
       if (!workflow.ttsUrl || workflow.scenes.some((scene) => !scene.imageUrl)) {
         throw new Error("Audio/images are missing. Complete previous stage first.");
       }
       await upsertRow({ id, status: "video_rendering" }, userId);
+      onLog?.(`[${id}] assets_review 진행: 미리보기 렌더 시작`);
 
       const renderOptionsForVideo = normalizeRenderOptions(workflow.renderOptions);
       renderOptionsForVideo.overlay.videoLayout = resolveVideoLayoutForAspect(
         workflow.input.imageAspectRatio,
         renderOptionsForVideo.overlay.videoLayout
       );
+      onLog?.(`[${id}] assets_review 완료: 미리보기 렌더 완료, video_review로 전환`);
 
       const previewRenderId = `${workflow.id}-preview-${Date.now()}`;
       const preview = await withStageTimeout(
@@ -745,6 +757,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
     }
 
     if (workflow.stage === "video_review") {
+      onLog?.(`[${id}] video_review 시작: 최종 렌더 준비`);
       validateScenes(workflow.scenes);
       if (!workflow.ttsUrl || workflow.scenes.some((scene) => !scene.imageUrl)) {
         throw new Error("Audio/images are missing. Complete previous stage first.");
@@ -761,8 +774,10 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
       let finalVideoUrl = workflow.finalVideoUrl;
       if (shouldReusePreview) {
         finalVideoUrl = workflow.previewVideoUrl;
+        onLog?.(`[${id}] video_review 진행: preview 재사용으로 final 준비 완료`);
       } else {
         await upsertRow({ id, status: "video_rendering" }, userId);
+        onLog?.(`[${id}] video_review 진행: 최종 렌더 시작`);
         const finalRenderId = `${workflow.id}-final-${Date.now()}`;
         const finalVideo = await withStageTimeout(
           buildVideoWithEngine({
@@ -783,6 +798,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
           }
         );
         finalVideoUrl = finalVideo.outputUrl || finalVideo.outputPath;
+        onLog?.(`[${id}] video_review 진행: 최종 렌더 완료`);
       }
 
       const updated = withTimestamps(
@@ -803,6 +819,7 @@ export async function runNextWorkflowStage(id: string, userId?: string): Promise
         imagePrompts: workflow.scenes.map((scene) => scene.imagePrompt),
         tags: workflow.input.tags ?? []
       }, userId);
+      onLog?.(`[${id}] video_review 완료: final_ready 전환`);
       return updated;
     }
 
