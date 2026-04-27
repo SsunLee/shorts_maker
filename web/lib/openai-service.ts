@@ -1085,6 +1085,7 @@ export async function generateImages(
   const openAiRetryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 0);
   const geminiTimeoutMs = parsePositiveInt(process.env.GEMINI_IMAGE_TIMEOUT_MS, 45000);
   const geminiRetryCount = parsePositiveInt(process.env.GEMINI_IMAGE_RETRY_COUNT, 0);
+  const assetStoreTimeoutMs = parsePositiveInt(process.env.ASSET_STORE_TIMEOUT_MS, 180000);
   const startIndex = Math.max(0, options?.startIndex ?? 0);
   const imageAspectRatio = options?.imageAspectRatio === "16:9" ? "16:9" : "9:16";
   const visualPolicy = options?.visualPolicy === "news_strict" ? "news_strict" : "default";
@@ -1104,6 +1105,8 @@ export async function generateImages(
     const client = await getGeminiClient(userId);
 
     for (let index = 0; index < sanitizedPrompts.length; index += 1) {
+      const stepLabel = `[image-step] provider=gemini model=${imageModel} prompt=${index + 1}/${sanitizedPrompts.length}`;
+      console.log(`${stepLabel} request:start`);
       const inline = await generateImageWithRetryGemini({
         client,
         prompt: sanitizedPrompts[index],
@@ -1114,17 +1117,23 @@ export async function generateImages(
         imageModel,
         textModel
       });
+      console.log(`${stepLabel} request:done mime=${inline.mimeType || "unknown"}`);
 
       const imageBuffer = Buffer.from(inline.data, "base64");
       const extension = extensionFromMime(inline.mimeType, "png");
       const fileName = buildImageFileName(index, extension);
-      const stored = await storeGeneratedAsset({
-        jobId,
-        fileName,
-        body: imageBuffer,
-        contentType: inline.mimeType || `image/${extension}`,
-        userId
-      });
+      const stored = await withTimeout(
+        storeGeneratedAsset({
+          jobId,
+          fileName,
+          body: imageBuffer,
+          contentType: inline.mimeType || `image/${extension}`,
+          userId
+        }),
+        assetStoreTimeoutMs,
+        `Image asset store timed out for prompt ${index + 1} (gemini).`
+      );
+      console.log(`${stepLabel} store:done url=${stored.publicUrl}`);
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
         await options.onProgress(index + 1, sanitizedPrompts.length);
@@ -1137,6 +1146,8 @@ export async function generateImages(
   const client = await getOpenAiClient(userId);
 
   for (let index = 0; index < sanitizedPrompts.length; index += 1) {
+    const stepLabel = `[image-step] provider=openai model=${imageModel} prompt=${index + 1}/${sanitizedPrompts.length}`;
+    console.log(`${stepLabel} request:start`);
     const result = await generateImageWithRetryOpenAi({
       client,
       prompt: sanitizedPrompts[index],
@@ -1147,18 +1158,24 @@ export async function generateImages(
       imageModel,
       textModel
     });
+    console.log(`${stepLabel} request:done`);
 
     const imageData = result.data?.[0];
     if (imageData?.b64_json) {
       const imageBuffer = Buffer.from(imageData.b64_json, "base64");
       const fileName = buildImageFileName(index, "png");
-      const stored = await storeGeneratedAsset({
-        jobId,
-        fileName,
-        body: imageBuffer,
-        contentType: "image/png",
-        userId
-      });
+      const stored = await withTimeout(
+        storeGeneratedAsset({
+          jobId,
+          fileName,
+          body: imageBuffer,
+          contentType: "image/png",
+          userId
+        }),
+        assetStoreTimeoutMs,
+        `Image asset store timed out for prompt ${index + 1} (openai:b64).`
+      );
+      console.log(`${stepLabel} store:done mode=b64 url=${stored.publicUrl}`);
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
         await options.onProgress(index + 1, sanitizedPrompts.length);
@@ -1168,13 +1185,18 @@ export async function generateImages(
 
     if (imageData?.url) {
       const fileName = buildImageFileName(index, "png");
-      const stored = await storeGeneratedAssetFromRemote({
-        jobId,
-        fileName,
-        sourceUrl: imageData.url,
-        contentType: "image/png",
-        userId
-      });
+      const stored = await withTimeout(
+        storeGeneratedAssetFromRemote({
+          jobId,
+          fileName,
+          sourceUrl: imageData.url,
+          contentType: "image/png",
+          userId
+        }),
+        assetStoreTimeoutMs,
+        `Remote image store timed out for prompt ${index + 1} (openai:url).`
+      );
+      console.log(`${stepLabel} store:done mode=url url=${stored.publicUrl}`);
       urls.push(stored.publicUrl);
       if (options?.onProgress) {
         await options.onProgress(index + 1, sanitizedPrompts.length);
