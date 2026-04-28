@@ -1213,9 +1213,8 @@ export async function generateImages(
     return urls;
   }
 
-  const client = await getOpenAiClient(userId);
-
   for (let index = 0; index < sanitizedPrompts.length; index += 1) {
+    const client = await getOpenAiClient(userId);
     const stepLabel = `[image-step] provider=openai model=${imageModel} prompt=${index + 1}/${sanitizedPrompts.length}`;
     console.log(`${stepLabel} request:start`);
     if (options?.onStep) {

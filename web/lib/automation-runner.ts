@@ -216,7 +216,7 @@ function clampInt(value: number, min: number, max: number): number {
 
 function resolveAutomationSceneCount(raw: number | undefined): number {
   const maxSceneCount = clampInt(
-    parsePositiveInt(process.env.AUTOMATION_SCENE_COUNT_MAX, 5),
+    parsePositiveInt(process.env.AUTOMATION_SCENE_COUNT_MAX, 12),
     3,
     12
   );
