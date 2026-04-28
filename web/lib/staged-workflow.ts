@@ -626,61 +626,71 @@ export async function runNextWorkflowStage(
     if (workflow.stage === "scene_split_review") {
       onLog?.(`[${id}] scene_split_review 시작: 장면 유효성 검사`);
       validateScenes(workflow.scenes);
-      onLog?.(`[${id}] scene_split_review 진행: 이미지 생성 요청 준비 (${workflow.scenes.length}개)`);
       await upsertRow({ id, status: "generating_images", progress: 45 }, userId);
       const imageAspectRatio = resolveImageAspectRatioForWorkflow(workflow);
-      const imageUrls = await withStageTimeout(
-        generateImages(
-          workflow.id,
-          workflow.scenes.map((scene) => scene.imagePrompt),
-          {
-            imageAspectRatio,
-            visualPolicy: "news_strict",
-            imageStyle: workflow.input.imageStyle,
-            fileNameSuffix: `batch-${Date.now()}`,
-            onStep: async (event) => {
-              const number = event.index + 1;
-              const total = event.total;
-              if (event.phase === "request_start") {
-                onLog?.(
-                  `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 모델 요청 시작 (${event.provider})`
-                );
-                return;
-              }
-              if (event.phase === "request_done") {
-                onLog?.(
-                  `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 모델 응답 수신`
-                );
-                return;
-              }
-              if (event.phase === "store_start") {
-                onLog?.(
-                  `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 저장 시작${event.mode ? ` (${event.mode})` : ""}`
-                );
-                return;
-              }
-              onLog?.(
-                `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 저장 완료${event.mode ? ` (${event.mode})` : ""}`
-              );
-            },
-            onProgress: async (completed, total) => {
-              onLog?.(`[${id}] scene_split_review 진행: 이미지 ${completed}/${total} 생성 완료`);
-              const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
-              await upsertRow({
-                id,
-                status: "generating_images",
-                progress
-              }, userId);
-            }
-          }
-        , userId),
-        {
-          workflowId: workflow.id,
-          stage: workflow.stage,
-          action: "generate_images",
-          timeoutMs: WORKFLOW_GENERATE_IMAGES_TIMEOUT_MS
-        }
+      const totalScenes = workflow.scenes.length;
+      const scenes = [...workflow.scenes];
+      const missingIndices = scenes
+        .map((scene, index) => ({ scene, index }))
+        .filter(({ scene }) => !scene.imageUrl)
+        .map(({ index }) => index);
+      onLog?.(
+        `[${id}] scene_split_review 진행: 이미지 생성 요청 준비 (${totalScenes}개, 대상 ${missingIndices.length}개)`
       );
+
+      for (const index of missingIndices) {
+        const number = index + 1;
+        const scene = scenes[index];
+        onLog?.(`[${id}] scene_split_review 진행: 이미지 ${number}/${totalScenes} 모델 요청 시작`);
+        const [imageUrl] = await withStageTimeout(
+          generateImages(
+            workflow.id,
+            [scene.imagePrompt],
+            {
+              startIndex: index,
+              imageAspectRatio,
+              visualPolicy: "news_strict",
+              imageStyle: workflow.input.imageStyle,
+              fileNameSuffix: `single-${number}-${Date.now()}`
+            },
+            userId
+          ),
+          {
+            workflowId: workflow.id,
+            stage: workflow.stage,
+            action: `generate_image_${number}`,
+            timeoutMs: WORKFLOW_GENERATE_IMAGES_TIMEOUT_MS
+          }
+        );
+        if (!imageUrl) {
+          throw new Error(`이미지 ${number}/${totalScenes} 생성 결과가 비어 있습니다.`);
+        }
+        scenes[index] = {
+          ...scene,
+          imageUrl
+        };
+        const completed = scenes.filter((item) => Boolean(item.imageUrl)).length;
+        onLog?.(`[${id}] scene_split_review 진행: 이미지 ${completed}/${totalScenes} 생성 완료`);
+        const progress = Math.min(64, 45 + Math.floor((completed / totalScenes) * 19));
+        await upsertRow(
+          {
+            id,
+            status: "generating_images",
+            progress
+          },
+          userId
+        );
+        workflow = withTimestamps(
+          {
+            ...workflow,
+            scenes,
+            status: "processing" as const,
+            error: undefined
+          },
+          workflow.createdAt
+        );
+        await upsertWorkflow(workflow, userId);
+      }
       onLog?.(`[${id}] scene_split_review 진행: 이미지 생성 완료, TTS 시작`);
 
       await upsertRow({ id, status: "generating_tts" }, userId);
@@ -699,10 +709,6 @@ export async function runNextWorkflowStage(
       );
       onLog?.(`[${id}] scene_split_review 완료: TTS 생성 완료, assets_review로 전환`);
 
-      const scenes = workflow.scenes.map((scene, index) => ({
-        ...scene,
-        imageUrl: imageUrls[index]
-      }));
       if (scenes.some((scene) => !scene.imageUrl)) {
         throw new Error("일부 장면 이미지 생성에 실패했습니다. 이미지 생성 단계를 다시 시도해 주세요.");
       }
