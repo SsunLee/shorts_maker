@@ -601,6 +601,19 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseBoundedInt(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
+}
+
 async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -1088,11 +1101,26 @@ export async function generateImages(
   const imageModel = String(options?.imageModelOverride || resolvedImageModel).trim() || resolvedImageModel;
   const textModel = await resolveModelForTask(provider, "text", userId);
   const urls: string[] = [];
-  const openAiTimeoutMs = parsePositiveInt(process.env.OPENAI_IMAGE_TIMEOUT_MS, 120000);
+  const openAiTimeoutMs = parseBoundedInt(
+    process.env.OPENAI_IMAGE_TIMEOUT_MS,
+    120000,
+    15000,
+    180000
+  );
   const openAiRetryCount = parsePositiveInt(process.env.OPENAI_IMAGE_RETRY_COUNT, 0);
-  const geminiTimeoutMs = parsePositiveInt(process.env.GEMINI_IMAGE_TIMEOUT_MS, 45000);
+  const geminiTimeoutMs = parseBoundedInt(
+    process.env.GEMINI_IMAGE_TIMEOUT_MS,
+    45000,
+    15000,
+    180000
+  );
   const geminiRetryCount = parsePositiveInt(process.env.GEMINI_IMAGE_RETRY_COUNT, 0);
-  const assetStoreTimeoutMs = parsePositiveInt(process.env.ASSET_STORE_TIMEOUT_MS, 180000);
+  const assetStoreTimeoutMs = parseBoundedInt(
+    process.env.ASSET_STORE_TIMEOUT_MS,
+    180000,
+    15000,
+    300000
+  );
   const startIndex = Math.max(0, options?.startIndex ?? 0);
   const imageAspectRatio = options?.imageAspectRatio === "16:9" ? "16:9" : "9:16";
   const visualPolicy = options?.visualPolicy === "news_strict" ? "news_strict" : "default";
@@ -1101,6 +1129,9 @@ export async function generateImages(
     .replace(/[^a-zA-Z0-9_-]+/g, "");
   const styleAwarePrompts = prompts.map((prompt) => ensurePromptContainsStyle(prompt, options?.imageStyle));
   const sanitizedPrompts = styleAwarePrompts.map((prompt) => sanitizePromptByVisualPolicy(prompt, visualPolicy));
+  console.log(
+    `[image-step] batch:start provider=${provider} imageModel=${imageModel} total=${sanitizedPrompts.length} openaiTimeoutMs=${openAiTimeoutMs} geminiTimeoutMs=${geminiTimeoutMs} assetStoreTimeoutMs=${assetStoreTimeoutMs}`
+  );
 
   function buildImageFileName(index: number, extension = "png"): string {
     const sequence = startIndex + index + 1;
