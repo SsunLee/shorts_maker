@@ -47,7 +47,13 @@ function sanitizePromptByVisualPolicy(prompt: string, policy: ImageVisualPolicy)
 }
 
 /** Create an OpenAI client from env/settings and throw if no key exists. */
-export async function getOpenAiClient(userId?: string): Promise<OpenAI> {
+export async function getOpenAiClient(
+  userId?: string,
+  options?: {
+    timeoutMs?: number;
+    maxRetries?: number;
+  }
+): Promise<OpenAI> {
   const keys = await resolveApiKeys(userId);
   const apiKey = keys.openaiKey;
   if (!apiKey) {
@@ -55,7 +61,11 @@ export async function getOpenAiClient(userId?: string): Promise<OpenAI> {
       "OpenAI API key is missing. Set OPENAI_API_KEY or save it in /settings."
     );
   }
-  return new OpenAI({ apiKey });
+  return new OpenAI({
+    apiKey,
+    timeout: options?.timeoutMs,
+    maxRetries: typeof options?.maxRetries === "number" ? options.maxRetries : 0
+  });
 }
 
 /** Create a Gemini client from env/settings and throw if no key exists. */
@@ -1214,7 +1224,10 @@ export async function generateImages(
   }
 
   for (let index = 0; index < sanitizedPrompts.length; index += 1) {
-    const client = await getOpenAiClient(userId);
+    const client = await getOpenAiClient(userId, {
+      timeoutMs: openAiTimeoutMs,
+      maxRetries: 0
+    });
     const stepLabel = `[image-step] provider=openai model=${imageModel} prompt=${index + 1}/${sanitizedPrompts.length}`;
     console.log(`${stepLabel} request:start`);
     if (options?.onStep) {
