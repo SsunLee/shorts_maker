@@ -638,6 +638,31 @@ export async function runNextWorkflowStage(
             visualPolicy: "news_strict",
             imageStyle: workflow.input.imageStyle,
             fileNameSuffix: `batch-${Date.now()}`,
+            onStep: async (event) => {
+              const number = event.index + 1;
+              const total = event.total;
+              if (event.phase === "request_start") {
+                onLog?.(
+                  `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 모델 요청 시작 (${event.provider})`
+                );
+                return;
+              }
+              if (event.phase === "request_done") {
+                onLog?.(
+                  `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 모델 응답 수신`
+                );
+                return;
+              }
+              if (event.phase === "store_start") {
+                onLog?.(
+                  `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 저장 시작${event.mode ? ` (${event.mode})` : ""}`
+                );
+                return;
+              }
+              onLog?.(
+                `[${id}] scene_split_review 진행: 이미지 ${number}/${total} 저장 완료${event.mode ? ` (${event.mode})` : ""}`
+              );
+            },
             onProgress: async (completed, total) => {
               onLog?.(`[${id}] scene_split_review 진행: 이미지 ${completed}/${total} 생성 완료`);
               const progress = Math.min(64, 45 + Math.floor((completed / total) * 19));
