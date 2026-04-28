@@ -207,6 +207,23 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function resolveAutomationSceneCount(raw: number | undefined): number {
+  const maxSceneCount = clampInt(
+    parsePositiveInt(process.env.AUTOMATION_SCENE_COUNT_MAX, 5),
+    3,
+    12
+  );
+  const desired = clampInt(Number(raw || DEFAULTS.sceneCount), 3, 12);
+  return Math.min(desired, maxSceneCount);
+}
+
 function parseRatio(value: string | undefined, fallback: number, min: number, max: number): number {
   const parsed = Number.parseFloat(String(value || "").trim());
   if (!Number.isFinite(parsed)) {
@@ -932,7 +949,7 @@ async function processOneRow(args: {
     voiceSpeed: args.defaults.voiceSpeed,
     useSfx: args.defaults.useSfx,
     videoLengthSec: args.defaults.videoLengthSec,
-    sceneCount: args.defaults.sceneCount,
+    sceneCount: resolveAutomationSceneCount(args.defaults.sceneCount),
     tags
   };
 
@@ -942,7 +959,11 @@ async function processOneRow(args: {
       rowId: row.id,
       uploadMode: args.uploadMode
     });
-    pushLog(args.userId, "info", `[${row.id}] 워크플로우 시작`);
+    pushLog(
+      args.userId,
+      "info",
+      `[${row.id}] 워크플로우 시작 (sceneCount=${createPayload.sceneCount})`
+    );
     let workflow = await startStagedWorkflow(createPayload, args.userId);
 
     const rowRenderOptions = materializeRenderOptionsForRow({
