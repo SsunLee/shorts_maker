@@ -634,11 +634,10 @@ export async function runNextWorkflowStage(
         .map((scene, index) => ({ scene, index }))
         .filter(({ scene }) => !scene.imageUrl)
         .map(({ index }) => index);
-      onLog?.(
-        `[${id}] scene_split_review 진행: 이미지 생성 요청 준비 (${totalScenes}개, 대상 ${missingIndices.length}개)`
-      );
+      onLog?.(`[${id}] scene_split_review 진행: 이미지 생성 요청 준비 (${totalScenes}개, 대상 ${missingIndices.length}개)`);
 
-      for (const index of missingIndices) {
+      if (missingIndices.length > 0) {
+        const index = missingIndices[0];
         const number = index + 1;
         const scene = scenes[index];
         onLog?.(`[${id}] scene_split_review 진행: 이미지 ${number}/${totalScenes} 모델 요청 시작`);
@@ -672,6 +671,17 @@ export async function runNextWorkflowStage(
         const completed = scenes.filter((item) => Boolean(item.imageUrl)).length;
         onLog?.(`[${id}] scene_split_review 진행: 이미지 ${completed}/${totalScenes} 생성 완료`);
         const progress = Math.min(64, 45 + Math.floor((completed / totalScenes) * 19));
+        const updated = withTimestamps(
+          {
+            ...workflow,
+            scenes,
+            stage: "scene_split_review" as const,
+            status: "idle" as const,
+            error: undefined
+          },
+          workflow.createdAt
+        );
+        await upsertWorkflow(updated, userId);
         await upsertRow(
           {
             id,
@@ -680,17 +690,9 @@ export async function runNextWorkflowStage(
           },
           userId
         );
-        workflow = withTimestamps(
-          {
-            ...workflow,
-            scenes,
-            status: "processing" as const,
-            error: undefined
-          },
-          workflow.createdAt
-        );
-        await upsertWorkflow(workflow, userId);
+        return updated;
       }
+
       onLog?.(`[${id}] scene_split_review 진행: 이미지 생성 완료, TTS 시작`);
 
       await upsertRow({ id, status: "generating_tts" }, userId);

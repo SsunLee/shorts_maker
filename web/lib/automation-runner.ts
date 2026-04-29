@@ -989,7 +989,9 @@ async function processOneRow(args: {
     }
 
     let guard = 0;
-    while (workflow.stage !== "final_ready" && workflow.status !== "failed" && guard < 6) {
+    const sceneCountForGuard = Number(createPayload.sceneCount || 10);
+    const guardLimit = Math.max(24, sceneCountForGuard * 4);
+    while (workflow.stage !== "final_ready" && workflow.status !== "failed" && guard < guardLimit) {
       const beforeStage = workflow.stage;
       const beforeStatus = workflow.status;
       if (workflow.stage === "scene_split_review") {
@@ -1017,7 +1019,7 @@ async function processOneRow(args: {
       pushLog(
         args.userId,
         "info",
-        `[${row.id}] 단계 진행 ${beforeStage}(${beforeStatus}) -> ${workflow.stage}(${workflow.status}) [${guard}/6]`
+        `[${row.id}] 단계 진행 ${beforeStage}(${beforeStatus}) -> ${workflow.stage}(${workflow.status}) [${guard}/${guardLimit}]`
       );
     }
 
@@ -1025,7 +1027,7 @@ async function processOneRow(args: {
       throw new Error(workflow.error || "Workflow failed while running automation.");
     }
     if (workflow.stage !== "final_ready") {
-      throw new Error(`Unexpected workflow stage after automation: ${workflow.stage}`);
+      throw new Error(`Unexpected workflow stage after automation: ${workflow.stage} (guard=${guard}/${guardLimit})`);
     }
     const videoUrl = workflow.finalVideoUrl || workflow.previewVideoUrl;
     if (!videoUrl) {
