@@ -992,15 +992,29 @@ async function generateImageWithRetryOpenAi(args: {
   let lastError: unknown;
   for (let attempt = 0; attempt <= args.retryCount; attempt += 1) {
     try {
-      return await withTimeout(
-        args.client.images.generate({
-          model: args.imageModel,
-          prompt: currentPrompt,
-          size: args.imageAspectRatio === "16:9" ? "1536x1024" : "1024x1536"
-        }),
-        args.timeoutMs,
-        `Image generation timed out for prompt ${args.promptIndex + 1}.`
-      );
+      const abortController = new AbortController();
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      try {
+        timeoutHandle = setTimeout(() => {
+          abortController.abort(
+            new Error(`Image generation timed out for prompt ${args.promptIndex + 1}.`)
+          );
+        }, args.timeoutMs);
+        return await args.client.images.generate(
+          {
+            model: args.imageModel,
+            prompt: currentPrompt,
+            size: args.imageAspectRatio === "16:9" ? "1536x1024" : "1024x1536"
+          },
+          {
+            signal: abortController.signal
+          }
+        );
+      } finally {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+      }
     } catch (error) {
       if (isSafetyRejectionError(error) && !rewrittenForSafety) {
         currentPrompt = await rewritePromptForSafetyOpenAi({
