@@ -979,6 +979,7 @@ async function rewritePromptForSafetyGemini(args: {
 
 async function generateImageWithRetryOpenAi(args: {
   client: OpenAI;
+  apiKey: string;
   prompt: string;
   imageAspectRatio: ImageAspectRatio;
   timeoutMs: number;
@@ -993,27 +994,32 @@ async function generateImageWithRetryOpenAi(args: {
   for (let attempt = 0; attempt <= args.retryCount; attempt += 1) {
     try {
       const abortController = new AbortController();
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeoutHandle = setTimeout(() => {
+        abortController.abort(
+          new Error(`Image generation timed out for prompt ${args.promptIndex + 1}.`)
+        );
+      }, args.timeoutMs);
       try {
-        timeoutHandle = setTimeout(() => {
-          abortController.abort(
-            new Error(`Image generation timed out for prompt ${args.promptIndex + 1}.`)
-          );
-        }, args.timeoutMs);
-        return await args.client.images.generate(
-          {
+        const response = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${args.apiKey}`
+          },
+          body: JSON.stringify({
             model: args.imageModel,
             prompt: currentPrompt,
             size: args.imageAspectRatio === "16:9" ? "1536x1024" : "1024x1536"
-          },
-          {
-            signal: abortController.signal
-          }
-        );
-      } finally {
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
+          }),
+          signal: abortController.signal
+        });
+        const raw = await response.text();
+        if (!response.ok) {
+          throw new Error(`OpenAI image API ${response.status}: ${raw.slice(0, 300)}`);
         }
+        return JSON.parse(raw) as OpenAI.Images.ImagesResponse;
+      } finally {
+        clearTimeout(timeoutHandle);
       }
     } catch (error) {
       if (isSafetyRejectionError(error) && !rewrittenForSafety) {
@@ -1121,6 +1127,7 @@ export async function generateImages(
   userId?: string
 ): Promise<string[]> {
   const provider = options?.providerOverride || (await resolveProviderForTask("image", userId));
+  const keys = await resolveApiKeys(userId);
   const resolvedImageModel = await resolveModelForTask(provider, "image", userId);
   const imageModel = String(options?.imageModelOverride || resolvedImageModel).trim() || resolvedImageModel;
   const textModel = await resolveModelForTask(provider, "text", userId);
@@ -1238,8 +1245,13 @@ export async function generateImages(
   }
 
   for (let index = 0; index < sanitizedPrompts.length; index += 1) {
-    const client = await getOpenAiClient(userId, {
-      timeoutMs: openAiTimeoutMs,
+    const apiKey = keys.openaiKey;
+    if (!apiKey) {
+      throw new Error("OpenAI API key is missing. Configure it in /settings.");
+    }
+    const client = new OpenAI({
+      apiKey,
+      timeout: openAiTimeoutMs,
       maxRetries: 0
     });
     const stepLabel = `[image-step] provider=openai model=${imageModel} prompt=${index + 1}/${sanitizedPrompts.length}`;
@@ -1254,6 +1266,7 @@ export async function generateImages(
     }
     const result = await generateImageWithRetryOpenAi({
       client,
+      apiKey,
       prompt: sanitizedPrompts[index],
       imageAspectRatio,
       timeoutMs: openAiTimeoutMs,
