@@ -10,7 +10,9 @@ import { ensureAutomationSchedulerStarted } from "@/lib/automation-scheduler";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+// Automation may include 10-image generation + TTS + rendering in one run.
+// Keep function budget high enough to avoid hard-cut around image 5~6 on serverless.
+export const maxDuration = 900;
 
 const startSchema = z.object({
   sheetName: z.string().optional(),
