@@ -234,6 +234,7 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
       aiGenerateEnabled: Boolean(element.aiGenerateEnabled),
       aiModel: String((element as { aiModel?: string }).aiModel || "auto"),
       aiPrompt: String(element.aiPrompt || ""),
+      aiPromptVariableKey: String((element as { aiPromptVariableKey?: string }).aiPromptVariableKey || "").trim(),
       aiStylePreset: String(element.aiStylePreset || "Cinematic photo-real"),
       aiImageOrientation: element.aiImageOrientation === "horizontal" ? "horizontal" : "vertical"
     };

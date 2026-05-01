@@ -90,6 +90,7 @@ export interface InstagramImageElement extends InstagramElementBase {
   aiGenerateEnabled: boolean;
   aiModel: string;
   aiPrompt: string;
+  aiPromptVariableKey?: string;
   aiStylePreset: string;
   aiImageOrientation: InstagramAiImageOrientation;
 }

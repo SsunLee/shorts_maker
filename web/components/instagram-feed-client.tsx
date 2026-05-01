@@ -39,7 +39,7 @@ import {
   type InstagramTemplateEditDraft
 } from "@/lib/instagram-feed-storage";
 import type { AppSettings } from "@/lib/types";
-import type { InstagramFeedPage, InstagramGeneratedFeedItem, InstagramTemplate } from "@/lib/instagram-types";
+import type { InstagramFeedPage, InstagramGeneratedFeedItem, InstagramImageElement, InstagramTemplate } from "@/lib/instagram-types";
 
 type MetaHealthResponse = {
   ok?: boolean;
@@ -100,6 +100,10 @@ type GenerateImageResponse = {
   stylePreset?: string;
   error?: string;
 };
+
+function resolveAiImageOrientation(value: string | undefined): "vertical" | "horizontal" {
+  return value === "horizontal" ? "horizontal" : "vertical";
+}
 
 type RenderPageVideoResponse = {
   outputUrl?: string;
@@ -902,6 +906,7 @@ export function InstagramFeedClient(): React.JSX.Element {
       const pickedRows = (sheetRows || []).slice(0, max);
       const templateMap = new Map(templates.map((item) => [item.id, item]));
       const generated: InstagramGeneratedFeedItem[] = [];
+      const imageGenerationErrors: string[] = [];
 
       for (const row of pickedRows) {
         const payload = {
@@ -917,22 +922,61 @@ export function InstagramFeedClient(): React.JSX.Element {
         for (const templateId of selectedTemplateIds) {
           const template = templateMap.get(templateId);
           if (!template) continue;
-          const pages = template.pages.map((page) => ({
-            ...page,
-            backgroundImageUrl: materialize(String(page.backgroundImageUrl || ""), payload),
-            audioPrompt: materialize(String(page.audioPrompt || ""), payload),
-            elements: page.elements.map((element) =>
-              element.type === "text"
-                ? { ...element, text: materialize(element.text, payload) }
-                : element.type === "image"
-                  ? {
-                      ...element,
-                      imageUrl: materialize(String(element.imageUrl || ""), payload),
-                      aiPrompt: materialize(String(element.aiPrompt || ""), payload)
+          const pages: InstagramFeedPage[] = [];
+          for (const page of template.pages) {
+            const nextElements = [];
+            for (const element of page.elements) {
+              if (element.type === "text") {
+                nextElements.push({ ...element, text: materialize(element.text, payload) });
+                continue;
+              }
+              if (element.type === "image") {
+                const nextImageElement: InstagramImageElement = {
+                  ...element,
+                  imageUrl: materialize(String(element.imageUrl || ""), payload),
+                  aiPrompt: materialize(String(element.aiPrompt || ""), payload)
+                };
+                if (nextImageElement.aiGenerateEnabled && collapseWhitespace(nextImageElement.aiPrompt)) {
+                  try {
+                    const orientation = resolveAiImageOrientation(nextImageElement.aiImageOrientation);
+                    const imageAspectRatio = orientation === "horizontal" ? "16:9" : "9:16";
+                    const response = await fetch("/api/instagram/generate-image", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        prompt: nextImageElement.aiPrompt,
+                        aiModel: String(nextImageElement.aiModel || "auto"),
+                        imageAspectRatio,
+                        stylePreset: String(nextImageElement.aiStylePreset || "Cinematic photo-real"),
+                        canvasWidth: normalizeCanvasWidth(Number(template.canvasWidth || 1080)),
+                        canvasHeight: normalizeCanvasHeight(Number(template.canvasHeight || 1350))
+                      })
+                    });
+                    const data = (await response.json()) as GenerateImageResponse;
+                    if (response.ok && data.imageUrl) {
+                      nextImageElement.imageUrl = String(data.imageUrl || "");
+                      nextImageElement.mediaType = "image";
+                    } else {
+                      throw new Error(data.error || "AI 이미지 생성 실패");
                     }
-                  : element
-            )
-          }));
+                  } catch (generateError) {
+                    imageGenerationErrors.push(
+                      `[${row.id}/${template.templateName}/${page.name}] ${generateError instanceof Error ? generateError.message : "AI 이미지 생성 실패"}`
+                    );
+                  }
+                }
+                nextElements.push(nextImageElement);
+                continue;
+              }
+              nextElements.push(element);
+            }
+            pages.push({
+              ...page,
+              backgroundImageUrl: materialize(String(page.backgroundImageUrl || ""), payload),
+              audioPrompt: materialize(String(page.audioPrompt || ""), payload),
+              elements: nextElements
+            });
+          }
           generated.push({
             id: uid(),
             templateId: template.id,
@@ -949,7 +993,12 @@ export function InstagramFeedClient(): React.JSX.Element {
 
       saveFeedItems(generated);
       setSelectedItemId(generated[0]?.id);
-      setSuccess(`컨테이너 ${generated.length}개를 생성했습니다.`);
+      if (imageGenerationErrors.length > 0) {
+        setError(`컨테이너는 생성했지만 일부 이미지 자동 생성 실패 (${imageGenerationErrors.length}건)`);
+        setSuccess(`컨테이너 ${generated.length}개를 생성했습니다. (AI 이미지 자동 생성 일부 실패)`);
+      } else {
+        setSuccess(`컨테이너 ${generated.length}개를 생성했습니다.`);
+      }
     } catch (buildError) {
       setError(buildError instanceof Error ? buildError.message : "컨테이너 생성에 실패했습니다.");
     } finally {

@@ -1601,6 +1601,7 @@ function createImageLayer(): InstagramImageElement {
     aiGenerateEnabled: false,
     aiModel: "auto",
     aiPrompt: "",
+    aiPromptVariableKey: "",
     aiStylePreset: DEFAULT_INSTAGRAM_AI_IMAGE_STYLE,
     aiImageOrientation: "vertical"
   };
@@ -1701,6 +1702,7 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
             aiGenerateEnabled: Boolean(core.aiGenerateEnabled),
             aiModel: resolveAiImageModel(core.aiModel),
             aiPrompt: String(core.aiPrompt || ""),
+            aiPromptVariableKey: String(core.aiPromptVariableKey || "").trim(),
             aiStylePreset: String(core.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE),
             aiImageOrientation: resolveAiImageOrientation(core.aiImageOrientation)
           } as InstagramImageElement;
@@ -4569,18 +4571,20 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       "";
 
     const currentPromptRaw = String(layer.aiPrompt || "");
+    const explicitVariableKey = String(layer.aiPromptVariableKey || "").trim();
     const tokenMatch = currentPromptRaw.match(/\{\{\s*([^}]+)\s*\}\}/);
-    const variableKey = tokenMatch ? String(tokenMatch[1] || "").trim() : "";
-    const variableResolved = tokenMatch
-      ? collapseWhitespace(resolveLayerTokenText(tokenMatch[0], sampleData, "variable"))
+    const variableKey = explicitVariableKey || (tokenMatch ? String(tokenMatch[1] || "").trim() : "");
+    const variableToken = variableKey ? `{{${variableKey}}}` : tokenMatch?.[0] || "";
+    const variableResolved = variableToken
+      ? collapseWhitespace(resolveLayerTokenText(variableToken, sampleData, "variable"))
       : "";
     if (mode === "check") {
-      if (!tokenMatch || !variableKey) {
-        setError("check는 {{변수명}} 프롬프트에서만 사용할 수 있습니다.");
+      if (!variableKey) {
+        setError("변수명으로 실행하려면 '변수명' 필드 또는 {{변수명}} 프롬프트를 입력해 주세요.");
         return;
       }
-      if (!variableResolved || variableResolved === tokenMatch[0]) {
-        setError(`변수 ${tokenMatch[0]} 값을 sampleData에서 찾지 못했습니다.`);
+      if (!variableResolved || variableResolved === variableToken) {
+        setError(`변수 ${variableToken} 값을 sampleData에서 찾지 못했습니다.`);
         return;
       }
     }
@@ -6850,10 +6854,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                 className="h-7 px-2 text-[11px]"
                                 onClick={() => void suggestAiPromptForLayer(selectedLayer.id, "check")}
                                 disabled={aiPromptGeneratingLayerId === selectedLayer.id}
-                                title="{{변수}} 값만으로 프롬프트 완성"
+                                title="변수명 값만으로 프롬프트 완성"
                               >
-                                {aiPromptGeneratingLayerId === selectedLayer.id ? "확인 중..." : "check"}
+                                <Sparkles className="mr-1 h-3.5 w-3.5" />
+                                {aiPromptGeneratingLayerId === selectedLayer.id ? "처리 중..." : "변수명으로"}
                               </Button>
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[11px] text-zinc-300">변수명</Label>
+                              <Input
+                                value={String(selectedLayer.aiPromptVariableKey || "")}
+                                onChange={(event) =>
+                                  updateLayerById(selectedLayer.id, (layer) =>
+                                    layer.type === "image"
+                                      ? { ...layer, aiPromptVariableKey: String(event.target.value || "").trim() }
+                                      : layer
+                                  )
+                                }
+                                placeholder="예: example_1_title"
+                                className="h-8 text-xs"
+                              />
                             </div>
                             <Textarea
                               rows={2}
