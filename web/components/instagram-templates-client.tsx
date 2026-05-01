@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 import {
   AlignCenter,
   AlignLeft,
@@ -42,6 +43,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { renderInstagramPageToPngDataUrl } from "@/lib/instagram-page-renderer";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
 import {
+  INSTAGRAM_FEED_DRAFT_KEY,
+  INSTAGRAM_FEED_STORAGE_KEY,
   INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY,
   type InstagramTemplateEditDraft
 } from "@/lib/instagram-feed-storage";
@@ -52,6 +55,7 @@ import type {
   InstagramAiImageOrientation,
   InstagramCustomFont,
   InstagramFeedPage,
+  InstagramGeneratedFeedItem,
   InstagramImageElement,
   InstagramPageElement,
   InstagramShapeElement,
@@ -1792,6 +1796,13 @@ function resolveLayerTokenText(
   });
 }
 
+function sanitizeAiPromptVariableKey(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const unwrapped = raw.replace(/^\{\{\s*/, "").replace(/\s*\}\}$/, "");
+  return unwrapped.trim();
+}
+
 function resolveTextLayerContent(layer: InstagramTextElement, sampleData: Record<string, string>): string {
   return resolveLayerTokenText(
     layer.text,
@@ -2234,6 +2245,7 @@ function ColorField(props: {
 }
 
 export function InstagramTemplatesClient(): React.JSX.Element {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -4571,7 +4583,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       "";
 
     const currentPromptRaw = String(layer.aiPrompt || "");
-    const explicitVariableKey = String(layer.aiPromptVariableKey || "").trim();
+    const explicitVariableKey = sanitizeAiPromptVariableKey(String(layer.aiPromptVariableKey || ""));
     const tokenMatch = currentPromptRaw.match(/\{\{\s*([^}]+)\s*\}\}/);
     const variableKey = explicitVariableKey || (tokenMatch ? String(tokenMatch[1] || "").trim() : "");
     const variableToken = variableKey ? `{{${variableKey}}}` : tokenMatch?.[0] || "";
@@ -4628,6 +4640,65 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setError(suggestError instanceof Error ? suggestError.message : "프롬프트 자동 완성에 실패했습니다.");
     } finally {
       setAiPromptGeneratingLayerId(undefined);
+    }
+  }
+
+  function materializeTemplateValue(raw: string, row: Record<string, string>): string {
+    return resolveLayerTokenText(String(raw || ""), row, "variable");
+  }
+
+  function pushCurrentTemplateToFeed(): void {
+    try {
+      const payload = sampleData || {};
+      const pages: InstagramFeedPage[] = editor.pages.map((page) => ({
+        ...page,
+        backgroundImageUrl: materializeTemplateValue(String(page.backgroundImageUrl || ""), payload),
+        audioPrompt: materializeTemplateValue(String(page.audioPrompt || ""), payload),
+        elements: page.elements.map((element) =>
+          element.type === "text"
+            ? {
+                ...element,
+                text:
+                  element.textMode === "plain"
+                    ? String(element.text || "")
+                    : resolveLayerTokenText(element.text, payload, "variable", element.bindingKey)
+              }
+            : element.type === "image"
+              ? {
+                  ...element,
+                  imageUrl: materializeTemplateValue(String(element.imageUrl || ""), payload),
+                  aiPrompt: materializeTemplateValue(String(element.aiPrompt || ""), payload),
+                  aiPromptVariableKey: sanitizeAiPromptVariableKey(String(element.aiPromptVariableKey || ""))
+                }
+              : element
+        )
+      }));
+      const feedItem: InstagramGeneratedFeedItem = {
+        id: uid(),
+        templateId: editor.id,
+        templateName: editor.templateName,
+        rowId: String(payload.id || `template-${Date.now()}`),
+        subject: String(payload.subject || editor.templateName || "Template Draft"),
+        keyword: String(payload.keyword || "template"),
+        generatedAt: new Date().toISOString(),
+        sampleData: payload,
+        pages
+      };
+      const currentRaw = typeof window !== "undefined" ? window.localStorage.getItem(INSTAGRAM_FEED_STORAGE_KEY) : null;
+      const currentItems = currentRaw ? ((JSON.parse(currentRaw) as InstagramGeneratedFeedItem[]) || []) : [];
+      const nextItems = [feedItem, ...currentItems].slice(0, 200);
+      window.localStorage.setItem(INSTAGRAM_FEED_STORAGE_KEY, JSON.stringify(nextItems));
+      window.localStorage.setItem(
+        INSTAGRAM_FEED_DRAFT_KEY,
+        JSON.stringify({
+          selectedItemId: feedItem.id,
+          source: "instagram-news"
+        })
+      );
+      setSuccess("현재 템플릿을 피드로 보냈습니다. 피드 화면에서 바로 업로드할 수 있습니다.");
+      router.push("/instagram/feed");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "템플릿을 피드로 보내는 중 오류가 발생했습니다.");
     }
   }
 
@@ -5255,7 +5326,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       </header>
 
       <div className="rounded-xl border bg-card p-3">
-        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_auto_auto_auto_auto_auto]">
+        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_auto_auto_auto_auto_auto_auto]">
           <div className="space-y-1">
             <Label>저장된 템플릿</Label>
             <Select value={selectedTemplateId} onValueChange={selectTemplate}>
@@ -5323,6 +5394,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           >
             <Trash2 className="h-4 w-4" />
             삭제
+          </Button>
+          <Button type="button" variant="outline" onClick={pushCurrentTemplateToFeed} disabled={busy}>
+            <Upload className="h-4 w-4" />
+            피드로 보내기
           </Button>
         </div>
         <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(220px,1fr)_minmax(160px,0.8fr)_minmax(180px,0.9fr)_minmax(240px,1fr)_120px_120px]">
@@ -6867,7 +6942,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                 onChange={(event) =>
                                   updateLayerById(selectedLayer.id, (layer) =>
                                     layer.type === "image"
-                                      ? { ...layer, aiPromptVariableKey: String(event.target.value || "").trim() }
+                                      ? {
+                                          ...layer,
+                                          aiPromptVariableKey: sanitizeAiPromptVariableKey(String(event.target.value || ""))
+                                        }
                                       : layer
                                   )
                                 }
