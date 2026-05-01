@@ -4547,7 +4547,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
   }
 
-  async function suggestAiPromptForLayer(layerId: string): Promise<void> {
+  async function suggestAiPromptForLayer(layerId: string, mode: "magic" | "check" = "magic"): Promise<void> {
     const page = editorRef.current.pages.find((item) => item.id === selectedPageIdRef.current);
     const layer = page?.elements.find((item) => item.id === layerId);
     if (!page || !layer || layer.type !== "image") {
@@ -4568,6 +4568,23 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       sampleData.topic ||
       "";
 
+    const currentPromptRaw = String(layer.aiPrompt || "");
+    const tokenMatch = currentPromptRaw.match(/\{\{\s*([^}]+)\s*\}\}/);
+    const variableKey = tokenMatch ? String(tokenMatch[1] || "").trim() : "";
+    const variableResolved = tokenMatch
+      ? collapseWhitespace(resolveLayerTokenText(tokenMatch[0], sampleData, "variable"))
+      : "";
+    if (mode === "check") {
+      if (!tokenMatch || !variableKey) {
+        setError("check는 {{변수명}} 프롬프트에서만 사용할 수 있습니다.");
+        return;
+      }
+      if (!variableResolved || variableResolved === tokenMatch[0]) {
+        setError(`변수 ${tokenMatch[0]} 값을 sampleData에서 찾지 못했습니다.`);
+        return;
+      }
+    }
+
     setAiPromptGeneratingLayerId(layerId);
     setError(undefined);
     setSuccess(undefined);
@@ -4576,16 +4593,19 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          topic: sampleData.topic || sampleData.keyword || sampleData.subject || "",
-          subject: sampleData.subject || "",
+          topic: mode === "check" ? variableResolved : sampleData.topic || sampleData.keyword || sampleData.subject || "",
+          subject: mode === "check" ? variableResolved : sampleData.subject || "",
           title: String((page as { title?: string }).title || sampleTitle || ""),
-          description: sampleData.description || "",
-          narration: sampleData.narration || "",
-          currentPrompt: String(layer.aiPrompt || ""),
-          textHints,
+          description: mode === "check" ? "" : sampleData.description || "",
+          narration: mode === "check" ? variableResolved : sampleData.narration || "",
+          currentPrompt: currentPromptRaw,
+          textHints: mode === "check" ? [] : textHints,
           sampleData,
           stylePreset: String(layer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE),
-          orientation: resolveAiImageOrientation(layer.aiImageOrientation)
+          orientation: resolveAiImageOrientation(layer.aiImageOrientation),
+          variableValue: mode === "check" ? variableResolved : "",
+          variableKey: mode === "check" ? variableKey : "",
+          strictVariableOnly: mode === "check"
         })
       });
       const data = (await response.json()) as { prompt?: string; error?: string };
@@ -4599,7 +4619,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       updateLayerById(layerId, (targetLayer) =>
         targetLayer.type === "image" ? { ...targetLayer, aiPrompt: prompt } : targetLayer
       );
-      setSuccess("AI 이미지 프롬프트를 자동 완성했습니다.");
+      setSuccess(mode === "check" ? "변수 기반(check) 프롬프트를 완성했습니다." : "AI 이미지 프롬프트를 자동 완성했습니다.");
     } catch (suggestError) {
       setError(suggestError instanceof Error ? suggestError.message : "프롬프트 자동 완성에 실패했습니다.");
     } finally {
@@ -6816,12 +6836,23 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                 variant="outline"
                                 size="sm"
                                 className="h-7 px-2 text-[11px]"
-                                onClick={() => void suggestAiPromptForLayer(selectedLayer.id)}
+                                onClick={() => void suggestAiPromptForLayer(selectedLayer.id, "magic")}
                                 disabled={aiPromptGeneratingLayerId === selectedLayer.id}
                                 title="주제/변수 기반 프롬프트 자동 완성"
                               >
                                 <Sparkles className="mr-1 h-3.5 w-3.5" />
                                 {aiPromptGeneratingLayerId === selectedLayer.id ? "완성 중..." : "매직"}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => void suggestAiPromptForLayer(selectedLayer.id, "check")}
+                                disabled={aiPromptGeneratingLayerId === selectedLayer.id}
+                                title="{{변수}} 값만으로 프롬프트 완성"
+                              >
+                                {aiPromptGeneratingLayerId === selectedLayer.id ? "확인 중..." : "check"}
                               </Button>
                             </div>
                             <Textarea

@@ -15,7 +15,10 @@ const payloadSchema = z.object({
   textHints: z.array(z.string()).optional(),
   sampleData: z.record(z.string(), z.string()).optional(),
   stylePreset: z.string().optional(),
-  orientation: z.enum(["vertical", "horizontal"]).optional()
+  orientation: z.enum(["vertical", "horizontal"]).optional(),
+  variableValue: z.string().optional(),
+  variableKey: z.string().optional(),
+  strictVariableOnly: z.boolean().optional()
 });
 
 function compact(value: string | undefined): string {
@@ -32,7 +35,11 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const body = payloadSchema.parse(await request.json());
     const sampleData = body.sampleData || {};
+    const strictVariableOnly = Boolean(body.strictVariableOnly);
+    const variableValue = compact(body.variableValue);
+    const variableKey = compact(body.variableKey);
     const topic =
+      (strictVariableOnly ? variableValue : "") ||
       compact(body.topic) ||
       compact(sampleData.topic) ||
       compact(sampleData.subject) ||
@@ -45,13 +52,17 @@ export async function POST(request: Request): Promise<NextResponse> {
       compact(sampleData.newsTitle) ||
       compact(sampleData.subject) ||
       "인스타그램 카드 이미지";
-    const description = compact(body.description) || compact(sampleData.description);
+    const description = strictVariableOnly ? "" : compact(body.description) || compact(sampleData.description);
     const currentPrompt = compact(body.currentPrompt);
-    const textHints = Array.isArray(body.textHints)
+    const textHints = strictVariableOnly
+      ? []
+      : Array.isArray(body.textHints)
       ? body.textHints.map((item) => compact(item)).filter(Boolean).slice(0, 8)
       : [];
     const contextNarrationParts = [
-      `주제: ${topic || "일반"}`,
+      strictVariableOnly
+        ? `변수 기반 주제: ${topic || "일반"}${variableKey ? ` (key: ${variableKey})` : ""}`
+        : `주제: ${topic || "일반"}`,
       description ? `설명: ${description}` : "",
       textHints.length > 0 ? `페이지 텍스트 힌트: ${textHints.join(" | ")}` : "",
       currentPrompt ? `기존 프롬프트 참고: ${currentPrompt}` : ""
@@ -83,4 +94,3 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: message }, { status });
   }
 }
-
