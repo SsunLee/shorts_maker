@@ -26,6 +26,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Sparkles,
   Star,
   Trash2,
   Type,
@@ -2253,6 +2254,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [objectToolbarWidth, setObjectToolbarWidth] = useState(760);
   const [pendingImageLayerId, setPendingImageLayerId] = useState<string>();
   const [aiImageGeneratingLayerId, setAiImageGeneratingLayerId] = useState<string>();
+  const [aiPromptGeneratingLayerId, setAiPromptGeneratingLayerId] = useState<string>();
   const [sheetName, setSheetName] = useState("");
   const [bindingSearch, setBindingSearch] = useState("");
   const [bindingFields, setBindingFields] = useState<string[]>(DEFAULT_BINDING_FIELDS);
@@ -4545,6 +4547,66 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
   }
 
+  async function suggestAiPromptForLayer(layerId: string): Promise<void> {
+    const page = editorRef.current.pages.find((item) => item.id === selectedPageIdRef.current);
+    const layer = page?.elements.find((item) => item.id === layerId);
+    if (!page || !layer || layer.type !== "image") {
+      setError("이미지 레이어를 선택해 주세요.");
+      return;
+    }
+
+    const textHints = page.elements
+      .filter((item): item is InstagramTextElement => item.type === "text")
+      .map((item) => collapseWhitespace(resolveTextLayerContent(item, sampleData)))
+      .filter(Boolean)
+      .slice(0, 8);
+    const sampleTitle =
+      sampleData.title ||
+      sampleData.subject ||
+      sampleData.newsTitleKR ||
+      sampleData.newsTitle ||
+      sampleData.topic ||
+      "";
+
+    setAiPromptGeneratingLayerId(layerId);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const response = await fetch("/api/instagram/generate-image-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: sampleData.topic || sampleData.keyword || sampleData.subject || "",
+          subject: sampleData.subject || "",
+          title: String((page as { title?: string }).title || sampleTitle || ""),
+          description: sampleData.description || "",
+          narration: sampleData.narration || "",
+          currentPrompt: String(layer.aiPrompt || ""),
+          textHints,
+          sampleData,
+          stylePreset: String(layer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE),
+          orientation: resolveAiImageOrientation(layer.aiImageOrientation)
+        })
+      });
+      const data = (await response.json()) as { prompt?: string; error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || "프롬프트 자동 완성에 실패했습니다.");
+      }
+      const prompt = collapseWhitespace(String(data.prompt || ""));
+      if (!prompt) {
+        throw new Error("생성된 프롬프트가 비어 있습니다.");
+      }
+      updateLayerById(layerId, (targetLayer) =>
+        targetLayer.type === "image" ? { ...targetLayer, aiPrompt: prompt } : targetLayer
+      );
+      setSuccess("AI 이미지 프롬프트를 자동 완성했습니다.");
+    } catch (suggestError) {
+      setError(suggestError instanceof Error ? suggestError.message : "프롬프트 자동 완성에 실패했습니다.");
+    } finally {
+      setAiPromptGeneratingLayerId(undefined);
+    }
+  }
+
   function fillImageLayerToCanvas(layerId: string): void {
     updateLayerById(layerId, (layer) =>
       layer.type === "image"
@@ -6747,7 +6809,21 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       {selectedLayer.aiGenerateEnabled ? (
                         <div className="space-y-2 rounded-md border border-white/10 bg-black/20 p-2">
                           <div className="space-y-1">
-                            <Label className="text-xs text-zinc-200">AI 이미지 프롬프트</Label>
+                            <div className="flex items-center justify-between gap-2">
+                              <Label className="text-xs text-zinc-200">AI 이미지 프롬프트</Label>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 text-[11px]"
+                                onClick={() => void suggestAiPromptForLayer(selectedLayer.id)}
+                                disabled={aiPromptGeneratingLayerId === selectedLayer.id}
+                                title="주제/변수 기반 프롬프트 자동 완성"
+                              >
+                                <Sparkles className="mr-1 h-3.5 w-3.5" />
+                                {aiPromptGeneratingLayerId === selectedLayer.id ? "완성 중..." : "매직"}
+                              </Button>
+                            </div>
                             <Textarea
                               rows={2}
                               value={String(selectedLayer.aiPrompt || "")}
