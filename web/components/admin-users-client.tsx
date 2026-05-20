@@ -486,7 +486,7 @@ export function AdminUsersClient({
 
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
-        <div className="overflow-x-auto rounded-lg border">
+        <div className="app-table-scrollbar overflow-x-auto rounded-lg border">
           <table className="min-w-full text-sm">
             <thead className="bg-muted/40 text-left">
               <tr>
@@ -702,7 +702,7 @@ export function AdminUsersClient({
           }
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto p-4 sm:max-w-[640px] sm:p-6">
+        <DialogContent className="app-panel-scrollbar max-h-[90vh] overflow-y-auto p-4 sm:max-w-[640px] sm:p-6">
           <DialogHeader>
             <DialogTitle>메뉴 허용 여부 설정</DialogTitle>
             <DialogDescription>

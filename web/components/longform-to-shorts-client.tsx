@@ -1080,7 +1080,7 @@ export function LongformToShortsClient(): React.JSX.Element {
                 {segments.length === 0 ? (
                   <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">결과 없음</div>
                 ) : (
-                  <div className="max-h-[280px] space-y-2 overflow-y-auto rounded-md border p-2">
+                  <div className="app-panel-scrollbar max-h-[280px] space-y-2 overflow-y-auto rounded-md border p-2">
                     {segments.map((s) => (
                       <div key={s.id} className="flex items-center justify-between rounded border px-3 py-2 text-sm">
                         <span className="font-medium">{s.index}. {s.reason.toUpperCase()}</span>
@@ -1276,7 +1276,7 @@ export function LongformToShortsClient(): React.JSX.Element {
 
               <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr),320px]">
                 <div
-                  className="overflow-x-auto rounded-md border"
+                  className="app-table-scrollbar overflow-x-auto rounded-md border"
                   onWheel={(event) => {
                     if (!event.ctrlKey) {
                       return;

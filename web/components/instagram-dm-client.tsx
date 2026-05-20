@@ -1341,7 +1341,7 @@ export function InstagramDmClient(): React.JSX.Element {
                 </p>
               </div>
 
-              <div className="grid max-h-[250px] grid-cols-1 gap-2 overflow-auto pr-1 md:grid-cols-2">
+              <div className="app-panel-scrollbar grid max-h-[250px] grid-cols-1 gap-2 overflow-auto pr-1 md:grid-cols-2">
                 {recentMedia.length === 0 ? (
                   <div className="col-span-full rounded-md border border-dashed p-4 text-xs text-muted-foreground">
                     불러온 게시물이 없습니다. `최근 게시물 불러오기`를 눌러 주세요.
@@ -1530,7 +1530,7 @@ export function InstagramDmClient(): React.JSX.Element {
                   <Switch id="dm-wrap-cells" checked={wrapCells} onCheckedChange={setWrapCells} />
                 </div>
               </div>
-              <div className="max-h-[560px] overflow-auto rounded-lg border">
+              <div className="app-table-scrollbar max-h-[560px] overflow-auto rounded-lg border">
                 <table className="w-full text-sm" style={{ minWidth: tableMinWidth, tableLayout: "fixed" }}>
                   <colgroup>
                     <col style={{ width: TABLE_INDEX_COL_WIDTH }} />
@@ -1761,7 +1761,7 @@ export function InstagramDmClient(): React.JSX.Element {
                 rows={7}
                 placeholder={"{dm_name}님!\n안녕하세요. 쑨에듀팀입니다.\n...\n{coupons_code}"}
               />
-              <div className="flex max-h-24 flex-wrap gap-1 overflow-auto rounded-md border p-2">
+              <div className="app-panel-scrollbar flex max-h-24 flex-wrap gap-1 overflow-auto rounded-md border p-2">
                 {columns.map((column) => (
                   <Button
                     key={`dm-token-${column}`}

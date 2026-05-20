@@ -577,7 +577,7 @@ export function IdeasClient(): React.JSX.Element {
           {generatedRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">아직 생성된 데이터가 없습니다.</p>
           ) : (
-            <div className="overflow-x-auto rounded-lg border">
+            <div className="app-table-scrollbar overflow-x-auto rounded-lg border">
               <table className="min-w-full text-sm">
                 <thead className="bg-muted/40">
                   <tr>
@@ -708,7 +708,7 @@ export function IdeasClient(): React.JSX.Element {
                           선택 해제
                         </Button>
                       </div>
-                      <div className="max-h-40 space-y-1 overflow-auto pr-1">
+                      <div className="app-panel-scrollbar max-h-40 space-y-1 overflow-auto pr-1">
                         {keywordOptions.length === 0 ? (
                           <p className="text-xs text-muted-foreground">keyword 데이터가 없습니다.</p>
                         ) : (
@@ -768,7 +768,7 @@ export function IdeasClient(): React.JSX.Element {
                   </div>
                 ) : null}
               </div>
-              <div className="max-h-[56vh] overflow-auto rounded-lg border">
+              <div className="app-table-scrollbar max-h-[56vh] overflow-auto rounded-lg border">
               <table className="min-w-full text-sm">
                 <thead className="sticky top-0 bg-muted/50">
                   <tr>

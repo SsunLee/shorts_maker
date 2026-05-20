@@ -914,7 +914,7 @@ export function InstagramDashboardClient(): React.JSX.Element {
           <p className="text-sm font-semibold">로그</p>
           <p className="text-xs text-muted-foreground">상태: {phase}</p>
         </div>
-        <div className="mt-2 max-h-44 overflow-y-auto rounded-md border bg-black/90 p-2 text-xs text-zinc-200">
+        <div className="app-panel-scrollbar mt-2 max-h-44 overflow-y-auto rounded-md border bg-black/90 p-2 text-xs text-zinc-200">
           {logs.length === 0 ? (
             <p className="text-zinc-400">아직 로그가 없습니다.</p>
           ) : (

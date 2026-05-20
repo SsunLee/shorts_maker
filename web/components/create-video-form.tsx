@@ -4223,7 +4223,7 @@ export function CreateVideoForm(): React.JSX.Element {
                       )
                     }
                   />
-                  <div className="max-h-[280px] space-y-3 overflow-auto pr-1">
+                  <div className="app-panel-scrollbar max-h-[280px] space-y-3 overflow-auto pr-1">
                     {workflow.scenes.map((scene) => (
                       <div key={scene.index} className="space-y-2 rounded-lg border p-3">
                         <p className="text-xs font-semibold text-muted-foreground">
@@ -5262,7 +5262,7 @@ export function CreateVideoForm(): React.JSX.Element {
                           <div
                             ref={subtitleTimelineRef}
                             onPointerDown={onSubtitleTimelinePointerDown}
-                            className="relative w-full overflow-auto rounded-md border bg-slate-950/95"
+                            className="app-table-scrollbar relative w-full overflow-auto rounded-md border bg-slate-950/95"
                             style={{ height: `${timelineViewportHeight}px` }}
                           >
                             <div className="pointer-events-none absolute inset-0 flex items-end gap-[2px] px-1 pb-1">
@@ -5363,7 +5363,7 @@ export function CreateVideoForm(): React.JSX.Element {
                           </div>
                         </div>
                         </div>
-                        <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                        <div className="app-panel-scrollbar max-h-64 space-y-2 overflow-y-auto pr-1">
                           {timelineCues.length === 0 ? (
                             <p className="text-xs text-muted-foreground">
                               아직 수동 타임라인이 없습니다. `나레이션 기준 자동 생성`을 눌러 시작하세요.
@@ -5685,7 +5685,7 @@ export function CreateVideoForm(): React.JSX.Element {
                           ) : null}
                         </div>
 
-                        <div className="space-y-3 overflow-x-hidden pb-2 lg:max-h-[72vh] lg:overflow-y-auto lg:pr-1">
+                        <div className="app-panel-scrollbar space-y-3 overflow-x-hidden pb-2 lg:max-h-[72vh] lg:overflow-y-auto lg:pr-1">
                           {(renderOptions.overlay.titleTemplates || []).map((item) => (
                             <div key={item.id} className="space-y-3 rounded-lg border bg-card p-3 sm:p-4">
                               <div className="flex flex-wrap items-center justify-between gap-2">
