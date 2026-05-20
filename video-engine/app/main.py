@@ -10,8 +10,20 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.ffmpeg_builder import probe_audio_duration, render_short_video
-from app.models import BuildVideoRequest, BuildVideoResponse
+from app.ffmpeg_builder import (
+    compose_page_video_with_layers,
+    mux_video_with_audio,
+    probe_audio_duration,
+    render_short_video,
+)
+from app.models import (
+    BuildVideoRequest,
+    BuildVideoResponse,
+    ComposePageVideoRequest,
+    ComposePageVideoResponse,
+    MuxVideoAudioRequest,
+    MuxVideoAudioResponse,
+)
 from app.subtitles import build_srt_from_cues, build_srt_from_text
 
 
@@ -143,6 +155,98 @@ def build_video(
             outputPath=str(output_path),
             outputUrl=output_url,
             srtPath=str(srt_path) if srt_path is not None else "",
+            ffmpegSteps=ffmpeg_steps,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/mux-video-audio", response_model=MuxVideoAudioResponse)
+def mux_video_audio(
+    payload: MuxVideoAudioRequest,
+    request: Request,
+    x_video_engine_secret: str | None = Header(default=None, alias="X-Video-Engine-Secret"),
+) -> MuxVideoAudioResponse:
+    expected_secret = os.getenv("VIDEO_ENGINE_SHARED_SECRET", "").strip()
+    if expected_secret and x_video_engine_secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized video engine request")
+
+    job_dir = OUTPUTS_DIR / payload.jobId
+    assets_dir = job_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        video_ext = Path(urlparse(payload.videoPath).path).suffix or ".mp4"
+        video_path = assets_dir / f"source-video{video_ext}"
+        _download_to_path(payload.videoPath, video_path)
+
+        audio_ext = Path(urlparse(payload.audioPath).path).suffix or ".mp3"
+        audio_path = assets_dir / f"source-audio{audio_ext}"
+        _download_to_path(payload.audioPath, audio_path)
+
+        output_path, ffmpeg_steps = mux_video_with_audio(
+            video_path=video_path,
+            audio_path=audio_path,
+            output_dir=job_dir,
+            duration_sec=payload.durationSec,
+        )
+
+        base_url = os.getenv("PUBLIC_BASE_URL", str(request.base_url).rstrip("/"))
+        output_url = f"{base_url}/outputs/{payload.jobId}/{output_path.name}"
+        return MuxVideoAudioResponse(
+            outputPath=str(output_path),
+            outputUrl=output_url,
+            ffmpegSteps=ffmpeg_steps,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/compose-page-video", response_model=ComposePageVideoResponse)
+def compose_page_video(
+    payload: ComposePageVideoRequest,
+    request: Request,
+    x_video_engine_secret: str | None = Header(default=None, alias="X-Video-Engine-Secret"),
+) -> ComposePageVideoResponse:
+    expected_secret = os.getenv("VIDEO_ENGINE_SHARED_SECRET", "").strip()
+    if expected_secret and x_video_engine_secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized video engine request")
+
+    job_dir = OUTPUTS_DIR / payload.jobId
+    assets_dir = job_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        video_ext = Path(urlparse(payload.videoPath).path).suffix or ".mp4"
+        video_path = assets_dir / f"source-video{video_ext}"
+        _download_to_path(payload.videoPath, video_path)
+
+        underlay_path = assets_dir / "underlay.png"
+        _download_to_path(payload.underlayPath, underlay_path)
+
+        overlay_path = assets_dir / "overlay.png"
+        _download_to_path(payload.overlayPath, overlay_path)
+
+        output_path, ffmpeg_steps = compose_page_video_with_layers(
+            video_path=video_path,
+            underlay_path=underlay_path,
+            overlay_path=overlay_path,
+            output_dir=job_dir,
+            x=payload.x,
+            y=payload.y,
+            width=payload.width,
+            height=payload.height,
+            output_width=payload.outputWidth,
+            output_height=payload.outputHeight,
+            fit=payload.fit,
+            duration_sec=payload.durationSec,
+        )
+
+        base_url = os.getenv("PUBLIC_BASE_URL", str(request.base_url).rstrip("/"))
+        output_url = f"{base_url}/outputs/{payload.jobId}/{output_path.name}"
+        return ComposePageVideoResponse(
+            outputPath=str(output_path),
+            outputUrl=output_url,
             ffmpegSteps=ffmpeg_steps,
         )
     except Exception as exc:  # pylint: disable=broad-except

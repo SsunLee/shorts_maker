@@ -1,14 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { Clipboard, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { extractPromptVariables, INSTAGRAM_IDEA_DEFAULT_PROMPT } from "@/lib/instagram-ideas-prompt";
+import {
+  extractPromptVariables,
+  INSTAGRAM_IDEA_DEFAULT_PROMPT,
+  INSTAGRAM_IDEA_SHEET_HEADERS
+} from "@/lib/instagram-ideas-prompt";
 import { AppSettings, IdeaLanguage } from "@/lib/types";
 
 type PromptResponse = {
@@ -329,6 +333,15 @@ export function InstagramIdeasClient(): React.JSX.Element {
     });
   }
 
+  async function copyRecommendedHeaders(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(INSTAGRAM_IDEA_SHEET_HEADERS.join("\t"));
+      setSuccess("권장 헤더를 복사했습니다. Google Sheet 1행에 붙여넣어 주세요.");
+    } catch {
+      setError("헤더 복사에 실패했습니다. 브라우저 클립보드 권한을 확인해 주세요.");
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -478,7 +491,7 @@ export function InstagramIdeasClient(): React.JSX.Element {
           {generatedRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">아직 생성된 데이터가 없습니다.</p>
           ) : (
-            <div className="overflow-x-auto rounded-lg border">
+            <div className="app-table-scrollbar overflow-x-auto rounded-lg border">
               <table className="min-w-full text-sm">
                 <thead className="bg-muted/40">
                   <tr>
@@ -537,23 +550,29 @@ export function InstagramIdeasClient(): React.JSX.Element {
                 현재 시트 데이터를 표시하며, status가 &quot;업로드 완료&quot;인 행은 숨깁니다.
               </CardDescription>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              asChild
-              className={!sheetShortcutUrl ? "pointer-events-none opacity-50" : ""}
-            >
-              <a
-                href={sheetShortcutUrl || "#"}
-                target="_blank"
-                rel="noreferrer"
-                aria-disabled={!sheetShortcutUrl}
-                tabIndex={sheetShortcutUrl ? 0 : -1}
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={() => void copyRecommendedHeaders()}>
+                <Clipboard className="h-4 w-4" />
+                권장 헤더 복사
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                asChild
+                className={!sheetShortcutUrl ? "pointer-events-none opacity-50" : ""}
               >
-                <ExternalLink className="h-4 w-4" />
-                시트 바로가기
-              </a>
-            </Button>
+                <a
+                  href={sheetShortcutUrl || "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-disabled={!sheetShortcutUrl}
+                  tabIndex={sheetShortcutUrl ? 0 : -1}
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  시트 바로가기
+                </a>
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -562,7 +581,7 @@ export function InstagramIdeasClient(): React.JSX.Element {
               시트 헤더를 불러오지 못했습니다. 시트 연결 정보와 탭명을 확인해 주세요.
             </p>
           ) : (
-            <div className="max-h-[56vh] overflow-auto rounded-lg border">
+            <div className="app-table-scrollbar max-h-[56vh] overflow-auto rounded-lg border">
               <table className="min-w-full text-sm">
                 <thead className="sticky top-0 bg-muted/50">
                   <tr>

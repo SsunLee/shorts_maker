@@ -97,4 +97,38 @@ class BuildVideoResponse(BaseModel):
     ffmpegSteps: list[str]
 
 
+class MuxVideoAudioRequest(BaseModel):
+    jobId: str = Field(..., min_length=1)
+    videoPath: str = Field(..., min_length=1)
+    audioPath: str = Field(..., min_length=1)
+    durationSec: float | None = Field(default=None, ge=1, le=180)
+
+
+class MuxVideoAudioResponse(BaseModel):
+    outputPath: str
+    outputUrl: str
+    ffmpegSteps: list[str]
+
+
+class ComposePageVideoRequest(BaseModel):
+    jobId: str = Field(..., min_length=1)
+    videoPath: str = Field(..., min_length=1)
+    underlayPath: str = Field(..., min_length=1)
+    overlayPath: str = Field(..., min_length=1)
+    x: int = Field(default=0, ge=-4000, le=4000)
+    y: int = Field(default=0, ge=-4000, le=4000)
+    width: int = Field(..., ge=1, le=4000)
+    height: int = Field(..., ge=1, le=4000)
+    outputWidth: int = Field(default=1080, ge=320, le=4000)
+    outputHeight: int = Field(default=1350, ge=320, le=4000)
+    fit: str = Field(default="cover")
+    durationSec: float | None = Field(default=None, ge=1, le=180)
+
+
+class ComposePageVideoResponse(BaseModel):
+    outputPath: str
+    outputUrl: str
+    ffmpegSteps: list[str]
+
+
 OverlayOptions.model_rebuild()

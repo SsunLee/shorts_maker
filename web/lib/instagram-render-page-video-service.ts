@@ -15,6 +15,7 @@ export type RenderInstagramPageVideoArgs = {
   pageName?: string;
   imageDataUrl: string;
   useAudio?: boolean;
+  audioUrl?: string;
   audioPrompt?: string;
   ttsProvider?: "auto" | "openai" | "gemini";
   sampleData?: Record<string, string>;
@@ -31,6 +32,12 @@ export type RenderInstagramPageVideoResult = {
   audioUrl?: string;
   ttsProviderUsed: "openai" | "gemini" | "auto" | "silent";
 };
+
+function clampDurationForInstagram(value: number | undefined): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 10;
+  return Math.max(10, Math.min(55, Math.round(numeric)));
+}
 
 type DataUrlPayload = {
   mime: string;
@@ -179,6 +186,7 @@ function buildSilentWav(durationSec: number): Buffer {
 async function resolveAudioPublicUrl(args: {
   jobId: string;
   useAudio?: boolean;
+  audioUrl?: string;
   audioPrompt?: string;
   ttsProvider?: "auto" | "openai" | "gemini";
   sampleData?: Record<string, string>;
@@ -187,9 +195,10 @@ async function resolveAudioPublicUrl(args: {
   durationSec?: number;
   userId: string;
 }): Promise<{ publicUrl: string; providerUsed: "openai" | "gemini" | "auto" | "silent" }> {
-  const safeDurationSec = Math.max(10, Number(args.durationSec) || 10);
+  const safeDurationSec = clampDurationForInstagram(args.durationSec);
+  const uploadedAudioUrl = String(args.audioUrl || "").trim();
   const prompt = resolveTemplateVariables(String(args.audioPrompt || ""), args.sampleData || {}).trim();
-  const shouldUseAudio = typeof args.useAudio === "boolean" ? args.useAudio : Boolean(prompt);
+  const shouldUseAudio = typeof args.useAudio === "boolean" ? args.useAudio : Boolean(prompt || uploadedAudioUrl);
   if (!shouldUseAudio) {
     const silentWav = buildSilentWav(safeDurationSec);
     const stored = await storeGeneratedAsset({
@@ -205,8 +214,15 @@ async function resolveAudioPublicUrl(args: {
     };
   }
 
+  if (uploadedAudioUrl) {
+    return {
+      publicUrl: uploadedAudioUrl,
+      providerUsed: "auto"
+    };
+  }
+
   if (!prompt) {
-    throw new Error("오디오 사용이 켜져 있습니다. 오디오 스크립트를 입력해 주세요.");
+    throw new Error("오디오 사용이 켜져 있습니다. 오디오 파일을 첨부하거나 오디오 스크립트를 입력해 주세요.");
   }
   const voice = String(args.audioVoice || "alloy").trim().toLowerCase() || "alloy";
   const speed = Math.max(0.5, Math.min(2, Number(args.audioSpeed) || 1));
@@ -278,7 +294,7 @@ function buildRenderOptions(outputWidth?: number, outputHeight?: number): Render
 export async function renderInstagramPageVideo(
   args: RenderInstagramPageVideoArgs
 ): Promise<RenderInstagramPageVideoResult> {
-  const safeDurationSec = Math.max(10, Number(args.durationSec) || 10);
+  const safeDurationSec = clampDurationForInstagram(args.durationSec);
   const templateSlug = sanitizeSlug(args.templateName || "", "instagram-template");
   const pageSlug = sanitizeSlug(args.pageName || "", "page");
   const jobId = `${templateSlug}-${pageSlug}-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -292,6 +308,7 @@ export async function renderInstagramPageVideo(
     resolveAudioPublicUrl({
       jobId,
       useAudio: args.useAudio,
+      audioUrl: args.audioUrl,
       audioPrompt: args.audioPrompt,
       ttsProvider: args.ttsProvider,
       sampleData: args.sampleData,
@@ -320,7 +337,7 @@ export async function renderInstagramPageVideo(
     renderOptions: buildRenderOptions(args.outputWidth, args.outputHeight)
   };
 
-  const result = await buildVideoWithEngine(buildPayload, args.userId);
+  const result = await buildVideoWithEngine(buildPayload, args.userId, { mirrorOutput: false });
   if (!result.outputUrl) {
     throw new Error("MP4 출력 URL을 받지 못했습니다.");
   }

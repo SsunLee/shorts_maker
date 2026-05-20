@@ -367,7 +367,7 @@ export async function renderInstagramPageToPngDataUrlNode(args: {
       continue;
     }
 
-    if (layer.type === "image") {
+    if (layer.type === "image" || layer.type === "video") {
       if (layer.imageUrl && inferInstagramMediaTypeFromSource(layer.imageUrl) !== "video") {
         const image = await loadImageSafe(layer.imageUrl);
         if (image) {
@@ -394,8 +394,10 @@ export async function renderInstagramPageToPngDataUrlNode(args: {
             drawWidth = drawHeight * imageRatio;
           }
 
-          const drawX = centerX - drawWidth / 2;
-          const drawY = centerY - drawHeight / 2;
+          const cropX = clamp(Number(layer.cropX), 0, 100, 50) / 100;
+          const cropY = clamp(Number(layer.cropY), 0, 100, 50) / 100;
+          const drawX = left + (width - drawWidth) * cropX;
+          const drawY = top + (height - drawHeight) * cropY;
           const radius = clamp(layer.borderRadius, 0, 220, 0);
           ctx.save();
           if (radius <= 0) {

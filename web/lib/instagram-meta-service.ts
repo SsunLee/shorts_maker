@@ -85,6 +85,22 @@ function extractContainerDiagnostic(payload: Record<string, unknown>): string {
   if (videoErrorMessage) {
     messages.push(videoErrorMessage);
   }
+  const videoErrorCode = videoError.code;
+  if (typeof videoErrorCode === "number" || typeof videoErrorCode === "string") {
+    messages.push(`video_error_code=${String(videoErrorCode)}`);
+  }
+  const videoErrorSubcode = videoError.error_subcode;
+  if (typeof videoErrorSubcode === "number" || typeof videoErrorSubcode === "string") {
+    messages.push(`video_error_subcode=${String(videoErrorSubcode)}`);
+  }
+  const videoErrorUserTitle = readString(videoError.error_user_title, "").trim();
+  if (videoErrorUserTitle) {
+    messages.push(videoErrorUserTitle);
+  }
+  const videoErrorUserMessage = readString(videoError.error_user_msg, "").trim();
+  if (videoErrorUserMessage) {
+    messages.push(videoErrorUserMessage);
+  }
   const unique = Array.from(new Set(messages.filter(Boolean)));
   return unique.join(" | ");
 }
@@ -94,7 +110,8 @@ async function loadContainerStatus(args: {
   containerId: string;
 }): Promise<Record<string, unknown>> {
   const fieldSets = [
-    "status_code,status,video_status,status_message",
+    "status_code,status,status_message,error_message,video_status{status,status_message,error{message,code,error_subcode,error_user_title,error_user_msg}}",
+    "status_code,status,status_message,error_message,video_status",
     "status_code,status,video_status",
     "status_code,status",
     "id,status_code,status"
@@ -211,7 +228,19 @@ export async function waitForContainerReady(args: {
     }
     if (statusCode === "ERROR" || statusCode === "EXPIRED") {
       const diagnostic = extractContainerDiagnostic(response);
-      const detailSuffix = diagnostic ? ` · ${diagnostic}` : "";
+      const fallbackPayload = (() => {
+        try {
+          const compact = JSON.stringify(response);
+          return compact.length > 500 ? `${compact.slice(0, 500)}...` : compact;
+        } catch {
+          return "";
+        }
+      })();
+      const detailSuffix = diagnostic
+        ? ` · ${diagnostic}`
+        : fallbackPayload
+          ? ` · payload=${fallbackPayload}`
+          : "";
       throw new Error(`Meta container failed: ${statusCode} (id=${args.containerId})${detailSuffix}`);
     }
     if (Date.now() - startedAt > timeoutMs) {

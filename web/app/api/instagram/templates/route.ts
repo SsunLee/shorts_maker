@@ -13,7 +13,7 @@ export const runtime = "nodejs";
 
 const baseElementSchema = z.object({
   id: z.string().min(1),
-  type: z.enum(["text", "shape", "image"]),
+  type: z.enum(["text", "shape", "image", "video"]),
   x: z.number(),
   y: z.number(),
   width: z.number(),
@@ -75,6 +75,22 @@ const shapeElementSchema = baseElementSchema.extend({
 const imageElementSchema = baseElementSchema.extend({
   type: z.literal("image"),
   imageUrl: z.string(),
+  mediaType: z.enum(["image"]).optional(),
+  fit: z.enum(["cover", "contain"]),
+  borderRadius: z.number(),
+  overlayColor: z.string(),
+  overlayOpacity: z.number(),
+  aiGenerateEnabled: z.boolean().optional(),
+  aiModel: z.string().optional(),
+  aiPrompt: z.string().optional(),
+  aiPromptVariableKey: z.string().optional(),
+  aiStylePreset: z.string().optional(),
+  aiImageOrientation: z.enum(["vertical", "horizontal"]).optional()
+});
+
+const videoElementSchema = baseElementSchema.extend({
+  type: z.literal("video"),
+  imageUrl: z.string(),
   mediaType: z.enum(["image", "video"]).optional(),
   fit: z.enum(["cover", "contain"]),
   borderRadius: z.number(),
@@ -83,8 +99,14 @@ const imageElementSchema = baseElementSchema.extend({
   aiGenerateEnabled: z.boolean().optional(),
   aiModel: z.string().optional(),
   aiPrompt: z.string().optional(),
+  aiPromptVariableKey: z.string().optional(),
   aiStylePreset: z.string().optional(),
-  aiImageOrientation: z.enum(["vertical", "horizontal"]).optional()
+  aiImageOrientation: z.enum(["vertical", "horizontal"]).optional(),
+  aiVideoEnabled: z.boolean().optional(),
+  aiVideoProvider: z.enum(["gemini", "openai"]).optional(),
+  aiVideoPrompt: z.string().optional(),
+  aiVideoDurationSec: z.number().optional(),
+  aiVideoResolution: z.enum(["720p", "1080p"]).optional()
 });
 
 const pageSchema = z.object({
@@ -100,7 +122,7 @@ const pageSchema = z.object({
   audioSpeed: z.number().optional(),
   audioUrl: z.string().optional(),
   audioPrompt: z.string().optional(),
-  elements: z.array(z.union([textElementSchema, shapeElementSchema, imageElementSchema]))
+  elements: z.array(z.union([textElementSchema, shapeElementSchema, imageElementSchema, videoElementSchema]))
 });
 
 const templateSchema = z.object({
@@ -109,6 +131,9 @@ const templateSchema = z.object({
   mode: z.enum(["general", "news"]).optional(),
   sourceTitle: z.string(),
   sourceTopic: z.string(),
+  hashtags: z.array(z.string()).optional(),
+  hashtagSourceFields: z.array(z.string()).optional(),
+  captionSourceFields: z.array(z.string()).optional(),
   canvasPreset: z.string().optional(),
   canvasWidth: z.number().optional(),
   canvasHeight: z.number().optional(),

@@ -1,9 +1,11 @@
 import { GoogleGenAI, Modality } from "@google/genai";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 import OpenAI from "openai";
 import { resolveApiKeys, resolveModelForTask, resolveProviderForTask } from "@/lib/ai-provider";
 import {
   storeGeneratedAsset,
-  storeGeneratedAssetFromRemote
+  storeGeneratedAssetFromRemote,
+  toSignedStorageReadUrl
 } from "@/lib/object-storage";
 import type { ImageAspectRatio, WorkflowScene } from "@/lib/types";
 import { toGeminiVoiceName, toOpenAiVoiceName } from "@/lib/voice-options";
@@ -13,7 +15,23 @@ type GeminiInlineData = {
   mimeType?: string;
 };
 
+type GeminiVideoResult = {
+  publicUrl: string;
+  model: string;
+  durationSec: number;
+  resolution: "720p" | "1080p";
+  estimatedCostUsd: number;
+  usedPrompt: string;
+  provider?: "gemini" | "openai";
+};
+
 export type ImageVisualPolicy = "default" | "news_strict";
+
+export const VEO_LITE_MODEL_ID = "veo-3.1-lite-generate-preview";
+export const VEO_LITE_720P_AUDIO_USD_PER_SEC = 0.05;
+export const VEO_LITE_1080P_AUDIO_USD_PER_SEC = 0.08;
+export const SORA_2_720P_AUDIO_USD_PER_SEC = 0.1;
+export const DEFAULT_INSTAGRAM_AI_VIDEO_PROMPT = "no music, no camera movement, no subtitles";
 
 const NEWS_STRICT_VISUAL_GUARD_CLAUSE =
   "Strictly avoid holograms, futuristic HUD/UI overlays, transparent projection screens, " +
@@ -238,6 +256,9 @@ function buildImageStyleInstruction(style: string): string {
       "3D Pixar-style animated film look. " +
       "Stylized 3D characters, expressive facial features, clean non-photoreal materials, " +
       "soft global illumination, polished cinematic color grading, and family-friendly animation tone. " +
+      "Use a slightly cute and charming mood with warm bright colors, gentle pastel accents, " +
+      "clear cheerful lighting, soft rounded shapes, and friendly character expressions. " +
+      "Avoid gloomy, muddy, overly dark, or desaturated color palettes. " +
       "Not live-action photo, not documentary photojournalism."
     );
   }
@@ -833,8 +854,128 @@ function extensionFromMime(mimeType: string | undefined, fallback: string): stri
   if (mime.includes("audio/aac")) {
     return "aac";
   }
+  if (mime.includes("video/mp4")) {
+    return "mp4";
+  }
+  if (mime.includes("video/webm")) {
+    return "webm";
+  }
 
   return fallback;
+}
+
+function parseDataUrlBytes(input: string): { mimeType: string; body: Buffer } | undefined {
+  const match = String(input || "").trim().match(/^data:([^;,]+);base64,(.+)$/i);
+  if (!match) {
+    return undefined;
+  }
+  const body = Buffer.from(match[2], "base64");
+  if (body.length === 0) {
+    throw new Error("AI 영상화 입력 이미지가 비어 있습니다.");
+  }
+  return {
+    mimeType: match[1] || "image/png",
+    body
+  };
+}
+
+async function resolveImageBytesForVideo(sourceUrl: string): Promise<{ imageBytes: string; mimeType: string }> {
+  const source = String(sourceUrl || "").trim();
+  if (!source) {
+    throw new Error("AI 영상화에 사용할 이미지가 없습니다.");
+  }
+
+  const parsedDataUrl = parseDataUrlBytes(source);
+  if (parsedDataUrl) {
+    return {
+      imageBytes: parsedDataUrl.body.toString("base64"),
+      mimeType: parsedDataUrl.mimeType
+    };
+  }
+
+  const fetchUrl = await toSignedStorageReadUrl(source, 3600);
+  const response = await fetch(fetchUrl, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`AI 영상화 입력 이미지를 읽지 못했습니다. HTTP ${response.status}`);
+  }
+  const contentType = response.headers.get("content-type") || "image/png";
+  if (!contentType.toLowerCase().startsWith("image/")) {
+    throw new Error(`AI 영상화 입력 URL이 이미지가 아닙니다(${contentType}).`);
+  }
+  const body = Buffer.from(await response.arrayBuffer());
+  if (body.length === 0) {
+    throw new Error("AI 영상화 입력 이미지가 비어 있습니다.");
+  }
+  return {
+    imageBytes: body.toString("base64"),
+    mimeType: contentType
+  };
+}
+
+function estimateVeoLiteCostUsd(durationSec: number, resolution: "720p" | "1080p"): number {
+  const perSecond =
+    resolution === "1080p" ? VEO_LITE_1080P_AUDIO_USD_PER_SEC : VEO_LITE_720P_AUDIO_USD_PER_SEC;
+  return Number((Math.max(4, Math.min(8, durationSec)) * perSecond).toFixed(2));
+}
+
+function normalizeOpenAiVideoSeconds(durationSec: number): 4 | 8 | 12 {
+  const numeric = Math.round(Number(durationSec) || 4);
+  if (numeric <= 4) return 4;
+  if (numeric <= 8) return 8;
+  return 12;
+}
+
+function resolveOpenAiVideoSize(aspectRatio: "9:16" | "16:9" | undefined): "720x1280" | "1280x720" {
+  return aspectRatio === "16:9" ? "1280x720" : "720x1280";
+}
+
+async function prepareOpenAiReferenceImage(args: {
+  sourceUrl: string;
+  size: "720x1280" | "1280x720";
+}): Promise<{ file: Blob; fileName: string }> {
+  const { imageBytes } = await resolveImageBytesForVideo(args.sourceUrl);
+  const [width, height] = args.size.split("x").map((value) => Number.parseInt(value, 10));
+  const sourceBuffer = Buffer.from(imageBytes, "base64");
+  const image = await loadImage(sourceBuffer);
+  const canvas = createCanvas(width, height);
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#000000";
+  context.fillRect(0, 0, width, height);
+
+  const sourceWidth = Math.max(1, Number(image.width) || width);
+  const sourceHeight = Math.max(1, Number(image.height) || height);
+  const scale = Math.max(width / sourceWidth, height / sourceHeight);
+  const drawWidth = sourceWidth * scale;
+  const drawHeight = sourceHeight * scale;
+  context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+  const png = await canvas.encode("png");
+  const pngBytes = new Uint8Array(png);
+  return {
+    file: new Blob([pngBytes], { type: "image/png" }),
+    fileName: `reference-${args.size}.png`
+  };
+}
+
+async function readOpenAiError(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) {
+    return `HTTP ${response.status}`;
+  }
+  try {
+    const parsed = JSON.parse(text) as { error?: { message?: string }; message?: string };
+    return parsed.error?.message || parsed.message || text;
+  } catch {
+    return text;
+  }
+}
+
+function buildVeoPrompt(args: { basePrompt?: string; dialogue?: string }): string {
+  const base = String(args.basePrompt || DEFAULT_INSTAGRAM_AI_VIDEO_PROMPT).trim() || DEFAULT_INSTAGRAM_AI_VIDEO_PROMPT;
+  const dialogue = String(args.dialogue || "").trim();
+  const dialogueInstruction = dialogue
+    ? `The visible speaker naturally says exactly this line with synced mouth movement: "${dialogue}".`
+    : "If a person is visible, add subtle natural facial motion only.";
+  return `${base}. ${dialogueInstruction} Keep the first-frame character and composition consistent.`;
 }
 
 function pcm16ToWav(args: {
@@ -1369,6 +1510,234 @@ export async function generateImages(
   }
 
   return urls;
+}
+
+export function estimateInstagramAiVideoCost(args?: {
+  durationSec?: number;
+  resolution?: "720p" | "1080p";
+  provider?: "gemini" | "openai";
+}): { model: string; durationSec: number; resolution: "720p" | "1080p"; estimatedCostUsd: number } {
+  if (args?.provider === "openai") {
+    const durationSec = normalizeOpenAiVideoSeconds(Number(args.durationSec) || 4);
+    return {
+      model: "sora-2",
+      durationSec,
+      resolution: "720p",
+      estimatedCostUsd: Number((durationSec * SORA_2_720P_AUDIO_USD_PER_SEC).toFixed(2))
+    };
+  }
+  const resolution = args?.resolution === "1080p" ? "1080p" : "720p";
+  const durationSec = Math.max(4, Math.min(8, Math.round(Number(args?.durationSec) || 6)));
+  return {
+    model: VEO_LITE_MODEL_ID,
+    durationSec,
+    resolution,
+    estimatedCostUsd: estimateVeoLiteCostUsd(durationSec, resolution)
+  };
+}
+
+export async function generateImageToVideoWithOpenAi(args: {
+  jobId: string;
+  imageUrl: string;
+  prompt?: string;
+  dialogue?: string;
+  durationSec?: number;
+  aspectRatio?: "9:16" | "16:9";
+  userId?: string;
+}): Promise<GeminiVideoResult> {
+  const keys = await resolveApiKeys(args.userId);
+  if (!keys.openaiKey) {
+    throw new Error("OpenAI API key is missing. Configure it in /settings.");
+  }
+  const durationSec = normalizeOpenAiVideoSeconds(Number(args.durationSec) || 4);
+  const size = resolveOpenAiVideoSize(args.aspectRatio);
+  const prompt = buildVeoPrompt({ basePrompt: args.prompt, dialogue: args.dialogue });
+  const reference = await prepareOpenAiReferenceImage({ sourceUrl: args.imageUrl, size });
+  const timeoutMs = parseBoundedInt(process.env.OPENAI_VIDEO_TIMEOUT_MS, 420000, 60000, 600000);
+  const pollIntervalMs = parseBoundedInt(process.env.OPENAI_VIDEO_POLL_INTERVAL_MS, 10000, 3000, 30000);
+
+  const form = new FormData();
+  form.append("model", "sora-2");
+  form.append("prompt", prompt);
+  form.append("size", size);
+  form.append("seconds", String(durationSec));
+  form.append("input_reference", reference.file, reference.fileName);
+
+  console.log(`[ai-video] request:start provider=openai model=sora-2 duration=${durationSec}s size=${size}`);
+  const createResponse = await fetch("https://api.openai.com/v1/videos", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${keys.openaiKey}`
+    },
+    body: form
+  });
+  if (!createResponse.ok) {
+    throw new Error(`OpenAI 영상화 요청 실패: ${await readOpenAiError(createResponse)}`);
+  }
+  const created = (await createResponse.json()) as { id?: string; status?: string; error?: { message?: string } };
+  const videoId = String(created.id || "").trim();
+  if (!videoId) {
+    throw new Error("OpenAI 영상화 작업 ID를 받지 못했습니다.");
+  }
+
+  const startedAt = Date.now();
+  let status = String(created.status || "");
+  while (!["completed", "failed", "cancelled"].includes(status)) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`OpenAI 영상화가 ${timeoutMs}ms 내 완료되지 않았습니다. videoId=${videoId}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    const pollResponse = await fetch(`https://api.openai.com/v1/videos/${videoId}`, {
+      headers: {
+        Authorization: `Bearer ${keys.openaiKey}`
+      },
+      cache: "no-store"
+    });
+    if (!pollResponse.ok) {
+      throw new Error(`OpenAI 영상화 상태 확인 실패: ${await readOpenAiError(pollResponse)}`);
+    }
+    const polled = (await pollResponse.json()) as { status?: string; error?: { message?: string } };
+    status = String(polled.status || "");
+    console.log(`[ai-video] poll provider=openai id=${videoId} status=${status}`);
+    if (status === "failed" || status === "cancelled") {
+      throw new Error(`OpenAI 영상화 실패: ${polled.error?.message || status}`);
+    }
+  }
+
+  const contentResponse = await fetch(`https://api.openai.com/v1/videos/${videoId}/content`, {
+    headers: {
+      Authorization: `Bearer ${keys.openaiKey}`
+    },
+    cache: "no-store"
+  });
+  if (!contentResponse.ok) {
+    throw new Error(`OpenAI 영상 다운로드 실패: ${await readOpenAiError(contentResponse)}`);
+  }
+  const body = Buffer.from(await contentResponse.arrayBuffer());
+  if (body.length === 0) {
+    throw new Error("OpenAI 영상화 결과 비디오가 비어 있습니다.");
+  }
+  const stored = await storeGeneratedAsset({
+    jobId: args.jobId,
+    fileName: `openai-sora-2-${durationSec}s.mp4`,
+    body,
+    contentType: contentResponse.headers.get("content-type") || "video/mp4",
+    cacheControl: "public, max-age=604800",
+    userId: args.userId
+  });
+
+  return {
+    publicUrl: stored.publicUrl,
+    model: "sora-2",
+    durationSec,
+    resolution: "720p",
+    estimatedCostUsd: Number((durationSec * SORA_2_720P_AUDIO_USD_PER_SEC).toFixed(2)),
+    usedPrompt: prompt,
+    provider: "openai"
+  };
+}
+
+export async function generateImageToVideoWithVeoLite(args: {
+  jobId: string;
+  imageUrl: string;
+  prompt?: string;
+  dialogue?: string;
+  durationSec?: number;
+  resolution?: "720p" | "1080p";
+  aspectRatio?: "9:16" | "16:9";
+  userId?: string;
+}): Promise<GeminiVideoResult> {
+  const client = await getGeminiClient(args.userId);
+  const resolution = args.resolution === "1080p" ? "1080p" : "720p";
+  const durationSec = Math.max(4, Math.min(8, Math.round(Number(args.durationSec) || 6)));
+  const prompt = buildVeoPrompt({ basePrompt: args.prompt, dialogue: args.dialogue });
+  const image = await resolveImageBytesForVideo(args.imageUrl);
+  const timeoutMs = parseBoundedInt(process.env.GEMINI_VIDEO_TIMEOUT_MS, 420000, 60000, 600000);
+  const pollIntervalMs = parseBoundedInt(process.env.GEMINI_VIDEO_POLL_INTERVAL_MS, 10000, 3000, 30000);
+
+  console.log(
+    `[ai-video] request:start model=${VEO_LITE_MODEL_ID} duration=${durationSec}s resolution=${resolution} aspectRatio=${args.aspectRatio || "9:16"}`
+  );
+  let operation = await withTimeout(
+    client.models.generateVideos({
+      model: VEO_LITE_MODEL_ID,
+      prompt,
+      image: {
+        imageBytes: image.imageBytes,
+        mimeType: image.mimeType
+      },
+      config: {
+        numberOfVideos: 1,
+        durationSeconds: durationSec,
+        resolution,
+        aspectRatio: args.aspectRatio || "9:16",
+        personGeneration: "allow_adult",
+        generateAudio: true,
+        negativePrompt: "music, camera movement, subtitles, captions, text overlays, watermark",
+        enhancePrompt: true
+      }
+    }),
+    60000,
+    "AI 영상화 요청 시작 시간이 초과되었습니다."
+  );
+
+  const startedAt = Date.now();
+  while (!operation.done) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`AI 영상화가 ${timeoutMs}ms 내 완료되지 않았습니다.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    operation = await client.operations.getVideosOperation({ operation });
+    console.log(`[ai-video] poll done=${Boolean(operation.done)} name=${operation.name || ""}`);
+  }
+
+  if (operation.error) {
+    throw new Error(`AI 영상화 실패: ${JSON.stringify(operation.error)}`);
+  }
+
+  const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
+  if (!generatedVideo) {
+    throw new Error("AI 영상화 결과 비디오를 받지 못했습니다.");
+  }
+
+  let videoBuffer: Buffer | undefined;
+  const mimeType = generatedVideo.mimeType || "video/mp4";
+  if (generatedVideo.videoBytes) {
+    videoBuffer = Buffer.from(generatedVideo.videoBytes, "base64");
+  } else if (generatedVideo.uri) {
+    const keys = await resolveApiKeys(args.userId);
+    const response = await fetch(generatedVideo.uri, {
+      headers: keys.geminiKey ? { "x-goog-api-key": keys.geminiKey } : undefined,
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      throw new Error(`AI 영상화 결과 다운로드 실패: HTTP ${response.status}`);
+    }
+    videoBuffer = Buffer.from(await response.arrayBuffer());
+  }
+
+  if (!videoBuffer || videoBuffer.length === 0) {
+    throw new Error("AI 영상화 결과 비디오가 비어 있습니다.");
+  }
+
+  const stored = await storeGeneratedAsset({
+    jobId: args.jobId,
+    fileName: `ai-video-${durationSec}s-${resolution}.mp4`,
+    body: videoBuffer,
+    contentType: mimeType,
+    cacheControl: "public, max-age=604800",
+    userId: args.userId
+  });
+  console.log(`[ai-video] store:done url=${stored.publicUrl}`);
+
+  return {
+    publicUrl: stored.publicUrl,
+    model: VEO_LITE_MODEL_ID,
+    durationSec,
+    resolution,
+    estimatedCostUsd: estimateVeoLiteCostUsd(durationSec, resolution),
+    usedPrompt: prompt
+  };
 }
 
 type SynthesizedAudio = {

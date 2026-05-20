@@ -7,6 +7,7 @@ import { loadIdeasSheetTable } from "@/lib/ideas-sheet";
 import {
   extractPromptVariables,
   INSTAGRAM_IDEA_DEFAULT_PROMPT,
+  INSTAGRAM_IDEA_SHEET_HEADERS,
   renderPromptTemplate
 } from "@/lib/instagram-ideas-prompt";
 import { generateInstagramIdeaRows } from "@/lib/instagram-ideas-generator";
@@ -99,10 +100,11 @@ function buildPrompt(args: {
   language: IdeaLanguage;
   variables?: Record<string, string>;
 }): string {
+  const sheetHeaders = INSTAGRAM_IDEA_SHEET_HEADERS.join(", ");
   const requiredFields =
     "id, status, type, jlpt, Subject, kr_intonation, romaji_intonation, kr_mean, " +
-    "example_1_title, example_1_hira, example_1_romaji, example_1_mean, example_1_kanji, " +
-    "example_2_title, example_2_hira, example_2_romaji, example_2_mean, example_2_kanji, Caption";
+    "example_1_title, example_1_hira, example_1_romaji, example_1_mean, example_1_kanji, example_1_kr_intonation, " +
+    "example_2_title, example_2_hira, example_2_romaji, example_2_mean, example_2_kanji, example_2_kr_intonation, Caption";
   const variableMap: Record<string, string | number | undefined> = {
     ...args.variables,
     cnt: String(args.count),
@@ -123,6 +125,8 @@ function buildPrompt(args: {
     `- language: ${args.language}\n` +
     `- count: ${args.count}\n` +
     `- 각 object는 다음 필드를 모두 포함: ${requiredFields}\n` +
+    `- Google Sheet 헤더 순서: ${sheetHeaders}\n` +
+    `- publish, video link는 Google Sheet 관리용 헤더이며 JSON object에는 넣지 않아도 됨\n` +
     `- status는 반드시 "준비"\n` +
     `- type은 문법/표현 유형 문자열(예: 과거부정형)\n` +
     `- 출력은 JSON 배열만 허용\n` +

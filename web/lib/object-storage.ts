@@ -6,6 +6,8 @@ import {
   S3Client
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import type { PresignedPostOptions } from "@aws-sdk/s3-presigned-post";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -39,7 +41,6 @@ interface S3Config {
 }
 
 let cachedClient: S3Client | undefined;
-
 function isReadOnlyServerlessRuntime(): boolean {
   return (
     process.env.VERCEL === "1" ||
@@ -431,6 +432,91 @@ export async function storeInstagramFontAsset(args: {
   return {
     publicUrl: toPublicUrl(config, objectKey)
   };
+}
+
+export async function createInstagramTemplateMediaUploadUrl(args: {
+  fileName: string;
+  contentType?: string;
+  userId?: string;
+  expiresInSec?: number;
+  contentLength?: number;
+  successRedirectUrl?: string;
+}): Promise<
+  | { uploadMethod: "put"; uploadUrl: string; publicUrl: string; objectKey: string }
+  | { uploadMethod: "post"; postUrl: string; fields: Record<string, string>; publicUrl: string; objectKey: string }
+> {
+  const config = getS3Config();
+  if (!config.enabled) {
+    throw new Error(
+      "템플릿 미디어 업로드에는 S3 저장소가 필요합니다. S3_BUCKET/S3_REGION/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY를 설정해 주세요."
+    );
+  }
+  if (!config.bucket) {
+    throw new Error("템플릿 미디어 업로드에는 S3_BUCKET 설정이 필요합니다.");
+  }
+
+  const safeFileName = sanitizeFileName(args.fileName, "template-media.bin");
+  const relativePath = withUserScope(
+    `instagram-template-media/${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${safeFileName}`,
+    args.userId
+  );
+  const objectKey = joinKey(config, relativePath);
+  try {
+    const client = getS3Client(config);
+    const contentLength = Math.max(0, Math.round(Number(args.contentLength) || 0));
+    if (contentLength >= 0) {
+      const contentType = args.contentType || guessContentType(safeFileName);
+      const redirectUrl = String(args.successRedirectUrl || "").trim();
+      const fields: Record<string, string> = {
+        "Content-Type": contentType,
+        "Cache-Control": "public, max-age=31536000, immutable"
+      };
+      const conditions: NonNullable<PresignedPostOptions["Conditions"]> = [
+        ["content-length-range", 1, 200 * 1024 * 1024],
+        { "Content-Type": contentType },
+        { "Cache-Control": fields["Cache-Control"] }
+      ];
+      if (redirectUrl) {
+        fields.success_action_redirect = redirectUrl;
+        conditions.push({ success_action_redirect: redirectUrl });
+      } else {
+        fields.success_action_status = "201";
+        conditions.push({ success_action_status: "201" });
+      }
+      const post = await createPresignedPost(client, {
+        Bucket: config.bucket,
+        Key: objectKey,
+        Fields: fields,
+        Conditions: conditions,
+        Expires: Math.max(60, Math.min(3600, Math.round(Number(args.expiresInSec) || 900)))
+      });
+      return {
+        uploadMethod: "post",
+        postUrl: post.url,
+        fields: post.fields,
+        publicUrl: toPublicUrl(config, objectKey),
+        objectKey
+      };
+    }
+
+    const command = new PutObjectCommand({
+      Bucket: config.bucket,
+      Key: objectKey,
+      ContentType: args.contentType || guessContentType(safeFileName),
+      CacheControl: "public, max-age=31536000, immutable"
+    });
+    const uploadUrl = await getSignedUrl(client, command, {
+      expiresIn: Math.max(60, Math.min(3600, Math.round(Number(args.expiresInSec) || 900)))
+    });
+    return {
+      uploadMethod: "put",
+      uploadUrl,
+      publicUrl: toPublicUrl(config, objectKey),
+      objectKey
+    };
+  } catch (error) {
+    throw wrapS3Error(error, "템플릿 미디어 업로드 URL 생성");
+  }
 }
 
 export async function storeGeneratedAssetFromRemote(args: {

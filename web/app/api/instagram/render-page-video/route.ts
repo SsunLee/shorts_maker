@@ -10,6 +10,7 @@ const schema = z.object({
   pageName: z.string().optional(),
   imageDataUrl: z.string().min(1),
   useAudio: z.boolean().optional(),
+  audioUrl: z.string().optional(),
   audioPrompt: z.string().optional(),
   ttsProvider: z.enum(["auto", "openai", "gemini"]).optional(),
   sampleData: z.record(z.string(), z.string()).optional(),

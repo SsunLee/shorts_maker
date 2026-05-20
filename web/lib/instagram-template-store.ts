@@ -222,11 +222,20 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
     };
   }
 
-  if (element.type === "image") {
+  if (element.type === "image" || element.type === "video") {
+    const isVideo = element.type === "video";
+    const imageUrl = String(element.imageUrl || "");
+    const mediaType =
+      (element as { mediaType?: string }).mediaType === "video" ||
+      imageUrl.trim().toLowerCase().startsWith("data:video/") ||
+      /\.(mp4|webm|ogg|mov|m4v)(?:[?#].*)?$/i.test(imageUrl.trim())
+        ? "video"
+        : "image";
     return {
       ...base,
-      type: "image",
-      imageUrl: String(element.imageUrl || ""),
+      type: isVideo ? "video" : "image",
+      imageUrl,
+      mediaType,
       fit: element.fit === "contain" ? "contain" : "cover",
       borderRadius: clamp(Number(element.borderRadius), 0, 200, 0),
       overlayColor: normalizeHex(element.overlayColor, "#000000"),
@@ -236,8 +245,17 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
       aiPrompt: String(element.aiPrompt || ""),
       aiPromptVariableKey: String((element as { aiPromptVariableKey?: string }).aiPromptVariableKey || "").trim(),
       aiStylePreset: String(element.aiStylePreset || "Cinematic photo-real"),
-      aiImageOrientation: element.aiImageOrientation === "horizontal" ? "horizontal" : "vertical"
-    };
+      aiImageOrientation: element.aiImageOrientation === "horizontal" ? "horizontal" : "vertical",
+      aiVideoEnabled: isVideo && Boolean((element as { aiVideoEnabled?: boolean }).aiVideoEnabled),
+      aiVideoProvider:
+        (element as { aiVideoProvider?: string }).aiVideoProvider === "openai" ? "openai" : "gemini",
+      aiVideoPrompt:
+        String((element as { aiVideoPrompt?: string }).aiVideoPrompt || "").trim() ||
+        "no music, no camera movement, no subtitles",
+      aiVideoDurationSec: clamp(Number((element as { aiVideoDurationSec?: number }).aiVideoDurationSec), 4, 8, 6),
+      aiVideoResolution:
+        (element as { aiVideoResolution?: string }).aiVideoResolution === "1080p" ? "1080p" : "720p"
+    } as InstagramPageElement;
   }
 
   if (element.type === "text") {
@@ -320,12 +338,34 @@ function normalizeTemplate(template: Partial<InstagramTemplate>): InstagramTempl
   const pageDurationSec = clamp(Number(template.pageDurationSec), 1, 60, 4);
   const pageCount = clamp(Number(template.pageCount), 1, 30, normalizedPages.length);
   const customFonts = normalizeCustomFonts((template as { customFonts?: unknown }).customFonts);
+  const hashtags = Array.isArray((template as { hashtags?: unknown }).hashtags)
+    ? ((template as { hashtags?: unknown }).hashtags as unknown[])
+        .map((tag) => String(tag || "").trim().replace(/^#+/, ""))
+        .filter(Boolean)
+        .map((tag) => `#${tag}`)
+        .slice(0, 20)
+    : [];
+  const hashtagSourceFields = Array.isArray((template as { hashtagSourceFields?: unknown }).hashtagSourceFields)
+    ? ((template as { hashtagSourceFields?: unknown }).hashtagSourceFields as unknown[])
+        .map((field) => String(field || "").trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
+  const captionSourceFields = Array.isArray((template as { captionSourceFields?: unknown }).captionSourceFields)
+    ? ((template as { captionSourceFields?: unknown }).captionSourceFields as unknown[])
+        .map((field) => String(field || "").trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    : [];
   return {
     id: String(template.id || randomUUID()),
     templateName,
     mode: template.mode === "news" ? "news" : "general",
     sourceTitle: String(template.sourceTitle || "{{subject}}"),
     sourceTopic: String(template.sourceTopic || "{{description}}"),
+    hashtags,
+    hashtagSourceFields,
+    captionSourceFields,
     canvasPreset,
     canvasWidth,
     canvasHeight,

@@ -1,4 +1,4 @@
-export type InstagramElementType = "text" | "shape" | "image";
+export type InstagramElementType = "text" | "shape" | "image" | "video";
 export type InstagramTemplateMode = "general" | "news";
 export type InstagramAiImageOrientation = "vertical" | "horizontal";
 export type InstagramShapeType =
@@ -82,8 +82,10 @@ export interface InstagramShapeElement extends InstagramElementBase {
 export interface InstagramImageElement extends InstagramElementBase {
   type: "image";
   imageUrl: string;
-  mediaType?: "image" | "video";
+  mediaType?: "image";
   fit: "cover" | "contain";
+  cropX?: number;
+  cropY?: number;
   borderRadius: number;
   overlayColor: string;
   overlayOpacity: number;
@@ -93,12 +95,41 @@ export interface InstagramImageElement extends InstagramElementBase {
   aiPromptVariableKey?: string;
   aiStylePreset: string;
   aiImageOrientation: InstagramAiImageOrientation;
+  aiVideoEnabled?: boolean;
+  aiVideoProvider?: "gemini" | "openai";
+  aiVideoPrompt?: string;
+  aiVideoDurationSec?: number;
+  aiVideoResolution?: "720p" | "1080p";
+}
+
+export interface InstagramVideoElement extends InstagramElementBase {
+  type: "video";
+  imageUrl: string;
+  mediaType?: "image" | "video";
+  fit: "cover" | "contain";
+  cropX?: number;
+  cropY?: number;
+  borderRadius: number;
+  overlayColor: string;
+  overlayOpacity: number;
+  aiGenerateEnabled: boolean;
+  aiModel: string;
+  aiPrompt: string;
+  aiPromptVariableKey?: string;
+  aiStylePreset: string;
+  aiImageOrientation: InstagramAiImageOrientation;
+  aiVideoEnabled?: boolean;
+  aiVideoProvider?: "gemini" | "openai";
+  aiVideoPrompt?: string;
+  aiVideoDurationSec?: number;
+  aiVideoResolution?: "720p" | "1080p";
 }
 
 export type InstagramPageElement =
   | InstagramTextElement
   | InstagramShapeElement
-  | InstagramImageElement;
+  | InstagramImageElement
+  | InstagramVideoElement;
 
 export interface InstagramFeedPage {
   id: string;
@@ -122,6 +153,9 @@ export interface InstagramTemplate {
   mode: InstagramTemplateMode;
   sourceTitle: string;
   sourceTopic: string;
+  hashtags?: string[];
+  hashtagSourceFields?: string[];
+  captionSourceFields?: string[];
   canvasPreset?: string;
   canvasWidth?: number;
   canvasHeight?: number;
@@ -144,6 +178,8 @@ export interface InstagramGeneratedFeedItem {
   rowId: string;
   subject: string;
   keyword: string;
+  caption?: string;
+  hashtags?: string[];
   generatedAt: string;
   sampleData?: Record<string, string>;
   pages: InstagramFeedPage[];

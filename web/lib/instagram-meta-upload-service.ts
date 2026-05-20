@@ -1,9 +1,11 @@
 import {
   isS3StorageEnabled,
   storeGeneratedAsset,
-  storeGeneratedAssetFromRemote,
-  toSignedStorageReadUrl
+  storeGeneratedAssetFromRemote
 } from "@/lib/object-storage";
+import crypto from "crypto";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import {
   metaGet,
   metaPost,
@@ -12,6 +14,7 @@ import {
   waitForContainerReady
 } from "@/lib/instagram-meta-service";
 import { updateInstagramSheetRowAfterUpload } from "@/lib/instagram-sheet";
+const execFileAsync = promisify(execFile);
 
 type UploadArgs = {
   userId: string;
@@ -51,6 +54,58 @@ function redactUrl(raw: string): string {
   } catch {
     return String(raw || "").split("?")[0].split("#")[0];
   }
+}
+
+function describeMediaUrl(raw: string): string {
+  const source = String(raw || "").trim();
+  if (!source) return "";
+  try {
+    const url = new URL(source);
+    const signed =
+      url.searchParams.has("X-Amz-Signature") ||
+      url.searchParams.has("X-Amz-Credential") ||
+      url.searchParams.has("X-Amz-Algorithm");
+    const expiresIn = url.searchParams.get("X-Amz-Expires") || "";
+    const signedAt = url.searchParams.get("X-Amz-Date") || "";
+    const meta = [
+      `signed=${signed ? "yes" : "no"}`,
+      expiresIn ? `expiresInSec=${expiresIn}` : "",
+      signedAt ? `signedAt=${signedAt}` : ""
+    ]
+      .filter(Boolean)
+      .join(", ");
+    return `${url.origin}${url.pathname}${meta ? ` (${meta})` : ""}`;
+  } catch {
+    return redactUrl(source);
+  }
+}
+
+function resolveMediaProxySecret(): string {
+  const value = String(process.env.INTERNAL_MEDIA_PROXY_SECRET || process.env.NEXTAUTH_SECRET || "").trim();
+  if (!value) {
+    throw new Error("INTERNAL_MEDIA_PROXY_SECRET 또는 NEXTAUTH_SECRET 설정이 필요합니다.");
+  }
+  return value;
+}
+
+function buildMetaPublicMediaProxyUrl(args: {
+  sourceUrl: string;
+  requestOrigin?: string;
+  mediaKind: "image" | "video";
+  mediaIndex: number;
+}): string | undefined {
+  const origin = String(args.requestOrigin || "").trim();
+  if (!origin) return undefined;
+  const cleanOrigin = origin.replace(/\/+$/, "");
+  const source = String(args.sourceUrl || "").trim();
+  if (!source) return undefined;
+  const exp = Math.floor(Date.now() / 1000) + 60 * 60;
+  const sourceToken = Buffer.from(source, "utf8").toString("base64url");
+  const payload = `${source}|${exp}`;
+  const sig = crypto.createHmac("sha256", resolveMediaProxySecret()).update(payload).digest("hex");
+  const ext = args.mediaKind === "video" ? "mp4" : "jpg";
+  const fileName = `m-${Date.now()}-${args.mediaIndex + 1}.${ext}`;
+  return `${cleanOrigin}/api/instagram/meta/public-media/${encodeURIComponent(fileName)}?source=${encodeURIComponent(sourceToken)}&exp=${exp}&sig=${sig}`;
 }
 
 function isS3BackedPublicUrl(raw: string): boolean {
@@ -223,6 +278,77 @@ async function assertPublicMediaReachable(mediaUrl: string, expectedKind?: "imag
   throw new Error(`업로드 미디어 접근 실패(HTTP ${status}): ${redactUrl(source)}`);
 }
 
+type FfprobeVideoSpec = {
+  durationSec?: number;
+  width?: number;
+  height?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  audioSampleRate?: number;
+  audioChannels?: number;
+};
+
+async function probeVideoSpecWithFfprobe(mediaUrl: string): Promise<FfprobeVideoSpec | undefined> {
+  try {
+    const { stdout } = await execFileAsync(
+      "ffprobe",
+      ["-v", "error", "-show_streams", "-show_format", "-print_format", "json", mediaUrl],
+      { timeout: 20000, maxBuffer: 10 * 1024 * 1024 }
+    );
+    const parsed = JSON.parse(String(stdout || "{}")) as {
+      streams?: Array<Record<string, unknown>>;
+      format?: Record<string, unknown>;
+    };
+    const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
+    const videoStream = streams.find((stream) => String(stream.codec_type || "") === "video");
+    const audioStream = streams.find((stream) => String(stream.codec_type || "") === "audio");
+    const durationRaw =
+      Number(videoStream?.duration || NaN) ||
+      Number(audioStream?.duration || NaN) ||
+      Number(parsed.format?.duration || NaN);
+    return {
+      durationSec: Number.isFinite(durationRaw) ? durationRaw : undefined,
+      width: Number(videoStream?.width || 0) || undefined,
+      height: Number(videoStream?.height || 0) || undefined,
+      videoCodec: String(videoStream?.codec_name || "").trim() || undefined,
+      audioCodec: String(audioStream?.codec_name || "").trim() || undefined,
+      audioSampleRate: Number(audioStream?.sample_rate || 0) || undefined,
+      audioChannels: Number(audioStream?.channels || 0) || undefined
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function assertVideoSpecCompatibleForMeta(args: {
+  mediaUrl: string;
+  mediaIndex: number;
+  mediaCount: number;
+}): Promise<void> {
+  const spec = await probeVideoSpecWithFfprobe(args.mediaUrl);
+  if (!spec) {
+    return;
+  }
+  const issues: string[] = [];
+  if (args.mediaCount > 1 && Number.isFinite(spec.durationSec) && Number(spec.durationSec) < 4) {
+    issues.push(`duration=${Number(spec.durationSec).toFixed(3)}s(<4s)`);
+  }
+  if (spec.videoCodec && spec.videoCodec.toLowerCase() !== "h264") {
+    issues.push(`videoCodec=${spec.videoCodec}(expected h264)`);
+  }
+  if (spec.audioCodec && spec.audioCodec.toLowerCase() !== "aac") {
+    issues.push(`audioCodec=${spec.audioCodec}(expected aac)`);
+  }
+  if (spec.audioSampleRate && spec.audioSampleRate < 32000) {
+    issues.push(`audioSampleRate=${spec.audioSampleRate}(too low)`);
+  }
+  if (issues.length > 0) {
+    throw new Error(
+      `[preflight:${args.mediaIndex + 1}] Meta 비디오 호환성 점검 실패 · ${issues.join(", ")} · mediaUrl=${describeMediaUrl(args.mediaUrl)}`
+    );
+  }
+}
+
 export async function uploadInstagramFeedToMeta(args: UploadArgs): Promise<UploadResult> {
   const config = await resolveMetaConfig(args.userId);
   const missing = validateMetaConfig(config);
@@ -267,7 +393,7 @@ export async function uploadInstagramFeedToMeta(args: UploadArgs): Promise<Uploa
             "S3 환경변수(S3_BUCKET/S3_REGION/S3_PREFIX/S3_PUBLIC_BASE_URL)를 설정한 뒤 다시 시도해 주세요."
         );
       }
-      if (s3Enabled && !isS3BackedPublicUrl(effectiveUrl)) {
+      if (s3Enabled && mediaKind !== "video" && !isS3BackedPublicUrl(effectiveUrl)) {
         const mirrored = await storeGeneratedAssetFromRemote({
           jobId,
           fileName: `media-${index + 1}${inferMediaKind(effectiveUrl) === "video" ? ".mp4" : ".png"}`,
@@ -318,13 +444,32 @@ export async function uploadInstagramFeedToMeta(args: UploadArgs): Promise<Uploa
   }
 
   const deliveryMediaUrls: string[] = [];
+  const deliveryMediaKinds: Array<"image" | "video"> = [];
   for (const mediaUrl of resolvedMediaUrls) {
-    const signed = await toSignedStorageReadUrl(mediaUrl, 60 * 60 * 6);
-    deliveryMediaUrls.push(signed);
+    const mediaKind = inferMediaKind(mediaUrl);
+    const proxyUrl = isS3BackedPublicUrl(mediaUrl)
+      ? buildMetaPublicMediaProxyUrl({
+          sourceUrl: mediaUrl,
+          requestOrigin: args.requestOrigin,
+          mediaKind,
+          mediaIndex: deliveryMediaUrls.length
+        })
+      : undefined;
+    deliveryMediaUrls.push(proxyUrl || mediaUrl);
+    deliveryMediaKinds.push(mediaKind);
   }
 
-  for (const mediaUrl of deliveryMediaUrls) {
-    await assertPublicMediaReachable(mediaUrl, inferMediaKind(mediaUrl));
+  for (let index = 0; index < deliveryMediaUrls.length; index += 1) {
+    const mediaUrl = deliveryMediaUrls[index];
+    const mediaKind = deliveryMediaKinds[index];
+    await assertPublicMediaReachable(mediaUrl, mediaKind);
+    if (mediaKind === "video") {
+      await assertVideoSpecCompatibleForMeta({
+        mediaUrl,
+        mediaIndex: index,
+        mediaCount: deliveryMediaUrls.length
+      });
+    }
   }
 
   const igUserId = config.instagramAccountId;
@@ -334,7 +479,7 @@ export async function uploadInstagramFeedToMeta(args: UploadArgs): Promise<Uploa
 
   if (deliveryMediaUrls.length === 1) {
     const onlyUrl = deliveryMediaUrls[0];
-    const mediaKind = inferMediaKind(onlyUrl);
+    const mediaKind = deliveryMediaKinds[0];
     const creation = (await metaPost({
       config,
       path: `/${encodeURIComponent(igUserId)}/media`,
@@ -363,7 +508,7 @@ export async function uploadInstagramFeedToMeta(args: UploadArgs): Promise<Uploa
       });
     } catch (waitError) {
       throw new Error(
-        `[single:${mediaKind}] 컨테이너 처리 실패 · mediaUrl=${redactUrl(onlyUrl)} · ${
+        `[single:${mediaKind}] 컨테이너 처리 실패 · mediaUrl=${describeMediaUrl(onlyUrl)} · ${
           waitError instanceof Error ? waitError.message : String(waitError)
         }`
       );
@@ -371,7 +516,7 @@ export async function uploadInstagramFeedToMeta(args: UploadArgs): Promise<Uploa
   } else {
     for (let index = 0; index < deliveryMediaUrls.length; index += 1) {
       const mediaUrl = deliveryMediaUrls[index];
-      const mediaKind = inferMediaKind(mediaUrl);
+      const mediaKind = deliveryMediaKinds[index];
       const creation = (await metaPost({
         config,
         path: `/${encodeURIComponent(igUserId)}/media`,
@@ -406,7 +551,7 @@ export async function uploadInstagramFeedToMeta(args: UploadArgs): Promise<Uploa
         });
       } catch (waitError) {
         throw new Error(
-          `[carousel-child:${index + 1}] 처리 실패 · childId=${childId} · mediaUrl=${redactUrl(mediaUrl)} · ${
+          `[carousel-child:${index + 1}] 처리 실패 · childId=${childId} · mediaUrl=${describeMediaUrl(mediaUrl)} · ${
             waitError instanceof Error ? waitError.message : String(waitError)
           }`
         );

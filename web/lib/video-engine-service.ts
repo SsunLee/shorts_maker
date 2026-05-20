@@ -15,6 +15,18 @@ export interface BuildVideoResult {
   ffmpegSteps?: string[];
 }
 
+export interface MuxVideoAudioResult {
+  outputPath: string;
+  outputUrl?: string;
+  ffmpegSteps?: string[];
+}
+
+export interface ComposePageVideoResult {
+  outputPath: string;
+  outputUrl?: string;
+  ffmpegSteps?: string[];
+}
+
 function asText(value: unknown, fallback = ""): string {
   if (typeof value === "string") {
     return value;
@@ -318,6 +330,52 @@ async function buildVideoAtEndpoint(args: {
   }
 }
 
+async function muxVideoAudioAtEndpoint(args: {
+  baseUrl: string;
+  body: Record<string, unknown>;
+  timeoutMs: number;
+  sharedSecret?: string;
+}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), args.timeoutMs);
+  try {
+    return await fetch(`${args.baseUrl}/mux-video-audio`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(args.sharedSecret ? { "X-Video-Engine-Secret": args.sharedSecret } : {})
+      },
+      body: JSON.stringify(args.body),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function composePageVideoAtEndpoint(args: {
+  baseUrl: string;
+  body: Record<string, unknown>;
+  timeoutMs: number;
+  sharedSecret?: string;
+}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), args.timeoutMs);
+  try {
+    return await fetch(`${args.baseUrl}/compose-page-video`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(args.sharedSecret ? { "X-Video-Engine-Secret": args.sharedSecret } : {})
+      },
+      body: JSON.stringify(args.body),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function resolveSignedAssetExpirySec(): number {
   const expiresInSec = Number.parseInt(
     String(process.env.VIDEO_ENGINE_ASSET_SIGNED_URL_EXPIRES_SEC || "3600"),
@@ -399,7 +457,8 @@ async function toEngineReadableAsset(
 /** Send render instructions to the external FastAPI video engine. */
 export async function buildVideoWithEngine(
   payload: BuildVideoPayload,
-  userId?: string
+  userId?: string,
+  options?: { mirrorOutput?: boolean }
 ): Promise<BuildVideoResult> {
   const baseUrls = resolveVideoEngineBaseUrls();
   const timeoutMs = resolveVideoEngineTimeoutMs();
@@ -444,6 +503,9 @@ export async function buildVideoWithEngine(
       });
       if (response.ok) {
         const result = (await response.json()) as BuildVideoResult;
+        if (options?.mirrorOutput === false) {
+          return result;
+        }
         result.outputUrl = await mirrorRenderedVideoToStorage({
           jobId: payload.jobId,
           sourceUrl: result.outputUrl,
@@ -482,6 +544,166 @@ export async function buildVideoWithEngine(
     lastNetworkError
       ? "Check primary PC engine connectivity/tunnel and fallback Cloud Run health."
       : undefined
+  ]
+    .filter(Boolean)
+    .join(" ");
+  throw new Error(hint);
+}
+
+export async function muxVideoAudioWithEngine(
+  args: {
+    jobId: string;
+    videoPath: string;
+    audioPath: string;
+    durationSec?: number;
+  },
+  userId?: string
+): Promise<MuxVideoAudioResult> {
+  const baseUrls = resolveVideoEngineBaseUrls();
+  const timeoutMs = resolveVideoEngineTimeoutMs();
+  const sharedSecret = String(process.env.VIDEO_ENGINE_SHARED_SECRET || "").trim() || undefined;
+  const endpointErrors: string[] = [];
+  let lastResponse: Response | undefined;
+  let lastNetworkError: string | undefined;
+
+  for (const baseUrl of baseUrls) {
+    try {
+      const preferLocalPath = isLikelyLocalEndpoint(baseUrl);
+      const requestBody: Record<string, unknown> = {
+        jobId: asText(args.jobId, "job"),
+        videoPath: await toEngineReadableAsset(args.videoPath, { preferLocalPath }),
+        audioPath: await toEngineReadableAsset(args.audioPath, { preferLocalPath }),
+        durationSec: args.durationSec
+      };
+      const response = await muxVideoAudioAtEndpoint({
+        baseUrl,
+        body: requestBody,
+        timeoutMs,
+        sharedSecret
+      });
+      if (response.ok) {
+        const result = (await response.json()) as MuxVideoAudioResult;
+        result.outputUrl = await mirrorRenderedVideoToStorage({
+          jobId: args.jobId,
+          sourceUrl: result.outputUrl,
+          userId
+        });
+        return result;
+      }
+
+      const message = await response.text();
+      endpointErrors.push(`${baseUrl} -> HTTP ${response.status}: ${message}`);
+      lastResponse = response;
+      if (!shouldRetryWithFallback(response.status)) {
+        break;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown connection error";
+      endpointErrors.push(`${baseUrl} -> ${message}`);
+      lastNetworkError = message;
+      continue;
+    }
+  }
+
+  if (lastResponse && !shouldRetryWithFallback(lastResponse.status)) {
+    const detailed = endpointErrors[endpointErrors.length - 1] || `HTTP ${lastResponse.status}`;
+    throw new Error(`Video engine mux request rejected: ${detailed}`);
+  }
+
+  const hint = [
+    "Video engine mux endpoints failed.",
+    `Tried: ${baseUrls.join(" -> ")}`,
+    `Timeout: ${timeoutMs}ms`,
+    endpointErrors.length > 0 ? `Details: ${endpointErrors.join(" | ")}` : undefined,
+    lastNetworkError ? "Check primary PC engine connectivity/tunnel and fallback health." : undefined
+  ]
+    .filter(Boolean)
+    .join(" ");
+  throw new Error(hint);
+}
+
+export async function composePageVideoWithEngine(
+  args: {
+    jobId: string;
+    videoPath: string;
+    underlayPath: string;
+    overlayPath: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    outputWidth: number;
+    outputHeight: number;
+    fit?: "cover" | "contain";
+    durationSec?: number;
+  },
+  userId?: string
+): Promise<ComposePageVideoResult> {
+  const baseUrls = resolveVideoEngineBaseUrls();
+  const timeoutMs = resolveVideoEngineTimeoutMs();
+  const sharedSecret = String(process.env.VIDEO_ENGINE_SHARED_SECRET || "").trim() || undefined;
+  const endpointErrors: string[] = [];
+  let lastResponse: Response | undefined;
+  let lastNetworkError: string | undefined;
+
+  for (const baseUrl of baseUrls) {
+    try {
+      const preferLocalPath = isLikelyLocalEndpoint(baseUrl);
+      const requestBody: Record<string, unknown> = {
+        jobId: asText(args.jobId, "job"),
+        videoPath: await toEngineReadableAsset(args.videoPath, { preferLocalPath }),
+        underlayPath: await toEngineReadableAsset(args.underlayPath, { preferLocalPath }),
+        overlayPath: await toEngineReadableAsset(args.overlayPath, { preferLocalPath }),
+        x: Math.round(args.x),
+        y: Math.round(args.y),
+        width: Math.round(args.width),
+        height: Math.round(args.height),
+        outputWidth: Math.round(args.outputWidth),
+        outputHeight: Math.round(args.outputHeight),
+        fit: args.fit || "cover",
+        durationSec: args.durationSec
+      };
+      const response = await composePageVideoAtEndpoint({
+        baseUrl,
+        body: requestBody,
+        timeoutMs,
+        sharedSecret
+      });
+      if (response.ok) {
+        const result = (await response.json()) as ComposePageVideoResult;
+        result.outputUrl = await mirrorRenderedVideoToStorage({
+          jobId: args.jobId,
+          sourceUrl: result.outputUrl,
+          userId
+        });
+        return result;
+      }
+
+      const message = await response.text();
+      endpointErrors.push(`${baseUrl} -> HTTP ${response.status}: ${message}`);
+      lastResponse = response;
+      if (!shouldRetryWithFallback(response.status)) {
+        break;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown connection error";
+      endpointErrors.push(`${baseUrl} -> ${message}`);
+      lastNetworkError = message;
+      continue;
+    }
+  }
+
+  if (lastResponse && !shouldRetryWithFallback(lastResponse.status)) {
+    const detailed = endpointErrors[endpointErrors.length - 1] || `HTTP ${lastResponse.status}`;
+    throw new Error(`Video engine page compose request rejected: ${detailed}`);
+  }
+
+  const hint = [
+    "Video engine page compose endpoints failed.",
+    `Tried: ${baseUrls.join(" -> ")}`,
+    `Timeout: ${timeoutMs}ms`,
+    endpointErrors.length > 0 ? `Details: ${endpointErrors.join(" | ")}` : undefined,
+    lastNetworkError ? "Check primary PC engine connectivity/tunnel and fallback health." : undefined
   ]
     .filter(Boolean)
     .join(" ");

@@ -22,11 +22,13 @@ export const INSTAGRAM_IDEA_DEFAULT_PROMPT = `당신은 일본어 학습 데이�
 - example_1_romaji
 - example_1_mean
 - example_1_kanji
+- example_1_kr_intonation
 - example_2_title
 - example_2_hira
 - example_2_romaji
 - example_2_mean
 - example_2_kanji
+- example_2_kr_intonation
 - Caption
 
 [규칙]
@@ -56,17 +58,45 @@ export const INSTAGRAM_IDEA_DEFAULT_PROMPT = `당신은 일본어 학습 데이�
     "example_1_romaji": "kinou wa undou o shimasen deshita",
     "example_1_mean": "어제는 운동을 하지 않았습니다.",
     "example_1_kanji": "昨日: 어제, 運動: 운동",
+    "example_1_kr_intonation": "키노우와 운도오 시마센데시타",
     "example_2_title": "今日はコーヒーを飲みませんでした。",
     "example_2_hira": "(きょう は こーひー を のみませんでした)",
     "example_2_romaji": "kyou wa koohii o nomimasen deshita",
     "example_2_mean": "오늘은 커피를 마시지 않았습니다.",
     "example_2_kanji": "今日: 오늘, 飲む: 마시다",
+    "example_2_kr_intonation": "쿄오와 코히 오 노미마센 데시타",
     "Caption": "오늘의 일본어 한 문장 しませんでした 하지 않았다 표현과 예시문장을 준비했습니다"
   }
 ]
 
 이제 사용자가 요청하는 기준에 맞춰서
 위 JSON 구조의 배열 {cnt}개를 출력하세요.`;
+
+export const INSTAGRAM_IDEA_SHEET_HEADERS = [
+  "ID",
+  "jlpt",
+  "Subject",
+  "kr_intonation",
+  "romaji_intonation",
+  "kr_mean",
+  "type",
+  "example_1_title",
+  "example_1_hira",
+  "example_1_romaji",
+  "example_1_mean",
+  "example_1_kanji",
+  "example_1_kr_intonation",
+  "example_2_title",
+  "example_2_hira",
+  "example_2_romaji",
+  "example_2_mean",
+  "example_2_kanji",
+  "example_2_kr_intonation",
+  "Status",
+  "Caption",
+  "publish",
+  "video link"
+] as const;
 
 const VARIABLE_PATTERN = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 

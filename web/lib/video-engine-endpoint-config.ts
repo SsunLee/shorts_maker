@@ -1,5 +1,5 @@
 const DEFAULT_VIDEO_ENGINE_URL = "http://localhost:8000";
-const DEFAULT_VIDEO_ENGINE_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_VIDEO_ENGINE_TIMEOUT_MS = 30 * 60 * 1000;
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -34,4 +34,3 @@ export function resolveVideoEngineTimeoutMs(): number {
 export function isVideoEngineSharedSecretConfigured(): boolean {
   return Boolean(String(process.env.VIDEO_ENGINE_SHARED_SECRET || "").trim());
 }
-

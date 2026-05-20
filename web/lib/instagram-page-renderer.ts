@@ -1,4 +1,9 @@
-import type { InstagramFeedPage, InstagramShapeType, InstagramTextElement } from "@/lib/instagram-types";
+import type {
+  InstagramFeedPage,
+  InstagramPageElement,
+  InstagramShapeType,
+  InstagramTextElement
+} from "@/lib/instagram-types";
 
 const DEFAULT_CANVAS_WIDTH = 1080;
 const DEFAULT_CANVAS_HEIGHT = 1350;
@@ -349,24 +354,34 @@ async function ensurePageFontsReady(
   await Promise.all(loaders);
 }
 
+const imageElementCache = new Map<string, Promise<HTMLImageElement | null>>();
+const videoElementCache = new Map<string, Promise<HTMLVideoElement | null>>();
+
 async function loadImageElement(source: string): Promise<HTMLImageElement | null> {
   if (!source) return null;
-  return new Promise((resolve) => {
+  const cached = imageElementCache.get(source);
+  if (cached) return cached;
+  const promise = new Promise<HTMLImageElement | null>((resolve) => {
     const image = new Image();
     image.crossOrigin = "anonymous";
     image.onload = () => resolve(image);
     image.onerror = () => resolve(null);
     image.src = source;
   });
+  imageElementCache.set(source, promise);
+  return promise;
 }
 
 async function loadVideoElement(source: string): Promise<HTMLVideoElement | null> {
   if (!source) return null;
-  return new Promise((resolve) => {
+  const cached = videoElementCache.get(source);
+  if (cached) return cached;
+  const promise = new Promise<HTMLVideoElement | null>((resolve) => {
     const video = document.createElement("video");
     video.crossOrigin = "anonymous";
     video.preload = "auto";
     video.muted = true;
+    video.loop = true;
     video.playsInline = true;
     const cleanup = (): void => {
       video.onloadeddata = null;
@@ -374,6 +389,7 @@ async function loadVideoElement(source: string): Promise<HTMLVideoElement | null
     };
     video.onloadeddata = () => {
       cleanup();
+      void video.play().catch(() => undefined);
       resolve(video);
     };
     video.onerror = () => {
@@ -387,15 +403,21 @@ async function loadVideoElement(source: string): Promise<HTMLVideoElement | null
       resolve(null);
     }
   });
+  videoElementCache.set(source, promise);
+  return promise;
 }
 
-export async function renderInstagramPageToPngDataUrl(args: {
+export async function renderInstagramPageToCanvas(args: {
   page: InstagramFeedPage;
   sampleData: Record<string, string>;
   canvasWidth: number;
   canvasHeight: number;
-}): Promise<string> {
-  const canvas = document.createElement("canvas");
+  canvas?: HTMLCanvasElement;
+  includeBackground?: boolean;
+  transparentBackground?: boolean;
+  layerFilter?: (layer: InstagramPageElement) => boolean;
+}): Promise<HTMLCanvasElement> {
+  const canvas = args.canvas || document.createElement("canvas");
   const canvasWidth = normalizeCanvasWidth(args.canvasWidth);
   const canvasHeight = normalizeCanvasHeight(args.canvasHeight);
   canvas.width = canvasWidth;
@@ -407,10 +429,14 @@ export async function renderInstagramPageToPngDataUrl(args: {
   await ensurePageFontsReady(args.page, args.sampleData);
 
   const page = args.page;
-  ctx.fillStyle = normalizeHex(page.backgroundColor || "#FFFFFF", "#FFFFFF");
-  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+  const includeBackground = args.includeBackground !== false;
+  if (includeBackground && !args.transparentBackground) {
+    ctx.fillStyle = normalizeHex(page.backgroundColor || "#FFFFFF", "#FFFFFF");
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+  }
 
-  if (page.backgroundImageUrl) {
+  if (includeBackground && page.backgroundImageUrl) {
     const bgMediaType = inferInstagramMediaTypeFromSource(page.backgroundImageUrl);
     const bgImage =
       bgMediaType === "video" ? await loadVideoElement(page.backgroundImageUrl) : await loadImageElement(page.backgroundImageUrl);
@@ -444,7 +470,9 @@ export async function renderInstagramPageToPngDataUrl(args: {
     }
   }
 
-  const sorted = [...page.elements].sort((a, b) => a.zIndex - b.zIndex);
+  const sorted = [...page.elements]
+    .filter((layer) => (args.layerFilter ? args.layerFilter(layer) : true))
+    .sort((a, b) => a.zIndex - b.zIndex);
   for (const layer of sorted) {
     const centerX = (layer.x / 100) * canvasWidth;
     const centerY = (layer.y / 100) * canvasHeight;
@@ -577,10 +605,10 @@ export async function renderInstagramPageToPngDataUrl(args: {
       continue;
     }
 
-    if (layer.type === "image") {
+    if (layer.type === "image" || layer.type === "video") {
       if (layer.imageUrl) {
         const mediaType =
-          layer.mediaType === "video" || inferInstagramMediaTypeFromSource(layer.imageUrl) === "video" ? "video" : "image";
+          layer.type === "video" || inferInstagramMediaTypeFromSource(layer.imageUrl) === "video" ? "video" : "image";
         const image = mediaType === "video" ? await loadVideoElement(layer.imageUrl) : await loadImageElement(layer.imageUrl);
         if (image) {
           const fit = layer.fit === "contain" ? "contain" : "cover";
@@ -606,8 +634,10 @@ export async function renderInstagramPageToPngDataUrl(args: {
             drawWidth = drawHeight * imageRatio;
           }
 
-          const drawX = centerX - drawWidth / 2;
-          const drawY = centerY - drawHeight / 2;
+          const cropX = clamp(Number(layer.cropX), 0, 100, 50) / 100;
+          const cropY = clamp(Number(layer.cropY), 0, 100, 50) / 100;
+          const drawX = left + (width - drawWidth) * cropX;
+          const drawY = top + (height - drawHeight) * cropY;
           const radius = clamp(layer.borderRadius, 0, 220, 0);
           ctx.save();
           ctx.beginPath();
@@ -750,7 +780,215 @@ export async function renderInstagramPageToPngDataUrl(args: {
     ctx.restore();
   }
 
+  return canvas;
+}
+
+export async function renderInstagramPageToPngDataUrl(args: {
+  page: InstagramFeedPage;
+  sampleData: Record<string, string>;
+  canvasWidth: number;
+  canvasHeight: number;
+  includeBackground?: boolean;
+  transparentBackground?: boolean;
+  layerFilter?: (layer: InstagramPageElement) => boolean;
+}): Promise<string> {
+  const canvas = await renderInstagramPageToCanvas(args);
   return canvas.toDataURL("image/png");
+}
+
+function collectVideoSources(page: InstagramFeedPage): string[] {
+  const sources: string[] = [];
+  const push = (source: string | undefined): void => {
+    const value = String(source || "").trim();
+    if (!value || inferInstagramMediaTypeFromSource(value) !== "video") return;
+    if (!sources.includes(value)) {
+      sources.push(value);
+    }
+  };
+  push(page.backgroundImageUrl);
+  page.elements.forEach((element) => {
+    if (element.type === "image" || element.type === "video") {
+      push(element.imageUrl);
+    }
+  });
+  return sources;
+}
+
+function resolveRecorderMimeType(withAudio: boolean): string {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+    return "";
+  }
+  const candidates = withAudio
+    ? [
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4;codecs=h264,aac",
+        "video/mp4",
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm"
+      ]
+    : [
+        "video/mp4;codecs=avc1.42E01E",
+        "video/mp4;codecs=h264",
+        "video/mp4",
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm"
+      ];
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+}
+
+async function loadAudioForRecording(source: string): Promise<{ audio: HTMLAudioElement; objectUrl: string }> {
+  const response = await fetch(source, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`오디오 로드 실패 (${response.status})`);
+  }
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const audio = new Audio();
+  audio.preload = "auto";
+  audio.src = objectUrl;
+  await new Promise<void>((resolve, reject) => {
+    audio.onloadedmetadata = () => resolve();
+    audio.onerror = () => reject(new Error("오디오 메타데이터를 읽지 못했습니다."));
+    try {
+      audio.load();
+    } catch (error) {
+      reject(error);
+    }
+  });
+  return { audio, objectUrl };
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+export async function renderInstagramPageToVideoBlob(args: {
+  page: InstagramFeedPage;
+  sampleData: Record<string, string>;
+  canvasWidth: number;
+  canvasHeight: number;
+  durationSec: number;
+  fps?: number;
+  audioUrl?: string;
+}): Promise<{ blob: Blob; mimeType: string; durationSec: number }> {
+  if (typeof window === "undefined" || typeof MediaRecorder === "undefined") {
+    throw new Error("브라우저 비디오 녹화 기능을 사용할 수 없습니다.");
+  }
+
+  const fps = Math.max(8, Math.min(30, Math.round(Number(args.fps) || 15)));
+  const canvasWidth = normalizeCanvasWidth(args.canvasWidth);
+  const canvasHeight = normalizeCanvasHeight(args.canvasHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+
+  const videoSources = collectVideoSources(args.page);
+  const videoElements = (await Promise.all(videoSources.map((source) => loadVideoElement(source)))).filter(
+    (video): video is HTMLVideoElement => Boolean(video)
+  );
+  for (const video of videoElements) {
+    try {
+      video.currentTime = 0;
+      await video.play();
+    } catch {
+      // Draw the available frame even if autoplay is blocked.
+    }
+  }
+
+  let audioContext: AudioContext | undefined;
+  let audioElement: HTMLAudioElement | undefined;
+  let audioObjectUrl: string | undefined;
+  let audioTrackStream: MediaStream | undefined;
+  const requestedAudioUrl = String(args.audioUrl || "").trim();
+  if (requestedAudioUrl) {
+    const loadedAudio = await loadAudioForRecording(requestedAudioUrl);
+    audioElement = loadedAudio.audio;
+    audioObjectUrl = loadedAudio.objectUrl;
+    audioContext = new AudioContext();
+    const sourceNode = audioContext.createMediaElementSource(audioElement);
+    const destination = audioContext.createMediaStreamDestination();
+    sourceNode.connect(destination);
+    audioTrackStream = destination.stream;
+  }
+
+  const safeDurationSec = Math.max(
+    1,
+    Math.min(
+      120,
+      Number.isFinite(Number(audioElement?.duration))
+        ? Math.max(Number(args.durationSec) || 1, Number(audioElement?.duration) || 1)
+        : Number(args.durationSec) || 1
+    )
+  );
+  await renderInstagramPageToCanvas({
+    page: args.page,
+    sampleData: args.sampleData,
+    canvasWidth,
+    canvasHeight,
+    canvas
+  });
+
+  const canvasStream = canvas.captureStream(fps);
+  audioTrackStream?.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
+  const mimeType = resolveRecorderMimeType(Boolean(audioTrackStream));
+  if (!mimeType) {
+    throw new Error("이 브라우저에서 MP4/WebM 녹화 형식을 찾지 못했습니다.");
+  }
+
+  const chunks: BlobPart[] = [];
+  const recorder = new MediaRecorder(canvasStream, { mimeType });
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) {
+      chunks.push(event.data);
+    }
+  };
+  const stopPromise = new Promise<void>((resolve, reject) => {
+    recorder.onstop = () => resolve();
+    recorder.onerror = () => reject(new Error("브라우저 비디오 녹화에 실패했습니다."));
+  });
+
+  recorder.start(1000);
+  if (audioElement) {
+    try {
+      await audioContext?.resume();
+      audioElement.currentTime = 0;
+      await audioElement.play();
+    } catch {
+      // Continue visual recording; the UI will still receive a rendered review file.
+    }
+  }
+
+  const startedAt = performance.now();
+  const frameMs = 1000 / fps;
+  while (performance.now() - startedAt < safeDurationSec * 1000) {
+    await renderInstagramPageToCanvas({
+      page: args.page,
+      sampleData: args.sampleData,
+      canvasWidth,
+      canvasHeight,
+      canvas
+    });
+    await waitMs(frameMs);
+  }
+
+  if (recorder.state !== "inactive") {
+    recorder.stop();
+  }
+  await stopPromise;
+  audioElement?.pause();
+  videoElements.forEach((video) => video.pause());
+  canvasStream.getTracks().forEach((track) => track.stop());
+  await audioContext?.close().catch(() => undefined);
+  if (audioObjectUrl) {
+    URL.revokeObjectURL(audioObjectUrl);
+  }
+
+  return {
+    blob: new Blob(chunks, { type: mimeType }),
+    mimeType,
+    durationSec: safeDurationSec
+  };
 }
 
 export async function renderImageDataUrlToNineSixteenContain(args: {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ExternalLink, RefreshCw, Sparkles } from "lucide-react";
+import { ExternalLink, PenLine, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -27,6 +27,16 @@ import type {
   InstagramTemplate,
   InstagramTextElement
 } from "@/lib/instagram-types";
+import {
+  BLOG_ACTIVE_TEMPLATE_KEY,
+  BLOG_TEMPLATE_STORAGE_KEY,
+  BLOG_WRITE_DRAFT_KEY,
+  DEFAULT_BLOG_TEMPLATES,
+  materializeBlogTemplateText,
+  type BlogTemplate,
+  type BlogWriteDraft,
+  type BlogWriteSource
+} from "@/lib/blog-storage";
 
 type GoogleNewsItem = {
   title: string;
@@ -836,6 +846,29 @@ function buildCaptionFromNews(item: GoogleNewsItem): string {
   return `${normalizedDetail}\n\n원문 링크: ${item.link}`;
 }
 
+function readBlogTemplatesFromStorage(): BlogTemplate[] {
+  if (typeof window === "undefined") {
+    return DEFAULT_BLOG_TEMPLATES;
+  }
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(BLOG_TEMPLATE_STORAGE_KEY) || "[]") as BlogTemplate[];
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_BLOG_TEMPLATES;
+  } catch {
+    return DEFAULT_BLOG_TEMPLATES;
+  }
+}
+
+function buildBlogSourceFromNews(item: GoogleNewsItem): BlogWriteSource {
+  return {
+    title: collapseWhitespace(item.titleKo || item.title || item.summaryKo || item.summaryOriginal),
+    summary: collapseWhitespace(item.summaryKo || item.summaryOriginal || item.description || item.titleKo || item.title),
+    detail: cleanNewsBodyText(item.detailKo || item.detailOriginal || item.summaryKo || item.summaryOriginal || item.description),
+    source: collapseWhitespace(item.source || "Google News"),
+    link: collapseWhitespace(item.link || item.sourceUrl || ""),
+    publishedAt: formatDateTime(item.publishedAt)
+  };
+}
+
 function buildNewsPayload(args: {
   item: GoogleNewsItem;
   country: string;
@@ -1358,6 +1391,28 @@ export function InstagramNewsClient(): React.JSX.Element {
     }
   }, [country, router, selectedNewsItem, selectedTemplateId, templates]);
 
+  const openBlogWriterForItem = useCallback((item: GoogleNewsItem): void => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const blogTemplates = readBlogTemplatesFromStorage();
+    const activeTemplateId = window.localStorage.getItem(BLOG_ACTIVE_TEMPLATE_KEY) || blogTemplates[0]?.id;
+    const template =
+      blogTemplates.find((candidate) => candidate.id === activeTemplateId) ||
+      blogTemplates[0] ||
+      DEFAULT_BLOG_TEMPLATES[0];
+    const source = buildBlogSourceFromNews(item);
+    const draft: BlogWriteDraft = {
+      templateId: template.id,
+      source,
+      title: materializeBlogTemplateText(template.titleTemplate, source).trim() || source.title,
+      body: materializeBlogTemplateText(template.bodyTemplate, source).trim(),
+      createdAt: new Date().toISOString()
+    };
+    window.localStorage.setItem(BLOG_WRITE_DRAFT_KEY, JSON.stringify(draft));
+    router.push("/blog/write");
+  }, [router]);
+
   useEffect(() => {
     void loadNews();
     // 최초 진입 1회 자동 조회만 수행합니다.
@@ -1468,16 +1523,26 @@ export function InstagramNewsClient(): React.JSX.Element {
                     <ExternalLink className="mt-0.5 h-4 w-4 shrink-0" />
                   </a>
                 </CardTitle>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="shrink-0"
-                  onClick={() => void openTemplateDialogForItem(item)}
-                >
-                  <Sparkles className="mr-1 h-4 w-4" />
-                  카드 뉴스 만들기
-                </Button>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openBlogWriterForItem(item)}
+                  >
+                    <PenLine className="mr-1 h-4 w-4" />
+                    블로그 글쓰기
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void openTemplateDialogForItem(item)}
+                  >
+                    <Sparkles className="mr-1 h-4 w-4" />
+                    카드 뉴스 만들기
+                  </Button>
+                </div>
               </div>
               <CardDescription>
                 {item.source || "Google News"} · {formatDateTime(item.publishedAt)}
@@ -1500,7 +1565,7 @@ export function InstagramNewsClient(): React.JSX.Element {
               </div>
               <section className="space-y-1 rounded-md border border-border/60 bg-muted/20 p-3">
                 <p className="text-xs font-semibold tracking-wide text-muted-foreground">이미지 프롬프트</p>
-                <pre className="overflow-x-auto rounded bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-100">
+                <pre className="app-table-scrollbar overflow-x-auto rounded bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-100">
                   <code>{item.imagePrompt || "해당 뉴스를 설명하는 사실적인 에디토리얼 장면, 9:16 vertical."}</code>
                 </pre>
               </section>
@@ -1527,7 +1592,7 @@ export function InstagramNewsClient(): React.JSX.Element {
           }
         }}
       >
-        <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
+        <DialogContent className="app-panel-scrollbar max-h-[90vh] max-w-xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>카드 뉴스 만들기</DialogTitle>
             <DialogDescription>

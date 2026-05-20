@@ -187,6 +187,148 @@ def probe_audio_duration(audio_path: Path) -> float:
         return 30.0
 
 
+def mux_video_with_audio(
+    *,
+    video_path: Path,
+    audio_path: Path,
+    output_dir: Path,
+    duration_sec: float | None = None,
+) -> tuple[Path, list[str]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ffmpeg_log_path = output_dir / "ffmpeg.log"
+    safe_duration = float(duration_sec or 0)
+    if safe_duration <= 0:
+        safe_duration = max(1.0, probe_audio_duration(audio_path))
+    safe_duration = max(1.0, min(180.0, safe_duration))
+    final_output = output_dir / "final.mp4"
+    duration_text = f"{safe_duration:.3f}"
+    filter_complex = (
+        "[0:v]fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[v];"
+        f"[1:a]apad=whole_dur={duration_text},atrim=0:{duration_text}[a]"
+    )
+    command = [
+        FFMPEG_BIN,
+        "-y",
+        "-stream_loop",
+        "-1",
+        "-i",
+        str(video_path),
+        "-i",
+        str(audio_path),
+        "-t",
+        duration_text,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "+faststart",
+        str(final_output),
+    ]
+    run_cmd(command, log_path=ffmpeg_log_path, label="mux-video-audio")
+    return final_output, [_to_ffmpeg_command_string(command)]
+
+
+def compose_page_video_with_layers(
+    *,
+    video_path: Path,
+    underlay_path: Path,
+    overlay_path: Path,
+    output_dir: Path,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    output_width: int,
+    output_height: int,
+    fit: str = "cover",
+    duration_sec: float | None = None,
+) -> tuple[Path, list[str]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ffmpeg_log_path = output_dir / "ffmpeg.log"
+    safe_duration = float(duration_sec or 0)
+    if safe_duration <= 0:
+      safe_duration = max(1.0, probe_audio_duration(video_path))
+    safe_duration = max(1.0, min(180.0, safe_duration))
+    duration_text = f"{safe_duration:.3f}"
+    final_output = output_dir / "final.mp4"
+
+    box_w = max(1, int(width))
+    box_h = max(1, int(height))
+    out_w = max(2, int(output_width))
+    out_h = max(2, int(output_height))
+    safe_x = int(x)
+    safe_y = int(y)
+    if fit == "contain":
+        video_filter = (
+            f"[0:v]fps=30,scale={box_w}:{box_h}:force_original_aspect_ratio=decrease,"
+            f"pad={box_w}:{box_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,setpts=PTS-STARTPTS[vbox]"
+        )
+    else:
+        video_filter = (
+            f"[0:v]fps=30,scale={box_w}:{box_h}:force_original_aspect_ratio=increase,"
+            f"crop={box_w}:{box_h},setsar=1,setpts=PTS-STARTPTS[vbox]"
+        )
+    filter_complex = (
+        f"{video_filter};"
+        f"[1:v]scale={out_w}:{out_h},format=rgba[base];"
+        f"[2:v]scale={out_w}:{out_h},format=rgba[top];"
+        f"[base][vbox]overlay={safe_x}:{safe_y}:shortest=0[withvideo];"
+        f"[withvideo][top]overlay=0:0:shortest=0,format=yuv420p[v]"
+    )
+    command = [
+        FFMPEG_BIN,
+        "-y",
+        "-stream_loop",
+        "-1",
+        "-i",
+        str(video_path),
+        "-loop",
+        "1",
+        "-i",
+        str(underlay_path),
+        "-loop",
+        "1",
+        "-i",
+        str(overlay_path),
+        "-t",
+        duration_text,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[v]",
+        "-map",
+        "0:a:0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "+faststart",
+        str(final_output),
+    ]
+    run_cmd(command, log_path=ffmpeg_log_path, label="compose-page-video")
+    return final_output, [_to_ffmpeg_command_string(command)]
+
+
 def probe_video_dimensions(video_path: Path) -> tuple[int, int] | None:
     command = [
         FFPROBE_BIN,
@@ -1205,6 +1347,7 @@ def render_short_video(
     audio_duration = probe_audio_duration(tts_path)
     if target_duration_sec is not None:
         audio_duration = float(target_duration_sec)
+    safe_output_duration = max(1.0, float(audio_duration))
 
     fps = _resolve_output_fps(overlay_options)
     image_count = len(image_paths)
@@ -1326,8 +1469,9 @@ def render_short_video(
             "-i",
             str(sfx_path),
             "-filter_complex",
-            "[1:a]volume=1.0[tts];[2:a]volume=0.13[sfx];"
-            "[tts][sfx]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            f"[1:a]volume=1.0,apad=pad_dur={safe_output_duration:.3f},atrim=duration={safe_output_duration:.3f}[tts];"
+            f"[2:a]volume=0.13[sfx];"
+            f"[tts][sfx]amix=inputs=2:duration=longest:dropout_transition=2,atrim=duration={safe_output_duration:.3f}[aout]",
         ]
         if video_filters:
             final_command.extend(["-vf", video_filters])
@@ -1338,6 +1482,12 @@ def render_short_video(
             "[aout]",
             "-c:v",
             "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "high",
+            "-level:v",
+            "4.1",
             "-preset",
             "medium",
             "-crf",
@@ -1346,7 +1496,12 @@ def render_short_video(
             str(fps),
             "-c:a",
             "aac",
-            "-shortest",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-t",
+            f"{safe_output_duration:.3f}",
             "-movflags",
             "+faststart",
             str(final_output),
@@ -1365,6 +1520,8 @@ def render_short_video(
             str(concat_file),
             "-i",
             str(tts_path),
+            "-filter_complex",
+            f"[1:a]apad=pad_dur={safe_output_duration:.3f},atrim=duration={safe_output_duration:.3f}[aout]",
         ]
         if video_filters:
             final_command.extend(["-vf", video_filters])
@@ -1372,9 +1529,15 @@ def render_short_video(
             "-map",
             "0:v",
             "-map",
-            "1:a",
+            "[aout]",
             "-c:v",
             "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "high",
+            "-level:v",
+            "4.1",
             "-preset",
             "medium",
             "-crf",
@@ -1383,7 +1546,12 @@ def render_short_video(
             str(fps),
             "-c:a",
             "aac",
-            "-shortest",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-t",
+            f"{safe_output_duration:.3f}",
             "-movflags",
             "+faststart",
             str(final_output),

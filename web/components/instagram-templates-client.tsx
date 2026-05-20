@@ -33,6 +33,7 @@ import {
   Type,
   Undo2,
   Upload,
+  Video,
   WrapText
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -57,6 +58,7 @@ import type {
   InstagramFeedPage,
   InstagramGeneratedFeedItem,
   InstagramImageElement,
+  InstagramVideoElement,
   InstagramPageElement,
   InstagramShapeElement,
   InstagramShapeType,
@@ -75,6 +77,32 @@ type TemplateResponse = {
   activeTemplateId?: string;
   templates?: InstagramTemplate[];
   error?: string;
+};
+
+type TemplateMediaUploadUrlResponse = {
+  ok?: boolean;
+  uploadMethod?: "put" | "post";
+  uploadUrl?: string;
+  postUrl?: string;
+  fields?: Record<string, string>;
+  publicUrl?: string;
+  error?: string;
+};
+
+type AiVideoGenerationProgress = {
+  layerId: string;
+  status: "running" | "success" | "error";
+  provider: "gemini" | "openai";
+  startedAt: number;
+  message: string;
+  estimatedCostUsd: number;
+};
+
+type LayerMediaUploadProgress = {
+  status: "uploading" | "processing" | "success" | "error";
+  percent: number;
+  message: string;
+  fileName?: string;
 };
 
 type IdeasSheetTableResponse = {
@@ -218,6 +246,11 @@ type ShapeStyleSnapshot = Pick<
   | "cornerRadius"
   | "opacity"
 >;
+
+type ElementClipboardPayload = {
+  copiedAt: number;
+  elements: InstagramPageElement[];
+};
 
 const DEFAULT_CANVAS_WIDTH = 1080;
 const DEFAULT_CANVAS_HEIGHT = 1350;
@@ -903,6 +936,48 @@ function toInstagramMediaPreviewUrl(source: string): string {
   return `/api/instagram/media-proxy?source=${encodeURIComponent(value)}`;
 }
 
+function sanitizeDownloadName(value: string): string {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-");
+  return normalized || "instagram-image";
+}
+
+function getMediaDownloadExtension(contentType: string | null, source: string, fallback: string): string {
+  const normalizedType = String(contentType || "").toLowerCase();
+  if (normalizedType.includes("png")) return "png";
+  if (normalizedType.includes("jpeg") || normalizedType.includes("jpg")) return "jpg";
+  if (normalizedType.includes("webp")) return "webp";
+  if (normalizedType.includes("gif")) return "gif";
+  const match = String(source || "")
+    .split("?")[0]
+    .split("#")[0]
+    .match(/\.([a-z0-9]{2,5})$/i);
+  return match ? match[1].toLowerCase() : fallback;
+}
+
+async function downloadMediaBlob(source: string, fileNameBase: string, fallbackExtension = "png"): Promise<void> {
+  const raw = String(source || "").trim();
+  if (!raw) {
+    throw new Error("다운로드할 이미지가 없습니다.");
+  }
+  const response = await fetch(toInstagramMediaPreviewUrl(raw), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`이미지 다운로드 요청 실패 (${response.status})`);
+  }
+  const blob = await response.blob();
+  const extension = getMediaDownloadExtension(response.headers.get("content-type") || blob.type, raw, fallbackExtension);
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = `${sanitizeDownloadName(fileNameBase)}.${extension}`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(objectUrl);
+}
+
 function getTextDecorationLine(layer: InstagramTextElement): string {
   const lines: string[] = [];
   if (layer.underline) lines.push("underline");
@@ -1036,13 +1111,18 @@ function normalizeTemplateEditDraft(raw: unknown): InstagramTemplateEditDraft | 
     if (!normalizedKey) return;
     sampleData[normalizedKey] = String(value ?? "");
   });
+  const sourceFeedItem =
+    item.sourceFeedItem && typeof item.sourceFeedItem === "object"
+      ? (item.sourceFeedItem as InstagramGeneratedFeedItem)
+      : undefined;
 
   return {
     createdAt: String(item.createdAt || new Date().toISOString()),
     source: item.source === "instagram-feed" ? "instagram-feed" : undefined,
     focusPageId,
     template: normalizedTemplate,
-    sampleData: Object.keys(sampleData).length > 0 ? sampleData : undefined
+    sampleData: Object.keys(sampleData).length > 0 ? sampleData : undefined,
+    sourceFeedItem
   };
 }
 
@@ -1455,7 +1535,40 @@ function buildTemplatePayload(source: InstagramTemplate, templateId: string): In
     ...page,
     durationSec: clamp(Number(page.durationSec), 1, 60, payload.pageDurationSec)
   }));
-  return assignTemplateTextBindingKeys(payload);
+  return assignTemplateTextBindingKeys(ensureImagePromptVariableKeys(payload));
+}
+
+async function replaceTemplateDataUrlMedia(template: InstagramTemplate): Promise<InstagramTemplate> {
+  const next = deepCloneTemplate(template);
+  for (const page of next.pages) {
+    for (const element of page.elements) {
+      if (element.type !== "image" && element.type !== "video") {
+        continue;
+      }
+      const source = String(element.imageUrl || "").trim();
+      if (!source.startsWith("data:image/") && !source.startsWith("data:video/")) {
+        continue;
+      }
+      const response = await fetch(source);
+      const blob = await response.blob();
+      const extension =
+        blob.type.includes("video/mp4")
+          ? "mp4"
+          : blob.type.includes("webm")
+            ? "webm"
+            : blob.type.includes("jpeg")
+              ? "jpg"
+              : blob.type.includes("webp")
+                ? "webp"
+                : "png";
+      const file = new File([blob], `${element.type}-${element.id}.${extension}`, {
+        type: blob.type || (element.type === "video" ? "video/mp4" : "image/png")
+      });
+      element.imageUrl = await uploadTemplateMediaFile(file);
+      element.mediaType = element.type === "video" || file.type.startsWith("video/") ? "video" : "image";
+    }
+  }
+  return next;
 }
 
 function buildAutosaveSignature(template: InstagramTemplate): string {
@@ -1465,6 +1578,30 @@ function buildAutosaveSignature(template: InstagramTemplate): string {
   return JSON.stringify(cloned);
 }
 
+function ensureImagePromptVariableKeys(template: InstagramTemplate): InstagramTemplate {
+  return {
+    ...template,
+    pages: template.pages.map((page) => ({
+      ...page,
+      elements: page.elements.map((element) => {
+        if (element.type !== "image") {
+          return element;
+        }
+        const explicit = sanitizeAiPromptVariableKey(String(element.aiPromptVariableKey || ""));
+        const promptMatch = String(element.aiPrompt || "").match(/\{\{\s*([^}]+?)\s*\}\}/);
+        const imageUrlMatch = String(element.imageUrl || "").match(/\{\{\s*([^}]+?)\s*\}\}/);
+        return {
+          ...element,
+          aiPromptVariableKey:
+            explicit ||
+            sanitizeAiPromptVariableKey(String(promptMatch?.[1] || "")) ||
+            sanitizeAiPromptVariableKey(String(imageUrlMatch?.[1] || ""))
+        };
+      })
+    }))
+  };
+}
+
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1472,6 +1609,267 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error || new Error("파일을 읽지 못했습니다."));
     reader.readAsDataURL(file);
   });
+}
+
+async function readJsonOrThrow<T>(response: Response, fallbackMessage: string): Promise<T> {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return (await response.json()) as T;
+  }
+  const bodyText = (await response.text()).trim();
+  const message =
+    bodyText.startsWith("Request Entity")
+      ? "요청 본문이 너무 큽니다. 큰 이미지/비디오 파일은 템플릿 JSON에 직접 저장할 수 없습니다."
+      : bodyText || fallbackMessage;
+  throw new Error(message);
+}
+
+function uploadWithProgress(args: {
+  url: string;
+  method: "PUT" | "POST";
+  body: XMLHttpRequestBodyInit | Document;
+  headers?: Record<string, string>;
+  onProgress?: (percent: number) => void;
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(args.method, args.url);
+    Object.entries(args.headers || {}).forEach(([key, value]) => xhr.setRequestHeader(key, value));
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !args.onProgress) return;
+      args.onProgress(Math.max(1, Math.min(99, Math.round((event.loaded / Math.max(1, event.total)) * 100))));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        args.onProgress?.(100);
+        resolve();
+        return;
+      }
+      reject(new Error(xhr.responseText || `업로드 실패(HTTP ${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Failed to fetch"));
+    xhr.onabort = () => reject(new Error("업로드가 취소되었습니다."));
+    xhr.send(args.body);
+  });
+}
+
+function uploadFormDataWithProgress(args: {
+  url: string;
+  formData: FormData;
+  onProgress?: (percent: number) => void;
+}): Promise<TemplateMediaUploadUrlResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", args.url);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !args.onProgress) return;
+      args.onProgress(Math.max(1, Math.min(99, Math.round((event.loaded / Math.max(1, event.total)) * 100))));
+    };
+    xhr.onload = () => {
+      const text = String(xhr.responseText || "").trim();
+      let data: TemplateMediaUploadUrlResponse = {};
+      try {
+        data = text ? (JSON.parse(text) as TemplateMediaUploadUrlResponse) : {};
+      } catch {
+        reject(new Error(text || "템플릿 미디어 업로드에 실패했습니다."));
+        return;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        args.onProgress?.(100);
+        resolve(data);
+        return;
+      }
+      reject(new Error(data.error || `템플릿 미디어 업로드 실패(HTTP ${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Failed to fetch"));
+    xhr.onabort = () => reject(new Error("업로드가 취소되었습니다."));
+    xhr.send(args.formData);
+  });
+}
+
+function uploadWithPresignedPost(args: {
+  postUrl: string;
+  fields: Record<string, string>;
+  file: File;
+  onProgress?: (percent: number) => void;
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const iframeName = `s3-post-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const iframe = document.createElement("iframe");
+    const form = document.createElement("form");
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("S3 form 업로드 완료 신호를 제한 시간 내에 받지 못했습니다."));
+    }, 10 * 60 * 1000);
+    let submitted = false;
+    let progress = 15;
+    const progressTimer = window.setInterval(() => {
+      progress = Math.min(95, progress + 4);
+      args.onProgress?.(progress);
+    }, 1200);
+
+    function cleanup(): void {
+      window.clearTimeout(timeout);
+      window.clearInterval(progressTimer);
+      iframe.remove();
+      form.remove();
+    }
+
+    iframe.name = iframeName;
+    iframe.style.display = "none";
+    iframe.onload = () => {
+      if (!submitted) return;
+      try {
+        const text = iframe.contentDocument?.body?.textContent || "";
+        if (text.includes("\"ok\":true") || text.includes('"ok": true')) {
+          args.onProgress?.(100);
+          cleanup();
+          resolve();
+          return;
+        }
+      } catch {
+        cleanup();
+        reject(new Error("S3 form 업로드 후 완료 redirect를 확인하지 못했습니다."));
+        return;
+      }
+      cleanup();
+      reject(new Error("S3 form 업로드가 완료 응답 없이 종료되었습니다."));
+    };
+
+    form.action = args.postUrl;
+    form.method = "POST";
+    form.enctype = "multipart/form-data";
+    form.target = iframeName;
+    form.style.display = "none";
+
+    Object.entries(args.fields).forEach(([key, value]) => {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = key;
+      input.value = value;
+      form.appendChild(input);
+    });
+
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.name = "file";
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(args.file);
+      fileInput.files = transfer.files;
+    } catch {
+      cleanup();
+      reject(new Error("브라우저가 form 기반 S3 업로드 파일 첨부를 지원하지 않습니다."));
+      return;
+    }
+    form.appendChild(fileInput);
+    document.body.appendChild(iframe);
+    document.body.appendChild(form);
+    args.onProgress?.(10);
+    submitted = true;
+    form.submit();
+  });
+}
+
+async function uploadTemplateMediaFile(file: File, onProgress?: (percent: number) => void): Promise<string> {
+  const isVideoFile = file.type.toLowerCase().startsWith("video/");
+
+  async function uploadViaAppServer(): Promise<string> {
+    const formData = new FormData();
+    formData.append("file", file, file.name || "template-media");
+    const data = await uploadFormDataWithProgress({
+      url: "/api/instagram/template-media/upload-url",
+      formData,
+      onProgress
+    });
+    if (!data.publicUrl) {
+      throw new Error(data.error || "템플릿 미디어 업로드에 실패했습니다.");
+    }
+    return data.publicUrl;
+  }
+
+  async function uploadViaPresignedUrl(): Promise<string> {
+    const metadataResponse = await fetch("/api/instagram/template-media/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: file.name || "template-media",
+        contentType: file.type || "application/octet-stream",
+        contentLength: file.size
+      })
+    });
+    const metadata = await readJsonOrThrow<TemplateMediaUploadUrlResponse>(
+      metadataResponse,
+      "템플릿 미디어 업로드 URL을 생성하지 못했습니다."
+    );
+    if (!metadataResponse.ok || !metadata.publicUrl) {
+      throw new Error(metadata.error || "템플릿 미디어 업로드 URL을 생성하지 못했습니다.");
+    }
+    if (metadata.uploadMethod === "post" || metadata.postUrl || metadata.fields) {
+      if (!metadata.postUrl || !metadata.fields) {
+        throw new Error("S3 form 업로드 정보가 불완전합니다.");
+      }
+      await uploadWithPresignedPost({
+        postUrl: metadata.postUrl,
+        fields: metadata.fields,
+        file,
+        onProgress
+      });
+      return metadata.publicUrl;
+    }
+    if (!metadata.uploadUrl) {
+      throw new Error(metadata.error || "템플릿 미디어 업로드 URL을 생성하지 못했습니다.");
+    }
+
+    await uploadWithProgress({
+      url: metadata.uploadUrl,
+      method: "PUT",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream"
+      },
+      body: file,
+      onProgress
+    });
+    return metadata.publicUrl;
+  }
+
+  if (file.size <= 4 * 1024 * 1024 || isVideoFile) {
+    try {
+      return await uploadViaAppServer();
+    } catch (serverUploadError) {
+      if (file.size <= 4 * 1024 * 1024) {
+        throw serverUploadError;
+      }
+      const serverMessage = serverUploadError instanceof Error ? serverUploadError.message : String(serverUploadError || "");
+      try {
+        return await uploadViaPresignedUrl();
+      } catch (directUploadError) {
+        const directMessage = directUploadError instanceof Error ? directUploadError.message : String(directUploadError || "");
+        throw new Error(
+          `서버 경유 업로드 실패: ${serverMessage}\n` +
+            `S3 직접 업로드 실패: ${directMessage}\n` +
+            "비디오 업로드를 완료하려면 서버 경유 업로드 제한 안의 파일을 사용하거나 S3 버킷 CORS에 PUT 허용 설정이 필요합니다."
+        );
+      }
+    }
+  }
+
+  try {
+    return await uploadViaPresignedUrl();
+  } catch (uploadError) {
+    try {
+      return uploadViaAppServer();
+    } catch (serverUploadError) {
+      const directMessage = uploadError instanceof Error ? uploadError.message : String(uploadError || "Failed to fetch");
+      const serverMessage =
+        serverUploadError instanceof Error ? serverUploadError.message : String(serverUploadError || "업로드 실패");
+      throw new Error(
+        `S3 직접 업로드 실패: ${directMessage}\n` +
+          `서버 경유 업로드 실패: ${serverMessage}\n` +
+          "S3 직접 업로드가 브라우저 CORS에서 차단되었거나 서버 업로드 제한을 초과했습니다."
+      );
+    }
+  }
 }
 
 function createTextLayer(mode: "variable" | "plain" = "variable"): InstagramTextElement {
@@ -1599,6 +1997,8 @@ function createImageLayer(): InstagramImageElement {
     imageUrl: "",
     mediaType: "image",
     fit: "cover",
+    cropX: 50,
+    cropY: 50,
     borderRadius: 16,
     overlayColor: "#000000",
     overlayOpacity: 0,
@@ -1608,6 +2008,39 @@ function createImageLayer(): InstagramImageElement {
     aiPromptVariableKey: "",
     aiStylePreset: DEFAULT_INSTAGRAM_AI_IMAGE_STYLE,
     aiImageOrientation: "vertical"
+  };
+}
+
+function createVideoLayer(): InstagramVideoElement {
+  return {
+    id: uid(),
+    type: "video",
+    x: 50,
+    y: 57,
+    width: 84,
+    height: 40,
+    rotation: 0,
+    opacity: 1,
+    zIndex: 2,
+    imageUrl: "",
+    mediaType: "video",
+    fit: "cover",
+    cropX: 50,
+    cropY: 50,
+    borderRadius: 16,
+    overlayColor: "#000000",
+    overlayOpacity: 0,
+    aiGenerateEnabled: true,
+    aiModel: "auto",
+    aiPrompt: "",
+    aiPromptVariableKey: "",
+    aiStylePreset: DEFAULT_INSTAGRAM_AI_IMAGE_STYLE,
+    aiImageOrientation: "vertical",
+    aiVideoEnabled: true,
+    aiVideoProvider: "gemini",
+    aiVideoPrompt: "no music, no camera movement, no subtitles",
+    aiVideoDurationSec: 6,
+    aiVideoResolution: "720p"
   };
 }
 
@@ -1623,6 +2056,7 @@ function createPage(index: number): InstagramFeedPage {
     audioProvider: "auto",
     audioVoice: "alloy",
     audioSpeed: 1,
+    audioUrl: "",
     audioPrompt: "",
     elements: [createShapeLayer("rectangle"), createTextLayer("variable"), createImageLayer()]
   };
@@ -1635,6 +2069,9 @@ function createTemplate(): InstagramTemplate {
     mode: "general",
     sourceTitle: "{{subject}}",
     sourceTopic: "{{description}}",
+    hashtags: ["#shorts", "#instagram", "#콘텐츠"],
+    hashtagSourceFields: ["subject", "keyword", "type"],
+    captionSourceFields: ["Caption", "Subject"],
     canvasPreset: "instagram_feed_portrait",
     canvasWidth: DEFAULT_CANVAS_WIDTH,
     canvasHeight: DEFAULT_CANVAS_HEIGHT,
@@ -1646,6 +2083,19 @@ function createTemplate(): InstagramTemplate {
   };
 }
 
+function normalizeTemplateHashtags(value: unknown): string[] {
+  const blocked = new Set(["#한겨레"]);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((tag) => String(tag || "").trim().replace(/^#+/, ""))
+    .filter(Boolean)
+    .map((tag) => `#${tag}`)
+    .filter((tag) => !blocked.has(tag))
+    .slice(0, 20);
+}
+
 function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTemplate {
   const normalized = deepCloneTemplate(template);
   normalized.mode = resolveTemplateMode(normalized.mode);
@@ -1655,6 +2105,19 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
   normalized.canvasHeight = normalizedCanvasHeight;
   normalized.canvasPreset = resolveCanvasPresetId(normalizedCanvasWidth, normalizedCanvasHeight);
   normalized.pageDurationSec = clamp(Number(normalized.pageDurationSec), 1, 60, 4);
+  normalized.hashtags = normalizeTemplateHashtags((normalized as { hashtags?: unknown }).hashtags);
+  normalized.hashtagSourceFields = Array.isArray((normalized as { hashtagSourceFields?: unknown }).hashtagSourceFields)
+    ? ((normalized as { hashtagSourceFields?: unknown }).hashtagSourceFields as unknown[])
+        .map((field) => String(field || "").trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    : ["subject", "keyword", "type"];
+  normalized.captionSourceFields = Array.isArray((normalized as { captionSourceFields?: unknown }).captionSourceFields)
+    ? ((normalized as { captionSourceFields?: unknown }).captionSourceFields as unknown[])
+        .map((field) => String(field || "").trim())
+        .filter(Boolean)
+        .slice(0, 12)
+    : ["Caption", "Subject"];
   normalized.customFonts = normalizeCustomTemplateFonts(normalized.customFonts);
   normalized.pages = (normalized.pages || []).map((page, pageIndex) => ({
     ...page,
@@ -1669,6 +2132,7 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
       page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
     audioVoice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
     audioSpeed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
+    audioUrl: String(page.audioUrl || ""),
     backgroundColor: normalizeHex(String(page.backgroundColor || ""), "#FFFFFF"),
     backgroundImageUrl: String(page.backgroundImageUrl || ""),
     backgroundFit: page.backgroundFit === "contain" ? "contain" : "cover",
@@ -1700,16 +2164,25 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
             fillOpacity: clamp(Number((core as InstagramShapeElement).fillOpacity), 0, 1, 1)
           } as InstagramShapeElement;
         }
-        if (core.type === "image") {
+        if (core.type === "image" || core.type === "video") {
           return {
             ...core,
+            type: core.type === "video" ? "video" : "image",
+            mediaType: core.type === "video" ? "video" : "image",
             aiGenerateEnabled: Boolean(core.aiGenerateEnabled),
             aiModel: resolveAiImageModel(core.aiModel),
             aiPrompt: String(core.aiPrompt || ""),
             aiPromptVariableKey: String(core.aiPromptVariableKey || "").trim(),
             aiStylePreset: String(core.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE),
-            aiImageOrientation: resolveAiImageOrientation(core.aiImageOrientation)
-          } as InstagramImageElement;
+            aiImageOrientation: resolveAiImageOrientation(core.aiImageOrientation),
+            aiVideoEnabled: core.type === "video" && Boolean((core as InstagramVideoElement).aiVideoEnabled),
+            aiVideoProvider: (core as InstagramVideoElement).aiVideoProvider === "openai" ? "openai" : "gemini",
+            aiVideoPrompt:
+              String((core as InstagramVideoElement).aiVideoPrompt || "").trim() ||
+              "no music, no camera movement, no subtitles",
+            aiVideoDurationSec: Math.max(4, Math.min(8, Math.round(Number((core as InstagramVideoElement).aiVideoDurationSec) || 6))),
+            aiVideoResolution: (core as InstagramVideoElement).aiVideoResolution === "1080p" ? "1080p" : "720p"
+          } as InstagramImageElement | InstagramVideoElement;
         }
         if (core.type === "text") {
           return {
@@ -1732,6 +2205,26 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
   return withBindingKeys;
 }
 
+function buildTopicDefaultHashtags(args: {
+  templateName?: string;
+  payload: Record<string, string>;
+  sourceFields: string[];
+}): string[] {
+  const seeds = args.sourceFields
+    .map((field) => String(args.payload[field] || "").trim())
+    .filter(Boolean)
+    .flatMap((value) => value.split(/[,\s/|]+/))
+    .map((token) => token.replace(/[^\p{L}\p{N}]+/gu, "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const fromFields = seeds.map((token) => `#${token.slice(0, 18)}`);
+  if (fromFields.length > 0) {
+    return fromFields;
+  }
+  const fallback = String(args.templateName || "").trim().replace(/[^\p{L}\p{N}]+/gu, "");
+  return [fallback ? `#${fallback.slice(0, 18)}` : "#인스타콘텐츠"];
+}
+
 function resolveElementName(layer: InstagramPageElement): string {
   if (layer.type === "text") {
     const preview = String(layer.text || "").replace(/\s+/g, " ").trim().slice(0, 20);
@@ -1744,6 +2237,7 @@ function resolveElementName(layer: InstagramPageElement): string {
     return preview ? `${prefix} · ${preview}` : prefix;
   }
   if (layer.type === "image") return "Image";
+  if (layer.type === "video") return "Video";
   return shapeLabel(layer.shape);
 }
 
@@ -1812,6 +2306,53 @@ function resolveTextLayerContent(layer: InstagramTextElement, sampleData: Record
   );
 }
 
+function resolveSampleValueByKey(sampleData: Record<string, string>, key: string): string {
+  const normalizedKey = sanitizeAiPromptVariableKey(key);
+  if (!normalizedKey) {
+    return "";
+  }
+  const keys = Object.keys(sampleData || {});
+  if (Object.prototype.hasOwnProperty.call(sampleData, normalizedKey)) {
+    return String(sampleData[normalizedKey] ?? "");
+  }
+  const lowerMatched = keys.find((candidate) => candidate.toLowerCase() === normalizedKey.toLowerCase());
+  if (lowerMatched) {
+    return String(sampleData[lowerMatched] ?? "");
+  }
+  const compact = normalizedKey.toLowerCase().replace(/[\s_-]+/g, "");
+  const compactMatched = keys.find((candidate) => candidate.toLowerCase().replace(/[\s_-]+/g, "") === compact);
+  return compactMatched ? String(sampleData[compactMatched] ?? "") : "";
+}
+
+function buildAiVideoFinalPromptPreview(layer: InstagramVideoElement, sampleData: Record<string, string>): string {
+  const basePrompt =
+    String(layer.aiVideoPrompt || "").trim() ||
+    "no music, no camera movement, no subtitles";
+  const variableKey = sanitizeAiPromptVariableKey(String(layer.aiPromptVariableKey || ""));
+  const dialogue = collapseWhitespace(resolveSampleValueByKey(sampleData, variableKey));
+  const dialogueText = dialogue || (variableKey ? `{{${variableKey}}}` : "{{변수명 값}}");
+  return `${basePrompt}. The visible speaker naturally says exactly this line with synced mouth movement: "${dialogueText}". Keep the first-frame character and composition consistent.`;
+}
+
+function estimateAiVideoCostUsd(layer: InstagramVideoElement): number {
+  const provider = layer.aiVideoProvider === "openai" ? "openai" : "gemini";
+  const durationSec = Math.max(4, Math.min(8, Math.round(Number(layer.aiVideoDurationSec) || 6)));
+  const resolution = layer.aiVideoResolution === "1080p" ? "1080p" : "720p";
+  const openAiDurationSec = durationSec > 4 ? 8 : 4;
+  const cost =
+    provider === "openai"
+      ? openAiDurationSec * 0.1
+      : durationSec * (resolution === "1080p" ? 0.08 : 0.05);
+  return Number(cost.toFixed(2));
+}
+
+function formatElapsedSeconds(startedAt: number, now = Date.now()): string {
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}분 ${seconds.toString().padStart(2, "0")}초` : `${seconds}초`;
+}
+
 function inferMediaTypeFromSource(source: string): "image" | "video" {
   const raw = String(source || "").trim().toLowerCase();
   if (!raw) return "image";
@@ -1825,12 +2366,6 @@ function inferMediaTypeFromSource(source: string): "image" | "video" {
 type RubySegment =
   | { type: "plain"; text: string }
   | { type: "ruby"; base: string; ruby: string };
-
-type RubyTokenMatch = {
-  index: number;
-  base: string;
-  ruby: string;
-};
 
 function parseRubySegments(line: string): RubySegment[] {
   const segments: RubySegment[] = [];
@@ -1862,47 +2397,6 @@ function parseRubySegments(line: string): RubySegment[] {
 
 function lineHasRuby(segments: RubySegment[]): boolean {
   return segments.some((segment) => segment.type === "ruby");
-}
-
-function extractRubyTokenMatches(text: string): RubyTokenMatch[] {
-  const matches: RubyTokenMatch[] = [];
-  const regex = /\[([^\]\|]+)\|([^\]]+)\]/g;
-  let token: RegExpExecArray | null = regex.exec(String(text || ""));
-  let index = 0;
-  while (token) {
-    matches.push({
-      index,
-      base: String(token[1] || ""),
-      ruby: String(token[2] || "")
-    });
-    index += 1;
-    token = regex.exec(String(text || ""));
-  }
-  return matches;
-}
-
-function updateRubyTokenByIndex(text: string, tokenIndex: number, ruby: string): string {
-  let index = 0;
-  return String(text || "").replace(/\[([^\]\|]+)\|([^\]]+)\]/g, (full, base) => {
-    if (index !== tokenIndex) {
-      index += 1;
-      return full;
-    }
-    index += 1;
-    return `[${String(base || "")}|${ruby}]`;
-  });
-}
-
-function removeRubyTokenByIndex(text: string, tokenIndex: number): string {
-  let index = 0;
-  return String(text || "").replace(/\[([^\]\|]+)\|([^\]]+)\]/g, (full, base) => {
-    if (index !== tokenIndex) {
-      index += 1;
-      return full;
-    }
-    index += 1;
-    return String(base || "");
-  });
 }
 
 function measureRubyLineWidth(ctx: CanvasRenderingContext2D, segments: RubySegment[]): number {
@@ -2062,7 +2556,7 @@ async function renderPageToPngDataUrl(args: {
   const previewPage: InstagramFeedPage = {
     ...args.page,
     elements: args.page.elements.map((layer) =>
-      layer.type === "image"
+      layer.type === "image" || layer.type === "video"
         ? {
             ...layer,
             imageUrl: toInstagramMediaPreviewUrl(layer.imageUrl)
@@ -2124,27 +2618,45 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
                   return items;
                 }
 
-                if (rawElement.type === "image") {
-                  const imageSource = rawElement as Partial<InstagramImageElement>;
+                if (rawElement.type === "image" || rawElement.type === "video") {
+                  const imageSource = rawElement as Partial<InstagramImageElement | InstagramVideoElement>;
                   const normalizedImageUrl = String(imageSource.imageUrl || "");
                   items.push({
                     ...core,
-                    type: "image",
+                    type: rawElement.type === "video" ? "video" : "image",
                     imageUrl: normalizedImageUrl,
                     mediaType:
-                      imageSource.mediaType === "video" || inferMediaTypeFromSource(normalizedImageUrl) === "video"
+                      rawElement.type === "video" || imageSource.mediaType === "video" || inferMediaTypeFromSource(normalizedImageUrl) === "video"
                         ? "video"
                         : "image",
                     fit: imageSource.fit === "contain" ? "contain" : "cover",
+                    cropX: clamp(Number(imageSource.cropX), 0, 100, 50),
+                    cropY: clamp(Number(imageSource.cropY), 0, 100, 50),
                     borderRadius: clamp(Number(imageSource.borderRadius), 0, 220, 16),
                     overlayColor: normalizeHex(String(imageSource.overlayColor || ""), "#000000"),
                     overlayOpacity: clamp(Number(imageSource.overlayOpacity), 0, 1, 0),
                     aiGenerateEnabled: Boolean(imageSource.aiGenerateEnabled),
                     aiModel: resolveAiImageModel(imageSource.aiModel),
                     aiPrompt: String(imageSource.aiPrompt || ""),
+                    aiPromptVariableKey: sanitizeAiPromptVariableKey(String(imageSource.aiPromptVariableKey || "")),
                     aiStylePreset: String(imageSource.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE),
-                    aiImageOrientation: resolveAiImageOrientation(imageSource.aiImageOrientation)
-                  } satisfies InstagramImageElement);
+                    aiImageOrientation: resolveAiImageOrientation(imageSource.aiImageOrientation),
+                    aiVideoEnabled: rawElement.type === "video" && Boolean((imageSource as { aiVideoEnabled?: boolean }).aiVideoEnabled),
+                    aiVideoProvider:
+                      (imageSource as { aiVideoProvider?: string }).aiVideoProvider === "openai" ? "openai" : "gemini",
+                    aiVideoPrompt:
+                      String((imageSource as { aiVideoPrompt?: string }).aiVideoPrompt || "").trim() ||
+                      "no music, no camera movement, no subtitles",
+                    aiVideoDurationSec: Math.max(
+                      4,
+                      Math.min(
+                        8,
+                        Math.round(Number((imageSource as { aiVideoDurationSec?: number }).aiVideoDurationSec) || 6)
+                      )
+                    ),
+                    aiVideoResolution:
+                      (imageSource as { aiVideoResolution?: string }).aiVideoResolution === "1080p" ? "1080p" : "720p"
+                  } as InstagramImageElement | InstagramVideoElement);
                   return items;
                 }
 
@@ -2199,6 +2711,7 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
             rawPage.audioProvider === "openai" || rawPage.audioProvider === "gemini" ? rawPage.audioProvider : "auto",
           audioVoice: String(rawPage.audioVoice || "alloy").trim().toLowerCase() || "alloy",
           audioSpeed: clamp(Number(rawPage.audioSpeed), 0.5, 2, 1),
+          audioUrl: String(rawPage.audioUrl || ""),
           audioPrompt: String(rawPage.audioPrompt || ""),
           elements
         } satisfies InstagramFeedPage);
@@ -2213,6 +2726,19 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
     mode: resolveTemplateMode(source.mode),
     sourceTitle: String(source.sourceTitle || "{{subject}}"),
     sourceTopic: String(source.sourceTopic || "{{description}}"),
+    hashtags: normalizeTemplateHashtags((source as { hashtags?: unknown }).hashtags),
+    hashtagSourceFields: Array.isArray((source as { hashtagSourceFields?: unknown }).hashtagSourceFields)
+      ? ((source as { hashtagSourceFields?: unknown }).hashtagSourceFields as unknown[])
+          .map((field) => String(field || "").trim())
+          .filter(Boolean)
+          .slice(0, 12)
+      : ["subject", "keyword", "type"],
+    captionSourceFields: Array.isArray((source as { captionSourceFields?: unknown }).captionSourceFields)
+      ? ((source as { captionSourceFields?: unknown }).captionSourceFields as unknown[])
+          .map((field) => String(field || "").trim())
+          .filter(Boolean)
+          .slice(0, 12)
+      : ["Caption", "Subject"],
     canvasPreset: String(source.canvasPreset || resolveCanvasPresetId(canvasWidth, canvasHeight)),
     canvasWidth,
     canvasHeight,
@@ -2225,12 +2751,13 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
 
 function ColorField(props: {
   label: string;
+  title?: string;
   value: string;
   onChange: (value: string) => void;
 }): React.JSX.Element {
   return (
     <div className="space-y-1">
-      <Label>{props.label}</Label>
+      <Label title={props.title}>{props.label}</Label>
       <div className="flex items-center gap-2">
         <input
           type="color"
@@ -2259,15 +2786,38 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [selectedPageId, setSelectedPageId] = useState<string>(editor.pages[0].id);
   const [selectedElementId, setSelectedElementId] = useState<string>();
   const [selectedElementIds, setSelectedElementIds] = useState<string[]>([]);
+  const [imageApplyTargetPageId, setImageApplyTargetPageId] = useState<string>("__all__");
+  const [audioApplyTargetPageId, setAudioApplyTargetPageId] = useState<string>("__all__");
   const [interaction, setInteraction] = useState<InteractionState | null>(null);
   const [selectionBox, setSelectionBox] = useState<SelectionBoxState | null>(null);
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition>({ x: 12, y: 12 });
   const [toolbarDrag, setToolbarDrag] = useState<ToolbarDragState | null>(null);
-  const [objectToolbarOffset, setObjectToolbarOffset] = useState<ObjectToolbarOffset>({ x: 0, y: 0 });
+  const [objectToolbarOffset, setObjectToolbarOffset] = useState<ObjectToolbarOffset>(() => {
+    if (typeof window === "undefined") {
+      return { x: 0, y: 0 };
+    }
+    try {
+      const saved = window.localStorage.getItem("instagram-template-object-toolbar-offset");
+      if (!saved) {
+        return { x: 0, y: 0 };
+      }
+      const parsed = JSON.parse(saved) as Partial<ObjectToolbarOffset>;
+      return {
+        x: Number.isFinite(Number(parsed.x)) ? Number(parsed.x) : 0,
+        y: Number.isFinite(Number(parsed.y)) ? Number(parsed.y) : 0
+      };
+    } catch {
+      return { x: 0, y: 0 };
+    }
+  });
   const [objectToolbarDrag, setObjectToolbarDrag] = useState<ObjectToolbarDragState | null>(null);
   const [objectToolbarWidth, setObjectToolbarWidth] = useState(760);
   const [pendingImageLayerId, setPendingImageLayerId] = useState<string>();
+  const [layerMediaUploadProgress, setLayerMediaUploadProgress] = useState<Record<string, LayerMediaUploadProgress>>({});
   const [aiImageGeneratingLayerId, setAiImageGeneratingLayerId] = useState<string>();
+  const [aiVideoGeneratingLayerId, setAiVideoGeneratingLayerId] = useState<string>();
+  const [aiVideoGenerationProgress, setAiVideoGenerationProgress] = useState<AiVideoGenerationProgress | null>(null);
+  const [aiVideoProgressTick, setAiVideoProgressTick] = useState(0);
   const [aiPromptGeneratingLayerId, setAiPromptGeneratingLayerId] = useState<string>();
   const [sheetName, setSheetName] = useState("");
   const [bindingSearch, setBindingSearch] = useState("");
@@ -2276,6 +2826,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [bindingSelectedRowKey, setBindingSelectedRowKey] = useState("");
   const [bindingLoading, setBindingLoading] = useState(false);
   const [sampleData, setSampleData] = useState<Record<string, string>>({ ...DEFAULT_SAMPLE_DATA });
+  const [feedEditSourceItem, setFeedEditSourceItem] = useState<InstagramGeneratedFeedItem>();
   const [newsCountry, setNewsCountry] = useState("KR");
   const [newsCount, setNewsCount] = useState("10");
   const [newsTopic, setNewsTopic] = useState("all");
@@ -2299,23 +2850,34 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [pendingTextStyleApplyFromLayerId, setPendingTextStyleApplyFromLayerId] = useState<string>();
   const [copiedShapeStyle, setCopiedShapeStyle] = useState<ShapeStyleSnapshot>();
   const [pendingShapeStyleApplyFromLayerId, setPendingShapeStyleApplyFromLayerId] = useState<string>();
+  const [elementClipboard, setElementClipboard] = useState<ElementClipboardPayload | null>(null);
   const [shapeToolOpen, setShapeToolOpen] = useState(false);
   const [panelToolOpen, setPanelToolOpen] = useState(false);
   const [fontPickerOpen, setFontPickerOpen] = useState(false);
   const [fontPickerQuery, setFontPickerQuery] = useState("");
   const [fontPickerAnchorRect, setFontPickerAnchorRect] = useState<PickerAnchorRect | null>(null);
   const [viewportWidth, setViewportWidth] = useState<number>(typeof window !== "undefined" ? window.innerWidth : 1280);
+  const [editorFollowOffset, setEditorFollowOffset] = useState(0);
   const [pagePreviewVisible, setPagePreviewVisible] = useState<Record<string, boolean>>({});
+  const [pageThumbnailUrls, setPageThumbnailUrls] = useState<Record<string, string>>({});
   const [showAdvancedPosition, setShowAdvancedPosition] = useState(false);
   const [importJson, setImportJson] = useState("");
+  const [templateMenuOpen, setTemplateMenuOpen] = useState<"file" | "features" | undefined>();
+  const [templateJsonModalOpen, setTemplateJsonModalOpen] = useState(false);
+  const [templateJsonModalMode, setTemplateJsonModalMode] = useState<"import" | "export">("import");
+  const [outputRenderModalOpen, setOutputRenderModalOpen] = useState(false);
+  const [outputRenderModalMode, setOutputRenderModalMode] = useState<"png" | "mp4">("png");
+  const [captionFieldsCollapsed, setCaptionFieldsCollapsed] = useState(false);
+  const [objectToolbarHostReady, setObjectToolbarHostReady] = useState(false);
   const [outputPreviewUrl, setOutputPreviewUrl] = useState<string>();
   const [outputVideoUrl, setOutputVideoUrl] = useState<string>();
   const [renderingOutput, setRenderingOutput] = useState(false);
   const [renderingOutputVideo, setRenderingOutputVideo] = useState(false);
+  const [pageAudioUploading, setPageAudioUploading] = useState(false);
+  const [pageAudioUploadProgress, setPageAudioUploadProgress] = useState<number>();
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string>();
   const [audioPreviewLoading, setAudioPreviewLoading] = useState(false);
   const [audioPreviewError, setAudioPreviewError] = useState<string>();
-  const [furiganaLoading, setFuriganaLoading] = useState(false);
   const [sections, setSections] = useState({
     layers: true,
     page: true,
@@ -2325,12 +2887,16 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   });
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const editorLayoutRef = useRef<HTMLDivElement | null>(null);
+  const editorFollowRef = useRef<HTMLDivElement | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const objectToolbarRef = useRef<HTMLDivElement | null>(null);
+  const mobileObjectToolbarHostRef = useRef<HTMLDivElement | null>(null);
   const fontPickerRef = useRef<HTMLDivElement | null>(null);
   const fontPickerButtonRef = useRef<HTMLButtonElement | null>(null);
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const pageBackgroundImageInputRef = useRef<HTMLInputElement | null>(null);
+  const pageAudioInputRef = useRef<HTMLInputElement | null>(null);
   const layerImageInputRef = useRef<HTMLInputElement | null>(null);
   const customFontInputRef = useRef<HTMLInputElement | null>(null);
   const jsonFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2349,6 +2915,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const pendingAudioPreviewPlayRef = useRef(false);
   const templateEditDraftLoadedRef = useRef(false);
   const suppressAutoNewsBindingRef = useRef(false);
+  const feedEditSourceRowKeyRef = useRef("");
+  const feedEditSessionRef = useRef(false);
   const isNewsMode = resolveTemplateMode(editor.mode) === "news";
   const selectedNewsTopic = useMemo(
     () => NEWS_TOPIC_OPTIONS.find((item) => item.value === newsTopic) || NEWS_TOPIC_OPTIONS[0],
@@ -2534,6 +3102,16 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   }, [selectedPageId]);
 
   useEffect(() => {
+    if (!aiVideoGeneratingLayerId) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setAiVideoProgressTick((value) => value + 1);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [aiVideoGeneratingLayerId]);
+
+  useEffect(() => {
     return () => {
       if (autoSaveTimerRef.current) {
         clearTimeout(autoSaveTimerRef.current);
@@ -2551,8 +3129,85 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(min-width: 1280px)");
+    let rafId: number | undefined;
+
+    const updateFollowOffset = (): void => {
+      const layoutNode = editorLayoutRef.current;
+      const followNode = editorFollowRef.current;
+      if (!layoutNode || !followNode || !media.matches) {
+        setEditorFollowOffset(0);
+        return;
+      }
+
+      const layoutRect = layoutNode.getBoundingClientRect();
+      const followHeight = followNode.offsetHeight;
+      const topOffset = 8;
+      const maxOffset = Math.max(0, layoutNode.scrollHeight - followHeight);
+      const desiredOffset = topOffset - layoutRect.top;
+      const nextOffset = Math.max(0, Math.min(maxOffset, desiredOffset));
+      setEditorFollowOffset((prev) => (Math.abs(prev - nextOffset) > 0.5 ? nextOffset : prev));
+    };
+
+    const scheduleUpdate = (): void => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      rafId = window.requestAnimationFrame(updateFollowOffset);
+    };
+
+    scheduleUpdate();
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("scroll", scheduleUpdate, { capture: true, passive: true });
+    document.addEventListener("scroll", scheduleUpdate, { capture: true, passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    media.addEventListener("change", scheduleUpdate);
+
+    const scrollParents = new Set<HTMLElement>();
+    let parent = editorLayoutRef.current?.parentElement || null;
+    while (parent && parent !== document.body) {
+      const style = window.getComputedStyle(parent);
+      const overflow = `${style.overflow}${style.overflowY}${style.overflowX}`;
+      if (/(auto|scroll|overlay)/.test(overflow)) {
+        scrollParents.add(parent);
+        parent.addEventListener("scroll", scheduleUpdate, { passive: true });
+      }
+      parent = parent.parentElement;
+    }
+
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? undefined
+        : new ResizeObserver(() => {
+            scheduleUpdate();
+          });
+    if (observer) {
+      if (editorLayoutRef.current) {
+        observer.observe(editorLayoutRef.current);
+      }
+      if (editorFollowRef.current) {
+        observer.observe(editorFollowRef.current);
+      }
+    }
+
     return () => {
-      if (audioPreviewUrl) {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      window.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate, { capture: true });
+      document.removeEventListener("scroll", scheduleUpdate, { capture: true });
+      window.removeEventListener("resize", scheduleUpdate);
+      media.removeEventListener("change", scheduleUpdate);
+      scrollParents.forEach((scrollParent) => scrollParent.removeEventListener("scroll", scheduleUpdate));
+      observer?.disconnect();
+    };
+  }, [editor.pages.length, selectedPageId, sections.layers, sections.page, sections.data, selectedElementId]);
+
+  useEffect(() => {
+    return () => {
+      if (audioPreviewUrl?.startsWith("blob:")) {
         URL.revokeObjectURL(audioPreviewUrl);
       }
     };
@@ -2657,6 +3312,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     if (isNewsMode) {
       return;
     }
+    const expectedFeedRowKey = feedEditSourceRowKeyRef.current;
+    if (expectedFeedRowKey && selectedBindingRowValues) {
+      const selectedRowId = readBindingRowValue(selectedBindingRowValues, "id");
+      if (selectedRowId && selectedRowId !== expectedFeedRowKey) {
+        return;
+      }
+    }
     setSampleData((prev) => {
       const next = sanitizeGeneralSampleData(prev, selectedBindingRowValues);
       const prevKeys = Object.keys(prev).sort();
@@ -2722,6 +3384,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     () => selectedPage?.elements.filter((item) => selectedElementIds.includes(item.id)) || [],
     [selectedElementIds, selectedPage]
   );
+  const activeObjectToolbarLayerId = selectedLayer?.id;
   const selectedLayerOrder = useMemo(() => {
     if (!selectedLayer || !selectedPage) {
       return {
@@ -2746,17 +3409,51 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     };
   }, [selectedLayer, selectedPage]);
   const hasMultiSelection = selectedLayers.length > 1;
-  const selectedLayerRubyTokens = useMemo(
-    () => (selectedLayer?.type === "text" ? extractRubyTokenMatches(selectedLayer.text) : []),
-    [selectedLayer]
-  );
 
   useEffect(() => {
-    setObjectToolbarOffset({ x: 0, y: 0 });
     setFontPickerOpen(false);
     setFontPickerQuery("");
     setFontPickerAnchorRect(null);
   }, [selectedLayer?.id]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem("instagram-template-object-toolbar-offset", JSON.stringify(objectToolbarOffset));
+    } catch {
+      // localStorage가 차단된 환경에서는 현재 세션 상태만 유지합니다.
+    }
+  }, [objectToolbarOffset]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !activeObjectToolbarLayerId) return;
+    const viewportWidth = window.innerWidth || 1280;
+    const viewportHeight = window.innerHeight || 900;
+    const toolbarWidth = Math.min(
+      objectToolbarRef.current?.offsetWidth || 760,
+      Math.max(260, viewportWidth - 24)
+    );
+    const canvasRect = canvasRef.current?.getBoundingClientRect();
+    const baseLeft = viewportWidth <= 768 ? 8 : (canvasRect?.left || 84) + 12;
+    const baseTop = viewportWidth <= 768 ? 64 : 72;
+    const nextOffset = {
+      x: clamp(
+        objectToolbarOffset.x,
+        8 - baseLeft,
+        Math.max(8 - baseLeft, viewportWidth - toolbarWidth - 8 - baseLeft),
+        0
+      ),
+      y: clamp(
+        objectToolbarOffset.y,
+        56 - baseTop,
+        Math.max(56 - baseTop, viewportHeight - 132 - baseTop),
+        0
+      )
+    };
+    if (nextOffset.x !== objectToolbarOffset.x || nextOffset.y !== objectToolbarOffset.y) {
+      setObjectToolbarOffset(nextOffset);
+    }
+  }, [activeObjectToolbarLayerId, objectToolbarOffset.x, objectToolbarOffset.y, viewportWidth]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3055,6 +3752,42 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     options?: { keepSuccess?: boolean; recordHistory?: boolean }
   ): void {
     updatePageById(selectedPageIdRef.current, mutator, options);
+  }
+
+  function applySelectedPageAudioToPages(targetPageId: string): void {
+    const sourcePageId = selectedPageIdRef.current;
+    const sourcePage = editorRef.current.pages.find((page) => page.id === sourcePageId);
+    const audioUrl = String(sourcePage?.audioUrl || "").trim();
+    if (!sourcePage || !audioUrl) {
+      setError("다른 페이지에 적용할 첨부 오디오가 없습니다.");
+      return;
+    }
+    const targetIds =
+      targetPageId === "__all__"
+        ? editorRef.current.pages.filter((page) => page.id !== sourcePageId).map((page) => page.id)
+        : [targetPageId].filter((pageId) => pageId && pageId !== sourcePageId);
+    if (targetIds.length === 0) {
+      setError("첨부 오디오를 적용할 다른 페이지가 없습니다.");
+      return;
+    }
+    const targetSet = new Set(targetIds);
+    updateEditor((current) => ({
+      ...current,
+      pages: current.pages.map((page) =>
+        targetSet.has(page.id)
+          ? {
+              ...page,
+              audioEnabled: true,
+              audioUrl
+            }
+          : page
+      )
+    }));
+    setSuccess(
+      targetPageId === "__all__"
+        ? `첨부 오디오를 다른 페이지 ${targetIds.length}개에 적용했습니다.`
+        : "첨부 오디오를 선택한 페이지에 적용했습니다."
+    );
   }
 
   function updateLayerById(
@@ -3551,9 +4284,28 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     const onPointerMove = (event: PointerEvent): void => {
       const dx = event.clientX - objectToolbarDrag.startClientX;
       const dy = event.clientY - objectToolbarDrag.startClientY;
+      const viewportWidth = window.innerWidth || 1280;
+      const viewportHeight = window.innerHeight || 900;
+      const toolbarWidth = Math.min(
+        objectToolbarRef.current?.offsetWidth || 760,
+        Math.max(260, viewportWidth - 24)
+      );
+      const canvasRect = canvasRef.current?.getBoundingClientRect();
+      const baseLeft = viewportWidth <= 768 ? 8 : (canvasRect?.left || 84) + 12;
+      const baseTop = viewportWidth <= 768 ? 64 : 72;
       setObjectToolbarOffset({
-        x: objectToolbarDrag.startX + dx,
-        y: objectToolbarDrag.startY + dy
+        x: clamp(
+          objectToolbarDrag.startX + dx,
+          8 - baseLeft,
+          Math.max(8 - baseLeft, viewportWidth - toolbarWidth - 8 - baseLeft),
+          0
+        ),
+        y: clamp(
+          objectToolbarDrag.startY + dy,
+          56 - baseTop,
+          Math.max(56 - baseTop, viewportHeight - 132 - baseTop),
+          0
+        )
       });
     };
 
@@ -3600,6 +4352,31 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   }, [selectedPage, selectedElementId]);
 
   useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const entries = await Promise.all(
+          editor.pages.map(async (page) => {
+            try {
+              const url = await renderPageToPngDataUrl({ page, sampleData, canvasWidth, canvasHeight });
+              return [page.id, url] as const;
+            } catch {
+              return [page.id, ""] as const;
+            }
+          })
+        );
+        if (!cancelled) {
+          setPageThumbnailUrls(Object.fromEntries(entries.filter(([, url]) => Boolean(url))));
+        }
+      })();
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [editor.pages, sampleData, canvasWidth, canvasHeight]);
+
+  useEffect(() => {
     if (!selectedPage) return;
     const validIds = new Set(selectedPage.elements.map((item) => item.id));
     setSelectedElementIds((current) => {
@@ -3635,6 +4412,21 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         return;
       }
 
+      if (withMeta && key === "c") {
+        if (isTypingContext) return;
+        if (!selectedLayer && selectedElementIds.length === 0) return;
+        event.preventDefault();
+        copySelectedElementsForCrossPage();
+        return;
+      }
+
+      if (withMeta && key === "v") {
+        if (isTypingContext) return;
+        event.preventDefault();
+        pasteCopiedElementsToSelectedPage();
+        return;
+      }
+
       if (event.key !== "Delete") return;
       if (!selectedLayer && selectedElementIds.length === 0) return;
       if (isTypingContext) return;
@@ -3649,7 +4441,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedElementIds, selectedLayer?.id]);
+  }, [elementClipboard, selectedElementIds, selectedLayer, selectedPage]);
 
   async function fetchTemplates(preferredTemplateId?: string): Promise<void> {
     setLoading(true);
@@ -3734,7 +4526,21 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       }
 
       if (parsed.source === "instagram-feed") {
+        feedEditSessionRef.current = true;
         suppressAutoNewsBindingRef.current = true;
+        setFeedEditSourceItem(parsed.sourceFeedItem);
+        const sourceRowKey = String(
+          parsed.sourceFeedItem?.rowId ||
+            parsed.sourceFeedItem?.sampleData?.id ||
+            parsed.sourceFeedItem?.sampleData?.ID ||
+            parsed.sampleData?.id ||
+            parsed.sampleData?.ID ||
+            ""
+        ).trim();
+        feedEditSourceRowKeyRef.current = sourceRowKey;
+        if (sourceRowKey) {
+          setBindingSelectedRowKey(`id:${sourceRowKey}`);
+        }
         setNewsItems([]);
         setSelectedNewsItemKey("");
         setNewsError(undefined);
@@ -3808,6 +4614,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     if (loading || busy) {
       return;
     }
+    if (feedEditSessionRef.current || feedEditSourceItem) {
+      setAutoSaveStatus("idle");
+      setAutoSaveMessage("피드 편집본은 원본 템플릿에 자동 저장하지 않습니다.");
+      return;
+    }
     if (!lastSavedSignatureRef.current) {
       lastSavedSignatureRef.current = currentAutosaveSignature;
       return;
@@ -3832,13 +4643,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       void (async () => {
         try {
           const targetTemplateId = selectedIdSnapshot === "__new__" ? uid() : snapshot.id;
-          const payload = buildTemplatePayload(snapshot, targetTemplateId);
+          const payload = await replaceTemplateDataUrlMedia(buildTemplatePayload(snapshot, targetTemplateId));
           const response = await fetch("/api/instagram/templates", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ template: payload })
           });
-          const data = (await response.json()) as TemplateResponse;
+          const data = await readJsonOrThrow<TemplateResponse>(response, "자동 저장에 실패했습니다.");
           if (!response.ok) {
             throw new Error(data.error || "자동 저장에 실패했습니다.");
           }
@@ -3875,21 +4686,25 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         autoSaveTimerRef.current = null;
       }
     };
-  }, [currentAutosaveSignature, loading, busy, editor, selectedTemplateId]);
+  }, [currentAutosaveSignature, loading, busy, editor, selectedTemplateId, feedEditSourceItem]);
 
   async function persistTemplate(mode: "new" | "update"): Promise<void> {
+    if (feedEditSessionRef.current || feedEditSourceItem) {
+      setError("피드 상세 편집본은 원본 템플릿으로 저장할 수 없습니다. 변경 내용은 '피드로 내보내기'로만 반영됩니다.");
+      return;
+    }
     setBusy(true);
     setError(undefined);
     setSuccess(undefined);
     try {
       const targetTemplateId = mode === "new" || selectedTemplateId === "__new__" ? uid() : editor.id;
-      const payload = buildTemplatePayload(editor, targetTemplateId);
+      const payload = await replaceTemplateDataUrlMedia(buildTemplatePayload(editor, targetTemplateId));
       const response = await fetch("/api/instagram/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ template: payload })
       });
-      const data = (await response.json()) as TemplateResponse;
+      const data = await readJsonOrThrow<TemplateResponse>(response, "템플릿 저장에 실패했습니다.");
       if (!response.ok) {
         throw new Error(data.error || "템플릿 저장에 실패했습니다.");
       }
@@ -3900,6 +4715,48 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       await fetchTemplates(payload.id);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "템플릿 저장에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function duplicateTemplate(): Promise<void> {
+    if (feedEditSessionRef.current || feedEditSourceItem) {
+      setError("피드 상세 편집본은 원본 템플릿으로 복제할 수 없습니다. 변경 내용은 '피드로 내보내기'로만 반영됩니다.");
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const baseName = String(editor.templateName || "Instagram Template").trim() || "Instagram Template";
+      const existingNames = new Set(templates.map((template) => template.templateName.trim().toLowerCase()));
+      let copyName = `${baseName} 복제`;
+      let copyIndex = 2;
+      while (existingNames.has(copyName.toLowerCase())) {
+        copyName = `${baseName} 복제 ${copyIndex}`;
+        copyIndex += 1;
+      }
+      const targetTemplateId = uid();
+      const payload = await replaceTemplateDataUrlMedia(
+        buildTemplatePayload({ ...editor, id: targetTemplateId, templateName: copyName }, targetTemplateId)
+      );
+      const response = await fetch("/api/instagram/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template: payload })
+      });
+      const data = await readJsonOrThrow<TemplateResponse>(response, "템플릿 복제에 실패했습니다.");
+      if (!response.ok) {
+        throw new Error(data.error || "템플릿 복제에 실패했습니다.");
+      }
+      lastSavedSignatureRef.current = buildAutosaveSignature(payload);
+      setAutoSaveStatus("saved");
+      setAutoSaveMessage(`복제 저장됨 · ${new Date().toLocaleTimeString()}`);
+      setSuccess(`템플릿을 복제했습니다: ${copyName}`);
+      await fetchTemplates(payload.id);
+    } catch (duplicateError) {
+      setError(duplicateError instanceof Error ? duplicateError.message : "템플릿 복제에 실패했습니다.");
     } finally {
       setBusy(false);
     }
@@ -4094,9 +4951,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setSuccess(`${shapeLabel(shape)} 레이어를 추가했습니다.`);
   }
 
-  function addLayer(kind: "textVariable" | "textPlain" | "image"): void {
+  function addLayer(kind: "textVariable" | "textPlain" | "image" | "video"): void {
     const layer =
-      kind === "image"
+      kind === "video"
+        ? createVideoLayer()
+        : kind === "image"
         ? createImageLayer()
         : kind === "textPlain"
           ? createTextLayer("plain")
@@ -4113,7 +4972,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         ? "변수 텍스트 레이어를 추가했습니다."
         : kind === "textPlain"
           ? "일반 텍스트 레이어를 추가했습니다."
-          : "이미지 레이어를 추가했습니다."
+          : kind === "video"
+            ? "비디오 레이어를 추가했습니다."
+            : "이미지 레이어를 추가했습니다."
     );
   }
 
@@ -4166,6 +5027,62 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }));
     setSelectedElementId(duplicated.id);
     setSuccess("도형 오브젝트를 복제했습니다.");
+  }
+
+  function copySelectedElementsForCrossPage(): void {
+    if (!selectedPage) return;
+    const ordered = [...selectedPage.elements].sort((a, b) => a.zIndex - b.zIndex);
+    const selectedSet = new Set(
+      selectedElementIds.length > 0
+        ? selectedElementIds
+        : selectedLayer
+          ? [selectedLayer.id]
+          : []
+    );
+    const picked = ordered.filter((element) => selectedSet.has(element.id));
+    if (!picked.length) {
+      setError("복사할 오브젝트를 먼저 선택해 주세요.");
+      return;
+    }
+    setElementClipboard({
+      copiedAt: Date.now(),
+      elements: picked.map((element) => ({ ...element }))
+    });
+    setSuccess(`${picked.length}개 오브젝트를 복사했습니다. 다른 페이지에서 붙여넣기 하세요.`);
+  }
+
+  function pasteCopiedElementsToSelectedPage(): void {
+    if (!selectedPage) return;
+    if (!elementClipboard || elementClipboard.elements.length === 0) {
+      setError("클립보드가 비어 있습니다. 먼저 오브젝트를 복사해 주세요.");
+      return;
+    }
+    const pastedIds: string[] = [];
+    updateSelectedPage((page) => {
+      const baseZ = page.elements.length;
+      const pasted = elementClipboard.elements.map((source, index) => {
+        const nextId = uid();
+        pastedIds.push(nextId);
+        const nextX = clamp(source.x + 2, source.width / 2, 100 - source.width / 2, source.x);
+        const nextY = clamp(source.y + 2, source.height / 2, 100 - source.height / 2, source.y);
+        return {
+          ...source,
+          id: nextId,
+          x: nextX,
+          y: nextY,
+          zIndex: baseZ + index
+        };
+      });
+      return {
+        ...page,
+        elements: [...page.elements, ...pasted]
+      };
+    });
+    if (pastedIds.length > 0) {
+      setSelectedElementIds(pastedIds);
+      setSelectedElementId(pastedIds[pastedIds.length - 1]);
+    }
+    setSuccess(`${pastedIds.length}개 오브젝트를 현재 페이지에 붙여넣었습니다.`);
   }
 
   function createPanelLayer(position: "top" | "bottom" | "left"): InstagramShapeElement {
@@ -4345,92 +5262,6 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setSuccess(`{{${field}}} 토큰을 추가했습니다.`);
   }
 
-  function applyRubyToSelectedText(): void {
-    if (!selectedLayer || selectedLayer.type !== "text") {
-      setError("텍스트 레이어를 선택한 뒤 루비를 적용해 주세요.");
-      return;
-    }
-    const input = textEditorRef.current;
-    if (!input) {
-      setError("텍스트 입력 박스를 찾지 못했습니다.");
-      return;
-    }
-    const start = input.selectionStart ?? 0;
-    const end = input.selectionEnd ?? 0;
-    if (start === end) {
-      setError("루비를 적용할 텍스트 구간을 먼저 선택해 주세요.");
-      return;
-    }
-    const sourceText = selectedLayer.text || "";
-    const base = sourceText.slice(start, end);
-    const ruby = window.prompt("루비(후리가나) 텍스트를 입력하세요.", "");
-    if (ruby === null) {
-      return;
-    }
-    const rubyText = ruby.trim();
-    if (!rubyText) {
-      setError("루비 텍스트가 비어 있습니다.");
-      return;
-    }
-    const token = `[${base}|${rubyText}]`;
-    const nextText = `${sourceText.slice(0, start)}${token}${sourceText.slice(end)}`;
-    updateLayerById(selectedLayer.id, (layer) => (layer.type === "text" ? { ...layer, text: nextText } : layer));
-    setSuccess("루비를 적용했습니다.");
-  }
-
-  async function applyAutoRuby(): Promise<void> {
-    if (!selectedLayer || selectedLayer.type !== "text") {
-      setError("텍스트 레이어를 선택한 뒤 자동 루비를 실행해 주세요.");
-      return;
-    }
-    if (selectedLayer.textMode === "variable" && /\{\{[^}]+\}\}/.test(String(selectedLayer.text || ""))) {
-      setError("변수 텍스트({{컬럼}})에는 자동 루비를 직접 적용할 수 없습니다. 일반 텍스트 오브젝트에서 실행해 주세요.");
-      return;
-    }
-    setFuriganaLoading(true);
-    setError(undefined);
-    try {
-      const response = await fetch("/api/furigana", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: selectedLayer.text || "" })
-      });
-      const data = (await response.json()) as { text?: string; error?: string };
-      if (!response.ok) {
-        throw new Error(data.error ? `자동 루비 생성 실패 (HTTP ${response.status}): ${data.error}` : `자동 루비 생성 실패 (HTTP ${response.status})`);
-      }
-      const nextText = String(data.text || "");
-      updateLayerById(selectedLayer.id, (layer) => (layer.type === "text" ? { ...layer, text: nextText } : layer));
-      if (nextText === String(selectedLayer.text || "")) {
-        setSuccess("자동 루비 실행 완료: 변경 사항이 없습니다. (한자 없음/이미 동일 발음)");
-      } else {
-        setSuccess("자동 루비를 적용했습니다. 아래에서 후리가나를 수정할 수 있습니다.");
-      }
-    } catch (autoRubyError) {
-      setError(autoRubyError instanceof Error ? autoRubyError.message : "자동 루비 생성에 실패했습니다.");
-    } finally {
-      setFuriganaLoading(false);
-    }
-  }
-
-  function updateSelectedLayerRubyToken(tokenIndex: number, ruby: string): void {
-    if (!selectedLayer || selectedLayer.type !== "text") {
-      return;
-    }
-    updateLayerById(selectedLayer.id, (layer) =>
-      layer.type === "text" ? { ...layer, text: updateRubyTokenByIndex(layer.text, tokenIndex, ruby) } : layer
-    );
-  }
-
-  function removeSelectedLayerRubyToken(tokenIndex: number): void {
-    if (!selectedLayer || selectedLayer.type !== "text") {
-      return;
-    }
-    updateLayerById(selectedLayer.id, (layer) =>
-      layer.type === "text" ? { ...layer, text: removeRubyTokenByIndex(layer.text, tokenIndex) } : layer
-    );
-  }
-
   async function onPageBackgroundImageUpload(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -4454,15 +5285,83 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setPendingImageLayerId(undefined);
       return;
     }
+    const existingLayer = editorRef.current.pages
+      .flatMap((page) => page.elements)
+      .find((layer) => layer.id === targetLayerId);
+    const isVideoFile = String(file.type || "").toLowerCase().startsWith("video/");
+    if (existingLayer?.type === "image" && isVideoFile) {
+      event.target.value = "";
+      setPendingImageLayerId(undefined);
+      setError("비디오 파일은 비디오 오브젝트에 가져와 주세요.");
+      return;
+    }
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      const mediaType = String(file.type || "").toLowerCase().startsWith("video/") ? "video" : "image";
+      const mediaType = isVideoFile ? "video" : "image";
+      let mediaUrl = "";
+      setLayerMediaUploadProgress((prev) => ({
+        ...prev,
+        [targetLayerId]: {
+          status: "uploading",
+          percent: 1,
+          fileName: file.name || "media",
+          message: mediaType === "video" ? "비디오 업로드 준비 중..." : "이미지 업로드 준비 중..."
+        }
+      }));
+      const updateUploadProgress = (percent: number): void => {
+        setLayerMediaUploadProgress((prev) => ({
+          ...prev,
+          [targetLayerId]: {
+            status: percent >= 100 ? "processing" : "uploading",
+            percent: Math.max(1, Math.min(100, percent)),
+            fileName: file.name || "media",
+            message: percent >= 100 ? "업로드 완료. 레이어 반영 중..." : `업로드 중 ${Math.round(percent)}%`
+          }
+        }));
+      };
+      try {
+        mediaUrl = await uploadTemplateMediaFile(file, updateUploadProgress);
+      } catch (uploadError) {
+        if (isVideoFile) {
+          throw uploadError;
+        }
+        mediaUrl = await readFileAsDataUrl(file);
+      }
       updateLayerById(targetLayerId, (layer) =>
-        layer.type === "image" ? { ...layer, imageUrl: dataUrl, mediaType } : layer
+        layer.type === "image"
+          ? { ...layer, imageUrl: mediaUrl, mediaType: "image" }
+          : layer.type === "video"
+            ? { ...layer, imageUrl: mediaUrl, mediaType }
+            : layer
       );
-      setSuccess(mediaType === "video" ? "비디오 레이어 파일을 적용했습니다." : "이미지 레이어에 파일을 적용했습니다.");
+      setLayerMediaUploadProgress((prev) => ({
+        ...prev,
+        [targetLayerId]: {
+          status: "success",
+          percent: 100,
+          fileName: file.name || "media",
+          message: "업로드 완료"
+        }
+      }));
+      window.setTimeout(() => {
+        setLayerMediaUploadProgress((prev) => {
+          const next = { ...prev };
+          delete next[targetLayerId];
+          return next;
+        });
+      }, 1400);
+      setSuccess(mediaType === "video" ? "비디오 오브젝트에 파일을 적용했습니다." : "미디어 오브젝트에 이미지를 적용했습니다.");
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "이미지 레이어 업로드에 실패했습니다.");
+      const message = uploadError instanceof Error ? uploadError.message : "이미지 레이어 업로드에 실패했습니다.";
+      setLayerMediaUploadProgress((prev) => ({
+        ...prev,
+        [targetLayerId]: {
+          status: "error",
+          percent: 100,
+          fileName: file.name || "media",
+          message
+        }
+      }));
+      setError(message);
     } finally {
       event.target.value = "";
       setPendingImageLayerId(undefined);
@@ -4486,17 +5385,17 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           ...editorRef.current.pages.filter((item) => item.id !== selectedPageIdRef.current)
         ];
     let pageId = "";
-    let layer: InstagramImageElement | undefined;
+    let layer: InstagramImageElement | InstagramVideoElement | undefined;
     for (const page of candidatePages) {
       const targetLayer = page.elements.find((item) => item.id === layerId);
-      if (targetLayer && targetLayer.type === "image") {
+      if (targetLayer && (targetLayer.type === "image" || targetLayer.type === "video")) {
         pageId = page.id;
         layer = targetLayer;
         break;
       }
     }
-    if (!layer || layer.type !== "image") {
-      setError("이미지 레이어를 선택해 주세요.");
+    if (!layer || (layer.type !== "image" && layer.type !== "video")) {
+      setError("이미지 또는 비디오 오브젝트를 선택해 주세요.");
       return undefined;
     }
     const prompt = String(options?.prompt || layer.aiPrompt || "").trim();
@@ -4537,12 +5436,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       updateLayerById(
         layerId,
         (targetLayer) =>
-          targetLayer.type === "image"
+          targetLayer.type === "image" || targetLayer.type === "video"
             ? {
                 ...targetLayer,
                 imageUrl,
                 mediaType: "image",
                 fit: targetLayer.fit === "cover" ? "cover" : targetLayer.fit,
+                cropX: clamp(Number(targetLayer.cropX), 0, 100, 50),
+                cropY: clamp(Number(targetLayer.cropY), 0, 100, 50),
                 aiPrompt: prompt,
                 aiModel,
                 aiStylePreset: stylePreset,
@@ -4561,11 +5462,126 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
   }
 
+  async function generateAiLayerVideo(layerId: string): Promise<string | undefined> {
+    if (aiVideoGeneratingLayerId) {
+      setError("이미 AI 영상 생성이 진행 중입니다. 완료 또는 실패 로그를 확인해 주세요.");
+      return undefined;
+    }
+    const page = editorRef.current.pages.find((item) => item.id === selectedPageIdRef.current);
+    const layer = page?.elements.find((item) => item.id === layerId);
+    if (!page || !layer || layer.type !== "video") {
+      setError("AI 영상 생성은 비디오 오브젝트에서만 사용할 수 있습니다.");
+      return undefined;
+    }
+
+    const estimatedCostUsd = estimateAiVideoCostUsd(layer);
+    const provider = layer.aiVideoProvider === "openai" ? "openai" : "gemini";
+    const durationSec = Math.max(4, Math.min(8, Math.round(Number(layer.aiVideoDurationSec) || 6)));
+    const resolution = layer.aiVideoResolution === "1080p" ? "1080p" : "720p";
+    const orientation = resolveAiImageOrientation(layer.aiImageOrientation);
+    const aspectRatio = orientation === "horizontal" ? "16:9" : "9:16";
+    const variableKey = sanitizeAiPromptVariableKey(String(layer.aiPromptVariableKey || ""));
+    const dialogue = collapseWhitespace(resolveSampleValueByKey(sampleData, variableKey));
+    const videoPrompt = String(layer.aiVideoPrompt || "no music, no camera movement, no subtitles");
+    const confirmed = window.confirm(
+      `AI 영상 생성 요청을 시작합니다.\n\n제공자: ${provider === "openai" ? "OpenAI Sora 2" : "Gemini Veo 3.1 Lite"}\n예상 비용: 약 $${estimatedCostUsd.toFixed(2)}\n\n요청을 보낸 뒤에는 중간 취소해도 과금될 수 있습니다. 진행할까요?`
+    );
+    if (!confirmed) {
+      return undefined;
+    }
+
+    setAiVideoGeneratingLayerId(layerId);
+    setAiVideoProgressTick((value) => value + 1);
+    setAiVideoGenerationProgress({
+      layerId,
+      status: "running",
+      provider,
+      startedAt: Date.now(),
+      estimatedCostUsd,
+      message: "입력 이미지 확인 중..."
+    });
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      let sourceImageUrl = String(layer.imageUrl || "").trim();
+      if (!sourceImageUrl || inferMediaTypeFromSource(sourceImageUrl) === "video") {
+        setAiVideoGenerationProgress((prev) =>
+          prev && prev.layerId === layerId
+            ? { ...prev, message: "입력 이미지가 없어 먼저 AI 이미지를 생성하는 중..." }
+            : prev
+        );
+        sourceImageUrl = (await generateAiLayerImage(layerId)) || "";
+      }
+      if (!sourceImageUrl || inferMediaTypeFromSource(sourceImageUrl) === "video") {
+        throw new Error("AI 영상화에 사용할 이미지가 필요합니다. 먼저 이미지를 생성하거나 업로드해 주세요.");
+      }
+      setAiVideoGenerationProgress((prev) =>
+        prev && prev.layerId === layerId
+          ? { ...prev, message: "입력 이미지 준비 완료. 영상 모델 작업 생성 및 완료 대기 중..." }
+          : prev
+      );
+      const response = await fetch("/api/instagram/generate-image-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: sourceImageUrl,
+          provider,
+          prompt: videoPrompt,
+          dialogue,
+          durationSec,
+          resolution,
+          aspectRatio
+        })
+      });
+      const data = (await response.json()) as { videoUrl?: string; error?: string };
+      if (!response.ok || !data.videoUrl) {
+        throw new Error(data.error || "AI 영상 생성에 실패했습니다.");
+      }
+      setAiVideoGenerationProgress((prev) =>
+        prev && prev.layerId === layerId ? { ...prev, message: "영상 저장 및 레이어 반영 중..." } : prev
+      );
+      const videoUrl = String(data.videoUrl || "").trim();
+      updateLayerById(
+        layerId,
+        (targetLayer) =>
+          targetLayer.type === "video"
+            ? {
+                ...targetLayer,
+                imageUrl: videoUrl,
+                mediaType: "video",
+                aiVideoEnabled: true,
+                aiVideoProvider: provider,
+                aiVideoPrompt: videoPrompt,
+                aiVideoDurationSec: durationSec,
+                aiVideoResolution: resolution
+              }
+            : targetLayer,
+        page.id
+      );
+      setAiVideoGenerationProgress((prev) =>
+        prev && prev.layerId === layerId
+          ? { ...prev, status: "success", message: "AI 영상 생성 완료. 레이어에 적용되었습니다." }
+          : prev
+      );
+      setSuccess("AI 영상을 생성해 레이어에 적용했습니다.");
+      return videoUrl;
+    } catch (videoError) {
+      const message = videoError instanceof Error ? videoError.message : "AI 영상 생성에 실패했습니다.";
+      setAiVideoGenerationProgress((prev) =>
+        prev && prev.layerId === layerId ? { ...prev, status: "error", message } : prev
+      );
+      setError(message);
+      return undefined;
+    } finally {
+      setAiVideoGeneratingLayerId(undefined);
+    }
+  }
+
   async function suggestAiPromptForLayer(layerId: string, mode: "magic" | "check" = "magic"): Promise<void> {
     const page = editorRef.current.pages.find((item) => item.id === selectedPageIdRef.current);
     const layer = page?.elements.find((item) => item.id === layerId);
-    if (!page || !layer || layer.type !== "image") {
-      setError("이미지 레이어를 선택해 주세요.");
+    if (!page || !layer || (layer.type !== "image" && layer.type !== "video")) {
+      setError("이미지 또는 비디오 오브젝트를 선택해 주세요.");
       return;
     }
 
@@ -4633,7 +5649,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         throw new Error("생성된 프롬프트가 비어 있습니다.");
       }
       updateLayerById(layerId, (targetLayer) =>
-        targetLayer.type === "image" ? { ...targetLayer, aiPrompt: prompt } : targetLayer
+        targetLayer.type === "image" || targetLayer.type === "video" ? { ...targetLayer, aiPrompt: prompt } : targetLayer
       );
       setSuccess(mode === "check" ? "변수 기반(check) 프롬프트를 완성했습니다." : "AI 이미지 프롬프트를 자동 완성했습니다.");
     } catch (suggestError) {
@@ -4647,9 +5663,80 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     return resolveLayerTokenText(String(raw || ""), row, "variable");
   }
 
+  function buildFeedCaptionFromPayload(
+    payload: Record<string, string>,
+    hashtags: string[],
+    captionSourceFields?: string[]
+  ): string {
+    const keys = Object.keys(payload || {});
+    const findValue = (candidates: string[]): string => {
+      for (const candidate of candidates) {
+        const exact = payload[candidate];
+        if (typeof exact === "string" && exact.trim()) {
+          return exact.trim();
+        }
+        const matchedKey = keys.find((key) => key.toLowerCase() === candidate.toLowerCase());
+        if (matchedKey) {
+          const value = String(payload[matchedKey] || "").trim();
+          if (value) {
+            return value;
+          }
+        }
+      }
+      return "";
+    };
+    const selectedFields = (captionSourceFields || [])
+      .map((field) => String(field || "").trim())
+      .filter(Boolean);
+    const bodyLines =
+      selectedFields.length > 0
+        ? selectedFields.map((field) => findValue([field])).filter(Boolean)
+        : [findValue(["caption", "Caption", "subject", "Subject", "description"])].filter(Boolean);
+    const body = Array.from(new Set(bodyLines)).join("\n").trim();
+    const normalizedTags = hashtags
+      .map((tag) => String(tag || "").trim())
+      .filter(Boolean)
+      .map((tag) => (tag.startsWith("#") ? tag : `#${tag}`));
+    const tagLine = normalizedTags.join(" ").trim();
+    return [body, tagLine].filter(Boolean).join("\n");
+  }
+
   function pushCurrentTemplateToFeed(): void {
     try {
-      const payload = sampleData || {};
+      const sourceItem = feedEditSourceItem;
+      const currentPayload = sampleData || {};
+      const sourcePayload = sourceItem?.sampleData || {};
+      const currentRowId = String(currentPayload.id || currentPayload.ID || "").trim();
+      const sourceRowId = String(sourceItem?.rowId || sourcePayload.id || sourcePayload.ID || "").trim();
+      const payload =
+        sourceItem && sourceRowId && currentRowId && currentRowId !== sourceRowId
+          ? { ...currentPayload, ...sourcePayload }
+          : { ...sourcePayload, ...currentPayload };
+      const payloadKeys = Object.keys(payload || {});
+      const findPayloadValue = (candidates: string[], fallback = ""): string => {
+        for (const candidate of candidates) {
+          const exact = payload[candidate];
+          if (typeof exact === "string" && exact.trim()) {
+            return exact.trim();
+          }
+          const matchedKey = payloadKeys.find((key) => key.toLowerCase() === candidate.toLowerCase());
+          if (matchedKey) {
+            const value = String(payload[matchedKey] || "").trim();
+            if (value) return value;
+          }
+        }
+        return fallback;
+      };
+      const templateHashtags = normalizeTemplateHashtags(editor.hashtags);
+      const feedHashtags =
+        templateHashtags.length > 0
+          ? templateHashtags
+          : buildTopicDefaultHashtags({
+              templateName: editor.templateName,
+              payload,
+              sourceFields: (editor.hashtagSourceFields || []).length > 0 ? editor.hashtagSourceFields || [] : ["subject", "keyword", "type"]
+            });
+      const feedCaption = buildFeedCaptionFromPayload(payload, feedHashtags, editor.captionSourceFields);
       const pages: InstagramFeedPage[] = editor.pages.map((page) => ({
         ...page,
         backgroundImageUrl: materializeTemplateValue(String(page.backgroundImageUrl || ""), payload),
@@ -4674,24 +5761,27 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         )
       }));
       const feedItem: InstagramGeneratedFeedItem = {
-        id: uid(),
+        id: sourceItem?.id || uid(),
         templateId: editor.id,
         templateName: editor.templateName,
-        rowId: String(payload.id || `template-${Date.now()}`),
-        subject: String(payload.subject || editor.templateName || "Template Draft"),
-        keyword: String(payload.keyword || "template"),
+        rowId: sourceRowId || findPayloadValue(["id", "ID"], `template-${Date.now()}`),
+        subject: findPayloadValue(["subject", "Subject"], sourceItem?.subject || editor.templateName || "Template Draft"),
+        keyword: findPayloadValue(["keyword", "Keyword", "type", "jlpt"], sourceItem?.keyword || "template"),
+        caption: feedCaption,
+        hashtags: feedHashtags,
         generatedAt: new Date().toISOString(),
         sampleData: payload,
         pages
       };
       const currentRaw = typeof window !== "undefined" ? window.localStorage.getItem(INSTAGRAM_FEED_STORAGE_KEY) : null;
       const currentItems = currentRaw ? ((JSON.parse(currentRaw) as InstagramGeneratedFeedItem[]) || []) : [];
-      const nextItems = [feedItem, ...currentItems].slice(0, 200);
+      const nextItems = [feedItem, ...currentItems.filter((item) => item.id !== feedItem.id)].slice(0, 200);
       window.localStorage.setItem(INSTAGRAM_FEED_STORAGE_KEY, JSON.stringify(nextItems));
       window.localStorage.setItem(
         INSTAGRAM_FEED_DRAFT_KEY,
         JSON.stringify({
           selectedItemId: feedItem.id,
+          caption: feedCaption,
           source: "instagram-news"
         })
       );
@@ -4704,7 +5794,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
   function fillImageLayerToCanvas(layerId: string): void {
     updateLayerById(layerId, (layer) =>
-      layer.type === "image"
+      layer.type === "image" || layer.type === "video"
         ? {
             ...layer,
             x: 50,
@@ -4712,23 +5802,83 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             width: 100,
             height: 100,
             fit: "cover",
+            cropX: 50,
+            cropY: 50,
             borderRadius: 0
           }
         : layer
     );
-    setSuccess("이미지 레이어를 화면에 꽉 차게 배치했습니다.");
+    setSuccess("미디어 오브젝트를 화면에 꽉 차게 배치했습니다.");
+  }
+
+  function applySelectedImageToAllPages(layerId: string, targetPageId: string = "__all__"): void {
+    const page = editorRef.current.pages.find((item) => item.id === selectedPageIdRef.current);
+    const sourceLayer = page?.elements.find((item) => item.id === layerId);
+    if (!sourceLayer || (sourceLayer.type !== "image" && sourceLayer.type !== "video")) {
+      setError("이미지 또는 비디오 오브젝트를 선택해 주세요.");
+      return;
+    }
+    const imageUrl = String(sourceLayer.imageUrl || "").trim();
+    if (!imageUrl) {
+      setError("적용할 미디어가 없습니다. 먼저 AI 생성 또는 가져오기를 해주세요.");
+      return;
+    }
+    const sourceMediaType = sourceLayer.mediaType === "video" ? "video" : "image";
+    let appliedCount = 0;
+    updateEditor((current) => {
+      current.pages = current.pages.map((targetPage) => {
+        if (targetPage.id === selectedPageIdRef.current) {
+          return targetPage;
+        }
+        if (targetPageId !== "__all__" && targetPage.id !== targetPageId) {
+          return targetPage;
+        }
+        const targetImageIndex = targetPage.elements.findIndex((element) => element.type === sourceLayer.type);
+        if (targetImageIndex < 0) {
+          return targetPage;
+        }
+        const nextElements = [...targetPage.elements];
+        const targetLayer = nextElements[targetImageIndex];
+        if (targetLayer.type !== sourceLayer.type) {
+          return targetPage;
+        }
+        nextElements[targetImageIndex] =
+          targetLayer.type === "image"
+            ? {
+                ...targetLayer,
+                imageUrl,
+                mediaType: "image"
+              }
+            : {
+                ...targetLayer,
+                imageUrl,
+                mediaType: sourceMediaType
+              };
+        appliedCount += 1;
+        return {
+          ...targetPage,
+          elements: nextElements
+        };
+      });
+      return current;
+    });
+    if (appliedCount <= 0) {
+      setError("선택한 대상 페이지에 이미지 레이어가 없어 적용되지 않았습니다.");
+      return;
+    }
+    setSuccess(targetPageId === "__all__" ? "현재 이미지를 다른 페이지에도 적용했습니다." : "선택한 페이지에 이미지를 적용했습니다.");
   }
 
   function setImageBoxFillMode(layerId: string, enabled: boolean): void {
     updateLayerById(layerId, (layer) =>
-      layer.type === "image"
+      layer.type === "image" || layer.type === "video"
         ? {
             ...layer,
             fit: enabled ? "cover" : "contain"
           }
         : layer
     );
-    setSuccess(enabled ? "이미지 박스 꽉 채우기 모드를 적용했습니다." : "이미지 박스 원본 비율 모드로 전환했습니다.");
+    setSuccess(enabled ? "미디어 박스 꽉 채우기 모드를 적용했습니다." : "미디어 박스 원본 비율 모드로 전환했습니다.");
   }
 
   async function applyNewsImageToLayer(layerId: string): Promise<void> {
@@ -4763,6 +5913,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             aiStylePreset: layer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE,
             aiImageOrientation: orientation,
             fit: "cover",
+            cropX: 50,
+            cropY: 50,
             x: 50,
             y: 50,
             width: 100,
@@ -4805,11 +5957,18 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       if (headers.length === 0) {
         throw new Error("시트 헤더를 찾지 못했습니다. 첫 번째 행(헤더)을 확인해 주세요.");
       }
-      setBindingFields(mergeBindingFieldsWithDefaults(headers));
+      setBindingFields(isNewsMode ? mergeNewsBindingFields(headers) : uniqueValues(headers));
       const nextRowOptions = createBindingRowOptions(rows);
       setBindingRowOptions(nextRowOptions);
       if (nextRowOptions.length > 0) {
-        const preferredKey = nextRowOptions.find((item) => item.key === bindingSelectedRowKey)?.key || nextRowOptions[0].key;
+        const feedSourceRowKey = feedEditSourceRowKeyRef.current;
+        const feedPreferredKey = feedSourceRowKey
+          ? nextRowOptions.find((item) => readBindingRowValue(item.values, "id") === feedSourceRowKey)?.key
+          : "";
+        const preferredKey =
+          feedPreferredKey ||
+          nextRowOptions.find((item) => item.key === bindingSelectedRowKey)?.key ||
+          nextRowOptions[0].key;
         const selectedRow = nextRowOptions.find((item) => item.key === preferredKey) || nextRowOptions[0];
         setBindingSelectedRowKey(preferredKey);
         setSampleData((prev) =>
@@ -4873,7 +6032,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setBusy(true);
       let lastId = "";
       for (const template of normalized) {
-        const payload = deepCloneTemplate(template);
+        const payload = await replaceTemplateDataUrlMedia(deepCloneTemplate(template));
         payload.id = uid();
         payload.updatedAt = new Date().toISOString();
         payload.pageCount = payload.pages.length;
@@ -4882,7 +6041,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ template: payload })
         });
-        const data = (await response.json()) as TemplateResponse;
+        const data = await readJsonOrThrow<TemplateResponse>(response, "템플릿 저장 중 오류가 발생했습니다.");
         if (!response.ok) {
           throw new Error(data.error || "템플릿 저장 중 오류가 발생했습니다.");
         }
@@ -4911,6 +6070,34 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setSuccess("현재 템플릿 JSON을 텍스트 영역에 불러왔습니다.");
   }
 
+  function openTemplateJsonModal(mode: "import" | "export"): void {
+    setTemplateJsonModalMode(mode);
+    setTemplateJsonModalOpen(true);
+    setTemplateMenuOpen(undefined);
+    if (mode === "export") {
+      setImportJson(JSON.stringify(editor, null, 2));
+    }
+  }
+
+  function openOutputRenderModal(mode: "png" | "mp4" = "png"): void {
+    setOutputRenderModalMode(mode);
+    setOutputRenderModalOpen(true);
+    setTemplateMenuOpen(undefined);
+  }
+
+  function downloadCurrentTemplateJson(): void {
+    const blob = new Blob([JSON.stringify(editor, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${sanitizeDownloadName(editor.templateName || "instagram-template")}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setSuccess("현재 템플릿 JSON 다운로드를 시작했습니다.");
+  }
+
   async function renderOutputPreview(): Promise<void> {
     if (!selectedPage) return;
     setRenderingOutput(true);
@@ -4933,8 +6120,12 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
   async function renderOutputVideo(): Promise<void> {
     if (!selectedPage) return;
-    if (selectedPage.audioEnabled && !String(selectedPage.audioPrompt || "").trim()) {
-      setError("오디오 사용이 켜져 있습니다. 오디오 스크립트를 입력해 주세요.");
+    if (
+      selectedPage.audioEnabled &&
+      !String(selectedPage.audioUrl || "").trim() &&
+      !String(selectedPage.audioPrompt || "").trim()
+    ) {
+      setError("오디오 사용이 켜져 있습니다. 오디오 파일을 첨부하거나 오디오 스크립트를 입력해 주세요.");
       return;
     }
     setRenderingOutputVideo(true);
@@ -4955,6 +6146,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           pageName: selectedPage.name,
           imageDataUrl,
           useAudio: Boolean(selectedPage.audioEnabled),
+          audioUrl: String(selectedPage.audioUrl || "").trim() || undefined,
           audioPrompt: String(selectedPage.audioPrompt || "").trim() || undefined,
           ttsProvider:
             selectedPage.audioProvider === "openai" || selectedPage.audioProvider === "gemini"
@@ -4990,9 +6182,20 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setAudioPreviewError(undefined);
     setError(undefined);
     try {
+      const uploadedAudioUrl = String(selectedPage.audioUrl || "").trim();
+      if (uploadedAudioUrl) {
+        pendingAudioPreviewPlayRef.current = true;
+        setAudioPreviewUrl((prev) => {
+          if (prev && prev.startsWith("blob:")) {
+            URL.revokeObjectURL(prev);
+          }
+          return toInstagramMediaPreviewUrl(uploadedAudioUrl);
+        });
+        return;
+      }
       const resolvedText = resolveLayerTokenText(String(selectedPage.audioPrompt || ""), sampleData, "variable").trim();
       if (!resolvedText) {
-        throw new Error("오디오 스크립트를 입력해 주세요. ({{변수}} 치환 후 기준)");
+        throw new Error("오디오 파일을 첨부하거나 오디오 스크립트를 입력해 주세요. ({{변수}} 치환 후 기준)");
       }
       const previewText = resolvedText.slice(0, 320);
       const response = await fetch("/api/voice-preview", {
@@ -5029,6 +6232,44 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setAudioPreviewError(previewError instanceof Error ? previewError.message : "Unknown error");
     } finally {
       setAudioPreviewLoading(false);
+    }
+  }
+
+  async function onPageAudioUpload(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const normalizedType = String(file.type || "").toLowerCase();
+    const normalizedName = String(file.name || "").toLowerCase();
+    const isAudioFile =
+      normalizedType.startsWith("audio/") ||
+      /\.(mp3|m4a|aac|wav|ogg|oga|flac)$/i.test(normalizedName);
+    if (!isAudioFile) {
+      event.target.value = "";
+      setError("페이지 오디오는 mp3, m4a, wav, ogg 등 오디오 파일만 첨부할 수 있습니다.");
+      return;
+    }
+    setPageAudioUploading(true);
+    setPageAudioUploadProgress(1);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const audioUrl = await uploadTemplateMediaFile(file, (percent) => {
+        setPageAudioUploadProgress(Math.max(1, Math.min(100, Math.round(percent))));
+      });
+      updateSelectedPage((page) => ({
+        ...page,
+        audioEnabled: true,
+        audioUrl,
+        audioPrompt: String(page.audioPrompt || "")
+      }));
+      setAudioPreviewUrl(undefined);
+      setSuccess("페이지 오디오 파일을 첨부했습니다.");
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "페이지 오디오 업로드에 실패했습니다.");
+    } finally {
+      setPageAudioUploading(false);
+      window.setTimeout(() => setPageAudioUploadProgress(undefined), 1200);
+      event.target.value = "";
     }
   }
 
@@ -5254,14 +6495,39 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     link.click();
   }
 
+  async function downloadSelectedLayerImage(layerId: string): Promise<void> {
+    const page = selectedPage;
+    const layer = page?.elements.find((item) => item.id === layerId);
+    if (!page || !layer || (layer.type !== "image" && layer.type !== "video")) {
+      setError("이미지 또는 비디오 오브젝트를 선택해 주세요.");
+      return;
+    }
+    const mediaUrl = String(layer.imageUrl || "").trim();
+    if (!mediaUrl) {
+      setError("다운로드할 AI 이미지가 없습니다. 먼저 AI 이미지 생성 또는 가져오기를 해주세요.");
+      return;
+    }
+    if (layer.mediaType === "video" || inferMediaTypeFromSource(mediaUrl) === "video") {
+      setError("현재 선택된 미디어는 비디오입니다. AI 이미지가 들어있는 오브젝트를 선택해 주세요.");
+      return;
+    }
+    setError(undefined);
+    try {
+      await downloadMediaBlob(mediaUrl, `${editor.templateName || "instagram-template"}-${page.name || "page"}-${layer.id}`);
+      setSuccess("AI 이미지 다운로드를 시작했습니다.");
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "AI 이미지 다운로드에 실패했습니다.");
+    }
+  }
+
   const canvasLayers = useMemo(() => [...sortedLayers].sort((a, b) => a.zIndex - b.zIndex), [sortedLayers]);
   const selectedPageIndex = useMemo(
     () => editor.pages.findIndex((page) => page.id === selectedPageId),
     [editor.pages, selectedPageId]
   );
   const selectedPagePreviewVisible = selectedPage ? (pagePreviewVisible[selectedPage.id] ?? true) : true;
-  const isDockedTextToolbar = selectedLayer?.type === "text";
   const isMobileViewport = viewportWidth <= 768;
+  const isCompactMobileViewport = viewportWidth <= 768;
   const minObjectToolbarWidth = isMobileViewport ? 260 : 320;
   const maxObjectToolbarWidth = 1120;
   const objectToolbarWidthFallback = isMobileViewport ? 320 : 760;
@@ -5271,6 +6537,34 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     minObjectToolbarWidth,
     maxObjectToolbarWidth,
     objectToolbarWidthFallback
+  );
+  const objectToolbarViewportWidth =
+    typeof window === "undefined" ? 1280 : window.innerWidth;
+  const objectToolbarViewportHeight =
+    typeof window === "undefined" ? 900 : window.innerHeight;
+  const objectToolbarRenderedWidth = Math.min(
+    objectToolbarClampedWidth,
+    Math.max(minObjectToolbarWidth, objectToolbarViewportWidth - 24)
+  );
+  const objectToolbarBaseLeft = (() => {
+    const canvasRect = canvasRef.current?.getBoundingClientRect();
+    if (canvasRect) {
+      return isMobileViewport ? 8 : canvasRect.left + 12;
+    }
+    return isMobileViewport ? 8 : 96;
+  })();
+  const objectToolbarBaseTop = isMobileViewport ? 64 : 72;
+  const objectToolbarLeft = clamp(
+    objectToolbarBaseLeft + objectToolbarOffset.x,
+    8,
+    Math.max(8, objectToolbarViewportWidth - objectToolbarRenderedWidth - 8),
+    objectToolbarBaseLeft
+  );
+  const objectToolbarTop = clamp(
+    objectToolbarBaseTop + objectToolbarOffset.y,
+    56,
+    Math.max(56, objectToolbarViewportHeight - 132),
+    objectToolbarBaseTop
   );
   const canUndo = undoStackRef.current.length > 0;
   const canRedo = redoStackRef.current.length > 0;
@@ -5299,6 +6593,158 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     ));
   }
 
+  function renderPageMiniature(page: InstagramTemplate["pages"][number]): React.ReactNode {
+    const layers = [...page.elements].sort((a, b) => a.zIndex - b.zIndex);
+    return (
+      <div
+        className="relative h-full w-full overflow-hidden rounded-md border bg-zinc-100 shadow-inner"
+        style={{ aspectRatio: `${canvasWidth} / ${canvasHeight}`, containerType: "inline-size" }}
+      >
+        <div
+          className="absolute inset-0"
+          style={{ backgroundColor: normalizeHex(page.backgroundColor || "#FFFFFF", "#FFFFFF") }}
+        />
+        {page.backgroundImageUrl ? (
+          inferMediaTypeFromSource(page.backgroundImageUrl) === "video" ? (
+            <video
+              src={toInstagramMediaPreviewUrl(page.backgroundImageUrl)}
+              className={`absolute inset-0 h-full w-full ${page.backgroundFit === "contain" ? "object-contain" : "object-cover"}`}
+              muted
+              loop
+              playsInline
+            />
+          ) : (
+            <img
+              src={toInstagramMediaPreviewUrl(page.backgroundImageUrl)}
+              alt={`${page.name} background`}
+              className={`absolute inset-0 h-full w-full ${page.backgroundFit === "contain" ? "object-contain" : "object-cover"}`}
+              draggable={false}
+            />
+          )
+        ) : null}
+        {layers.map((layer) => {
+          const sharedStyle: React.CSSProperties = {
+            position: "absolute",
+            left: `${layer.x}%`,
+            top: `${layer.y}%`,
+            width: `${layer.width}%`,
+            height: `${layer.height}%`,
+            transform: `translate(-50%, -50%) rotate(${layer.rotation}deg)`,
+            opacity: clamp(layer.opacity, 0.05, 1, 1),
+            zIndex: layer.zIndex + 10,
+            overflow: "hidden"
+          };
+
+          if (layer.type === "text") {
+            const text = resolveTextLayerContent(layer, sampleData) || "(텍스트)";
+            return (
+              <div
+                key={`mini-${page.id}-${layer.id}`}
+                style={{
+                  ...sharedStyle,
+                  color: normalizeHex(layer.color, "#111111"),
+                  fontFamily: buildFontFamilyStack(layer.fontFamily),
+                  fontWeight: layer.bold ? 700 : 400,
+                  fontStyle: layer.italic ? "italic" : "normal",
+                  textAlign: layer.textAlign,
+                  fontSize: toCanvasWidthUnit(Math.max(10, layer.fontSize), canvasWidth),
+                  lineHeight: String(clamp(layer.lineHeight, 0.8, 3, 1.2)),
+                  backgroundColor:
+                    layer.padding > 0 ||
+                    normalizeHex(layer.backgroundColor, "#FFFFFF") !== "#FFFFFF" ||
+                    clamp(Number(layer.backgroundOpacity), 0, 1, 1) < 1
+                      ? withAlpha(layer.backgroundColor, clamp(Number(layer.backgroundOpacity), 0, 1, 1))
+                      : "transparent",
+                  padding: toCanvasWidthUnit(Math.max(0, layer.padding), canvasWidth),
+                  whiteSpace: layer.autoWrap === false ? "pre" : "pre-wrap",
+                  overflowWrap: layer.autoWrap === false ? "normal" : "anywhere",
+                  wordBreak: layer.autoWrap === false ? "normal" : "break-word",
+                  textDecorationLine: getTextDecorationLine(layer),
+                  textShadow: getTextShadowStyle(layer)
+                }}
+              >
+                {text}
+              </div>
+            );
+          }
+
+          if (layer.type === "shape") {
+            const shapeType = normalizeShapeType(layer.shape);
+            const isLineShape = shapeType === "line";
+            return (
+              <div
+                key={`mini-${page.id}-${layer.id}`}
+                style={{
+                  ...sharedStyle,
+                  borderRadius:
+                    shapeType === "circle"
+                      ? "9999px"
+                      : shapeType === "roundedRectangle" || shapeType === "rectangle"
+                        ? `${clamp(layer.cornerRadius, 0, 200, 24) * 0.5}px`
+                        : "0px",
+                  clipPath: isLineShape ? undefined : getShapeClipPath(shapeType),
+                  backgroundColor:
+                    isLineShape || layer.fillEnabled === false
+                      ? "transparent"
+                      : withAlpha(normalizeHex(layer.fillColor, "#F4F1EA"), clamp(Number(layer.fillOpacity), 0, 1, 1)),
+                  borderStyle: isLineShape ? undefined : "solid",
+                  borderWidth: isLineShape ? undefined : `${Math.max(0, layer.strokeWidth || 0)}px`,
+                  borderColor: isLineShape ? undefined : normalizeHex(layer.strokeColor, "#111111")
+                }}
+              >
+                {isLineShape ? (
+                  <div
+                    className="pointer-events-none absolute left-0 right-0 top-1/2 -translate-y-1/2"
+                    style={{
+                      borderTop: `${Math.max(1, layer.strokeWidth || 2)}px solid ${normalizeHex(layer.strokeColor, "#111111")}`
+                    }}
+                  />
+                ) : null}
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={`mini-${page.id}-${layer.id}`}
+              style={{
+                ...sharedStyle,
+                borderRadius: `${clamp(layer.borderRadius, 0, 220, 16) * 0.5}px`
+              }}
+            >
+              {layer.imageUrl ? (
+                layer.mediaType === "video" || inferMediaTypeFromSource(layer.imageUrl) === "video" ? (
+                  <video
+                    src={toInstagramMediaPreviewUrl(layer.imageUrl)}
+                    className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
+                    style={{ objectPosition: `${clamp(Number(layer.cropX), 0, 100, 50)}% ${clamp(Number(layer.cropY), 0, 100, 50)}%` }}
+                    muted
+                    loop
+                    playsInline
+                  />
+                ) : (
+                  <img
+                    src={toInstagramMediaPreviewUrl(layer.imageUrl)}
+                    alt="layer"
+                    className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
+                    style={{ objectPosition: `${clamp(Number(layer.cropX), 0, 100, 50)}% ${clamp(Number(layer.cropY), 0, 100, 50)}%` }}
+                    draggable={false}
+                  />
+                )
+              ) : null}
+              {layer.overlayOpacity > 0 ? (
+                <div
+                  className="pointer-events-none absolute inset-0"
+                  style={{ backgroundColor: withAlpha(layer.overlayColor, layer.overlayOpacity) }}
+                />
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function handleBackgroundPointerDownCapture(event: React.PointerEvent<HTMLElement>): void {
     if (!selectedElementId && selectedElementIds.length === 0) {
       return;
@@ -5318,32 +6764,170 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
   return (
     <section className="space-y-4" onPointerDownCapture={handleBackgroundPointerDownCapture}>
+      <div className="sticky top-0 z-40 -mx-2 border-b border-white/10 bg-background/95 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="mr-1 min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="truncate text-lg font-bold sm:text-xl">Instagram 템플릿</h1>
+              {activeTemplateId === selectedTemplateId && selectedTemplateId !== "__new__" ? (
+                <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-400">
+                  자동화 기본
+                </span>
+              ) : null}
+            </div>
+            <p className="hidden truncate text-xs text-muted-foreground sm:block">
+              {editor.templateName || "새 템플릿"} · {canvasWidth}x{canvasHeight}
+            </p>
+          </div>
+          <div className="relative" data-keep-selection="true">
+            <Button
+              type="button"
+              variant={templateMenuOpen === "file" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setTemplateMenuOpen((current) => (current === "file" ? undefined : "file"))}
+            >
+              파일
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+            {templateMenuOpen === "file" ? (
+              <div className="absolute left-0 top-full z-50 mt-2 w-52 rounded-lg border bg-popover p-1 text-sm text-popover-foreground shadow-xl">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent"
+                  onClick={() => {
+                    setTemplateMenuOpen(undefined);
+                    void persistTemplate("new");
+                  }}
+                  disabled={busy}
+                >
+                  <Plus className="h-4 w-4" />
+                  다른 이름으로 저장
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                  onClick={() => {
+                    setTemplateMenuOpen(undefined);
+                    void duplicateTemplate();
+                  }}
+                  disabled={busy}
+                >
+                  <Copy className="h-4 w-4" />
+                  복제
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                  onClick={() => {
+                    setTemplateMenuOpen(undefined);
+                    void persistTemplate("update");
+                  }}
+                  disabled={busy || selectedTemplateId === "__new__"}
+                >
+                  <Save className="h-4 w-4" />
+                  저장
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  onClick={() => {
+                    setTemplateMenuOpen(undefined);
+                    void removeTemplate(selectedTemplateId);
+                  }}
+                  disabled={busy || selectedTemplateId === "__new__"}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  삭제
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <div className="relative" data-keep-selection="true">
+            <Button
+              type="button"
+              variant={templateMenuOpen === "features" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setTemplateMenuOpen((current) => (current === "features" ? undefined : "features"))}
+            >
+              기능
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+            {templateMenuOpen === "features" ? (
+              <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-lg border bg-popover p-1 text-sm text-popover-foreground shadow-xl sm:left-0 sm:right-auto">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                  onClick={() => {
+                    setTemplateMenuOpen(undefined);
+                    void setActive(selectedTemplateId);
+                  }}
+                  disabled={busy || selectedTemplateId === "__new__"}
+                >
+                  <Check className="h-4 w-4" />
+                  자동화 기본 지정
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent"
+                  onClick={() => openTemplateJsonModal("import")}
+                >
+                  <Upload className="h-4 w-4" />
+                  템플릿 가져오기
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent"
+                  onClick={() => openTemplateJsonModal("export")}
+                >
+                  <Download className="h-4 w-4" />
+                  템플릿 내보내기
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent"
+                  onClick={() => openOutputRenderModal("png")}
+                >
+                  <FileImage className="h-4 w-4" />
+                  PNG/MP4 렌더
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <Button type="button" size="sm" onClick={pushCurrentTemplateToFeed} disabled={busy}>
+            <Upload className="h-4 w-4" />
+            <span className="hidden sm:inline">피드로 내보내기</span>
+            <span className="sm:hidden">피드</span>
+          </Button>
+        </div>
+      </div>
+
       <header className="space-y-1">
-        <h1 className="text-2xl font-bold">Instagram 템플릿</h1>
         <p className="text-sm text-muted-foreground">
-          캔바형 편집: 레이어를 직접 드래그/리사이즈하고, 이미지 업로드/배경 설정/시트 컬럼 바인딩으로 즉시 결과물을 확인합니다.
+          레이어를 직접 드래그/리사이즈하고, 이미지 업로드/배경 설정/시트 컬럼 바인딩으로 즉시 결과물을 확인합니다.
         </p>
       </header>
 
       <div className="rounded-xl border bg-card p-3">
-        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_auto_auto_auto_auto_auto_auto]">
+        <div className="grid gap-2 md:grid-cols-[minmax(180px,1fr)_auto]">
           <div className="space-y-1">
             <Label>저장된 템플릿</Label>
-            <Select value={selectedTemplateId} onValueChange={selectTemplate}>
-              <SelectTrigger className="bg-card dark:bg-zinc-900">
-                <SelectValue placeholder="템플릿 선택" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__new__">+ 새 템플릿</SelectItem>
-                {templates.map((template) => (
-                  <SelectItem key={template.id} value={template.id}>
-                    {template.templateName}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex gap-2">
+              <Select value={selectedTemplateId} onValueChange={selectTemplate}>
+                <SelectTrigger className="min-w-0 bg-card dark:bg-zinc-900">
+                  <SelectValue placeholder="템플릿 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__new__">+ 새 템플릿</SelectItem>
+                  {templates.map((template) => (
+                    <SelectItem key={template.id} value={template.id}>
+                      {template.templateName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="group relative">
+          <div className="group relative self-end">
             <Button
               type="button"
               variant="outline"
@@ -5358,49 +6942,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
               새로고침
             </span>
           </div>
-          <Button
-            type="button"
-            onClick={() => void persistTemplate("new")}
-            disabled={busy}
-            title="현재 편집 상태를 새 템플릿으로 복제 저장합니다."
-          >
-            <Plus className="h-4 w-4" />
-            다른 이름으로 저장
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void persistTemplate("update")}
-            disabled={busy || selectedTemplateId === "__new__"}
-          >
-            <Save className="h-4 w-4" />
-            저장
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void setActive(selectedTemplateId)}
-            disabled={busy || selectedTemplateId === "__new__"}
-            title="자동화 실행 시 기본으로 사용할 인스타 템플릿으로 지정합니다."
-          >
-            <Check className="h-4 w-4" />
-            자동화 기본 지정
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void removeTemplate(selectedTemplateId)}
-            disabled={busy || selectedTemplateId === "__new__"}
-          >
-            <Trash2 className="h-4 w-4" />
-            삭제
-          </Button>
-          <Button type="button" variant="outline" onClick={pushCurrentTemplateToFeed} disabled={busy}>
-            <Upload className="h-4 w-4" />
-            피드로 보내기
-          </Button>
         </div>
-        <div className="mt-2 grid gap-2 lg:grid-cols-[minmax(220px,1fr)_minmax(160px,0.8fr)_minmax(180px,0.9fr)_minmax(240px,1fr)_120px_120px]">
+        <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(180px,1fr)_minmax(140px,0.7fr)_minmax(150px,0.7fr)_minmax(210px,1fr)_96px_96px]">
           <div className="space-y-1">
             <Label>템플릿 이름</Label>
             <Input
@@ -5430,7 +6973,15 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             </Select>
           </div>
           <div className="space-y-1">
-            <Label>기본 페이지 길이(초)</Label>
+            <div className="group relative inline-flex items-center gap-1">
+              <Label>기본 페이지 길이(초)</Label>
+              <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px] text-muted-foreground">
+                ?
+              </span>
+              <span className="pointer-events-none invisible absolute left-0 top-full z-30 mt-1 w-64 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow transition-opacity group-hover:visible group-hover:opacity-100">
+                피드로 내보내거나 MP4 렌더링할 때 페이지 하나가 화면에 유지되는 기본 시간입니다.
+              </span>
+            </div>
             <Input
               type="number"
               min={1}
@@ -5490,6 +7041,92 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             />
           </div>
         </div>
+        <div className="mt-3 rounded-xl border bg-muted/10 p-3">
+          <div className="mb-2 flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <p className="text-sm font-semibold">피드 캡션 필드</p>
+                <span className="group relative inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px] text-muted-foreground">
+                  ?
+                  <span className="pointer-events-none invisible absolute left-0 top-full z-30 mt-1 w-72 rounded-md border bg-popover px-2 py-1 text-xs font-normal text-popover-foreground opacity-0 shadow transition-opacity group-hover:visible group-hover:opacity-100">
+                    피드로 내보낼 때 선택한 시트 row의 어떤 필드를 인스타그램 캡션 본문에 넣을지 정합니다.
+                  </span>
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                피드로 내보낼 때 선택한 row 필드 값을 위에서 아래 순서로 캡션 본문에 넣고, 마지막에 해시태그를 붙입니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="ml-auto shrink-0 rounded-md px-2 py-1 text-sm font-semibold hover:bg-accent"
+              onClick={() => setCaptionFieldsCollapsed((current) => !current)}
+            >
+              {captionFieldsCollapsed ? "펼치기" : "접기"}
+            </button>
+          </div>
+          {!captionFieldsCollapsed ? (
+            <>
+              <div className="mb-2 flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    updateEditor((current) => ({
+                      ...current,
+                      captionSourceFields: ["Caption", "Subject"]
+                    }))
+                  }
+                >
+                  Caption + Subject
+                </Button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {mergeBindingFieldsWithDefaults([
+                  ...bindingFields,
+                  ...Object.keys(sampleData || {}),
+                  "Caption",
+                  "Subject"
+                ]).map((field) => {
+                  const selected = (editor.captionSourceFields || []).includes(field);
+                  return (
+                    <button
+                      key={`caption-source-field-${field}`}
+                      type="button"
+                      className={`rounded-full border px-2.5 py-1 text-xs transition ${
+                        selected ? "border-emerald-500 bg-emerald-500/15 text-emerald-200" : "hover:bg-accent"
+                      }`}
+                      onClick={() =>
+                        updateEditor((current) => {
+                          const currentFields = current.captionSourceFields || [];
+                          return {
+                            ...current,
+                            captionSourceFields: currentFields.includes(field)
+                              ? currentFields.filter((item) => item !== field)
+                              : [...currentFields, field].slice(0, 12)
+                          };
+                        })
+                      }
+                      title={selected ? "캡션에서 제거" : "캡션에 추가"}
+                    >
+                      {selected ? `${(editor.captionSourceFields || []).indexOf(field) + 1}. ${field}` : field}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : null}
+          {(editor.captionSourceFields || []).length > 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              현재 순서: {(editor.captionSourceFields || []).join(" + ")} + 해시태그
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-amber-500">
+              선택된 캡션 필드가 없으면 caption/subject/description 순서로 자동 fallback 됩니다.
+            </p>
+          )}
+        </div>
         <div className="mt-2 flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={addPage}>
             <Plus className="h-4 w-4" />
@@ -5503,6 +7140,25 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           >
             <Copy className="h-4 w-4" />
             페이지 복제
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={copySelectedElementsForCrossPage}
+            disabled={!selectedLayer && selectedElementIds.length === 0}
+            title="선택한 오브젝트를 복사합니다. 단축키: Ctrl/Cmd+C"
+          >
+            <Copy className="h-4 w-4" />
+            오브젝트 복사
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={pasteCopiedElementsToSelectedPage}
+            disabled={!elementClipboard || elementClipboard.elements.length === 0 || !selectedPage}
+            title="복사한 오브젝트를 현재 페이지에 붙여넣습니다. 단축키: Ctrl/Cmd+V"
+          >
+            붙여넣기
           </Button>
         </div>
         {activeTemplateId === selectedTemplateId && selectedTemplateId !== "__new__" ? (
@@ -5534,8 +7190,279 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         </p>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="space-y-3">
+      {templateJsonModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm"
+          data-keep-selection="true"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setTemplateJsonModalOpen(false);
+            }
+          }}
+        >
+          <div className="w-full max-w-3xl rounded-2xl border bg-card p-4 shadow-2xl sm:p-5">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">템플릿 가져오기/내보내기</h2>
+                <p className="text-xs text-muted-foreground">
+                  JSON 파일 또는 텍스트로 템플릿을 옮길 수 있습니다.
+                </p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setTemplateJsonModalOpen(false)}>
+                닫기
+              </Button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                className={`rounded-xl border p-5 text-left transition hover:bg-accent ${
+                  templateJsonModalMode === "import" ? "border-primary bg-primary/10" : "bg-muted/20"
+                }`}
+                onClick={() => setTemplateJsonModalMode("import")}
+              >
+                <Upload className="mb-3 h-8 w-8" />
+                <p className="font-semibold">가져오기</p>
+                <p className="mt-1 text-xs text-muted-foreground">JSON 파일 또는 텍스트를 새 템플릿으로 추가합니다.</p>
+              </button>
+              <button
+                type="button"
+                className={`rounded-xl border p-5 text-left transition hover:bg-accent ${
+                  templateJsonModalMode === "export" ? "border-primary bg-primary/10" : "bg-muted/20"
+                }`}
+                onClick={() => {
+                  setTemplateJsonModalMode("export");
+                  setImportJson(JSON.stringify(editor, null, 2));
+                }}
+              >
+                <Download className="mb-3 h-8 w-8" />
+                <p className="font-semibold">내보내기</p>
+                <p className="mt-1 text-xs text-muted-foreground">현재 템플릿 JSON을 확인하고 다운로드합니다.</p>
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              <Textarea
+                value={templateJsonModalMode === "export" ? importJson || JSON.stringify(editor, null, 2) : importJson}
+                onChange={(event) => setImportJson(event.target.value)}
+                rows={12}
+                className="max-h-[42vh] min-h-[220px] font-mono text-xs"
+                placeholder="템플릿 JSON 텍스트"
+              />
+              <input
+                ref={jsonFileInputRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={onTemplateJsonFileChange}
+              />
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                {templateJsonModalMode === "import" ? (
+                  <>
+                    <Button type="button" variant="outline" onClick={() => jsonFileInputRef.current?.click()}>
+                      JSON 파일
+                    </Button>
+                    <Button type="button" onClick={() => void importTemplateFromJsonText()} disabled={busy}>
+                      가져오기
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button type="button" variant="outline" onClick={loadCurrentTemplateJsonToTextarea}>
+                      JSON 텍스트
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => void copyCurrentTemplateJson()}>
+                      JSON 복사
+                    </Button>
+                    <Button type="button" onClick={downloadCurrentTemplateJson}>
+                      다운로드
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {outputRenderModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm"
+          data-keep-selection="true"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setOutputRenderModalOpen(false);
+            }
+          }}
+        >
+          <div className="w-full max-w-3xl rounded-2xl border bg-card p-4 shadow-2xl sm:p-5">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">PNG/MP4 렌더</h2>
+                <p className="text-xs text-muted-foreground">
+                  현재 선택된 페이지를 {canvasWidth}x{canvasHeight} 기준으로 렌더링합니다.
+                </p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setOutputRenderModalOpen(false)}>
+                닫기
+              </Button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                className={`rounded-xl border p-5 text-left transition hover:bg-accent ${
+                  outputRenderModalMode === "png" ? "border-primary bg-primary/10" : "bg-muted/20"
+                }`}
+                onClick={() => setOutputRenderModalMode("png")}
+              >
+                <FileImage className="mb-3 h-8 w-8" />
+                <p className="font-semibold">PNG 렌더</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  현재 캔버스 레이어를 그대로 PNG 이미지로 출력합니다.
+                </p>
+              </button>
+              <button
+                type="button"
+                className={`rounded-xl border p-5 text-left transition hover:bg-accent ${
+                  outputRenderModalMode === "mp4" ? "border-primary bg-primary/10" : "bg-muted/20"
+                }`}
+                onClick={() => setOutputRenderModalMode("mp4")}
+              >
+                <Video className="mb-3 h-8 w-8" />
+                <p className="font-semibold">MP4 렌더</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  페이지 오디오 설정과 기본 길이를 반영해 MP4로 출력합니다.
+                </p>
+              </button>
+            </div>
+            <div className="mt-4 space-y-3 rounded-xl border bg-muted/15 p-3">
+              {outputRenderModalMode === "png" ? (
+                <>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Button type="button" onClick={() => void renderOutputPreview()} disabled={renderingOutput}>
+                      {renderingOutput ? "PNG 렌더링 중..." : "현재 페이지 PNG 렌더"}
+                    </Button>
+                    <Button type="button" variant="outline" onClick={downloadOutputPreview} disabled={!outputPreviewUrl}>
+                      <Download className="h-4 w-4" />
+                      PNG 다운로드
+                    </Button>
+                  </div>
+                  {outputPreviewUrl ? (
+                    <div className="app-panel-scrollbar max-h-[46vh] overflow-auto rounded-md border p-2">
+                      <img src={outputPreviewUrl} alt="output preview" className="mx-auto w-full max-w-md rounded border" />
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      PNG 렌더를 실행하면 결과 미리보기가 여기에 표시됩니다.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Button type="button" onClick={() => void renderOutputVideo()} disabled={renderingOutputVideo}>
+                      {renderingOutputVideo ? "MP4 렌더링 중..." : "현재 페이지 MP4 렌더"}
+                    </Button>
+                    <Button type="button" variant="outline" onClick={downloadOutputVideo} disabled={!outputVideoUrl}>
+                      <Download className="h-4 w-4" />
+                      MP4 다운로드
+                    </Button>
+                  </div>
+                  {outputVideoUrl ? (
+                    <div className="space-y-2 rounded-md border p-2">
+                      <video src={outputVideoUrl} controls className="max-h-[46vh] w-full rounded border bg-black" />
+                      <a
+                        href={outputVideoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-emerald-400 underline"
+                      >
+                        MP4 결과 새 창에서 열기
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      MP4 렌더를 실행하면 영상 미리보기가 여기에 표시됩니다.
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="relative z-0 rounded-xl border bg-card/95 p-3 shadow-sm backdrop-blur">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold">페이지 캔버스 목록</p>
+                <p className="text-[11px] text-muted-foreground">순서와 페이지명을 확인하고 클릭해서 편집 페이지를 전환합니다.</p>
+              </div>
+              <span className="shrink-0 rounded-full border px-2 py-1 text-[11px] text-muted-foreground">
+                {editor.pages.length}개
+              </span>
+            </div>
+            <div className="app-table-scrollbar overflow-x-auto pb-1">
+              <div className="flex min-w-max gap-2">
+                {editor.pages.map((page, index) => {
+                  const isCurrent = page.id === selectedPageId;
+                  return (
+                    <button
+                      key={`page-strip-${page.id}`}
+                      type="button"
+                      className={`w-[156px] shrink-0 rounded-lg border p-2 text-left transition sm:w-[188px] lg:w-[216px] ${
+                        isCurrent
+                          ? "border-primary bg-primary/10 shadow"
+                          : "border-border bg-background hover:border-primary/60"
+                      }`}
+                      onClick={() => {
+                        setSelectedPageId(page.id);
+                        setSelectedElementId(page.elements[0]?.id);
+                      }}
+                    >
+                      <div className="mb-1 flex items-center justify-between gap-1">
+                        <span className="truncate text-[11px] font-semibold">
+                          {index + 1}. {page.name}
+                        </span>
+                      </div>
+                      <div
+                        className="relative w-full overflow-hidden rounded-md border bg-black"
+                        style={{ aspectRatio: `${canvasWidth} / ${canvasHeight}` }}
+                      >
+                        {pageThumbnailUrls[page.id] ? (
+                          <img
+                            src={pageThumbnailUrls[page.id]}
+                            alt={`${index + 1}. ${page.name} preview`}
+                            className="h-full w-full object-contain"
+                            draggable={false}
+                          />
+                        ) : (
+                          <div className="h-full w-full">{renderPageMiniature(page)}</div>
+                        )}
+                      </div>
+                      <div className="mt-1 h-4">
+                        {isCurrent ? (
+                          <span className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
+                            편집 중인 페이지
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground">클릭해서 편집</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+      <div ref={editorLayoutRef} className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="min-w-0 self-start">
+          <div
+            ref={editorFollowRef}
+            className="h-fit space-y-3 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out"
+            style={{
+              transform: editorFollowOffset > 0 ? `translateY(${editorFollowOffset}px)` : undefined
+            }}
+          >
           <div className="rounded-xl border bg-card p-3">
             <div className="mb-2 flex items-center justify-between">
               <p className="text-sm font-medium">{selectedPage ? `${selectedPageIndex + 1}. ${selectedPage.name}` : "현재 편집 페이지"}</p>
@@ -5611,6 +7538,18 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             </div>
             {selectedPagePreviewVisible ? (
               <>
+                {isCompactMobileViewport ? (
+                  <div
+                    ref={(node) => {
+                      mobileObjectToolbarHostRef.current = node;
+                      if (node && !objectToolbarHostReady) {
+                        setObjectToolbarHostReady(true);
+                      }
+                    }}
+                    className="mb-3"
+                    data-keep-selection="true"
+                  />
+                ) : null}
                 <div
               ref={canvasRef}
                 className="relative mx-auto w-full max-w-[900px] overflow-visible border bg-zinc-100 shadow-inner select-none touch-none"
@@ -5623,11 +7562,6 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   setPanelToolOpen(false);
                   const target = event.target as HTMLElement | null;
                   if (target?.closest("[data-layer-element='true']")) {
-                    return;
-                  }
-                  const isModifierPressed = event.shiftKey || event.ctrlKey || event.metaKey;
-                  if (!isModifierPressed) {
-                    clearSelection();
                     return;
                   }
                   beginSelectionBox(event);
@@ -5717,6 +7651,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     </Button>
                     <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow transition-opacity group-hover:opacity-100 lg:left-full lg:top-1/2 lg:ml-2 lg:mt-0 lg:-translate-y-1/2 lg:translate-x-0">
                       Image
+                    </span>
+                  </div>
+                  <div className="relative group/tool-video">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 w-9 border-white/25 bg-black/40 p-0 hover:bg-black/60"
+                      onClick={() => {
+                        setShapeToolOpen(false);
+                        setPanelToolOpen(false);
+                        addLayer("video");
+                      }}
+                      aria-label="Video"
+                      title="Video"
+                    >
+                      <Video className="h-4 w-4" />
+                    </Button>
+                    <span className="pointer-events-none invisible absolute left-1/2 top-full z-20 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow transition-opacity group-hover/tool-video:visible group-hover/tool-video:opacity-100 lg:left-full lg:top-1/2 lg:ml-2 lg:mt-0 lg:-translate-y-1/2 lg:translate-x-0">
+                      Video
                     </span>
                   </div>
                   <div className="relative group/tool-shape">
@@ -5865,36 +7819,26 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                 </div>
               </div>
 
-              {selectedLayer ? (
+              {selectedLayer &&
+              !templateJsonModalOpen &&
+              !outputRenderModalOpen &&
+              typeof document !== "undefined" &&
+              (!isCompactMobileViewport || objectToolbarHostReady) ? createPortal(
+                (
                 <div
                   ref={objectToolbarRef}
-                  className={
-                    isDockedTextToolbar
-                      ? "absolute top-0 z-30 max-h-[42vh] min-w-[260px] resize overflow-auto rounded-xl border border-white/25 bg-black/70 p-2 text-white shadow-xl backdrop-blur"
-                      : "absolute z-30 w-[min(96%,820px)] max-h-[56vh] resize overflow-auto rounded-xl border border-white/25 bg-black/70 p-2 text-white shadow-xl backdrop-blur"
-                  }
-                  style={
-                    isDockedTextToolbar
-                      ? isMobileViewport
-                        ? {
-                            left: `calc(6px + ${objectToolbarOffset.x}px)`,
-                            top: `calc(8px + ${objectToolbarOffset.y}px)`,
-                            width: `min(calc(100% - 12px), ${objectToolbarClampedWidth}px)`,
-                            transform: "none"
-                          }
-                        : {
-                            left: `calc(8px + ${objectToolbarOffset.x}px)`,
-                            top: `${objectToolbarOffset.y}px`,
-                            width: `min(calc(100% - 16px), ${objectToolbarClampedWidth}px)`,
-                            transform: "translateY(calc(-100% - 10px))"
-                          }
-                      : {
-                          width: `min(96%, ${objectToolbarClampedWidth}px)`,
-                          left: `calc(${selectedLayer.x}% + ${objectToolbarOffset.x}px)`,
-                          top: `calc(${clamp(selectedLayer.y - selectedLayer.height / 2 - 4, 4, 92, 4)}% + ${objectToolbarOffset.y}px)`,
-                          transform: "translate(-50%, -100%)"
-                        }
-                  }
+                  className={`instagram-object-toolbar app-panel-scrollbar z-[120] overflow-auto border border-white/25 bg-black/75 p-2 text-white shadow-xl backdrop-blur ${
+                    isCompactMobileViewport
+                      ? "relative max-h-[42vh] w-full rounded-xl"
+                      : "fixed max-h-[calc(100vh-88px)] min-w-[260px] resize rounded-xl"
+                  }`}
+                  style={{
+                    left: isCompactMobileViewport ? undefined : `${objectToolbarLeft}px`,
+                    top: isCompactMobileViewport ? undefined : `${objectToolbarTop}px`,
+                    width: isCompactMobileViewport ? "100%" : `${objectToolbarRenderedWidth}px`,
+                    maxWidth: isCompactMobileViewport ? "100%" : "calc(100vw - 16px)",
+                    transform: "none"
+                  }}
                   data-keep-selection="true"
                   onPointerDown={(event) => {
                     event.stopPropagation();
@@ -5917,8 +7861,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   }}
                 >
                   <div
-                    className={`mb-2 flex items-center gap-2 ${isDockedTextToolbar ? "cursor-grab active:cursor-grabbing" : ""}`}
+                    className={`mb-2 flex items-center gap-2 ${isCompactMobileViewport ? "" : "cursor-grab active:cursor-grabbing"}`}
                     onPointerDown={(event) => {
+                      if (isCompactMobileViewport) {
+                        return;
+                      }
                       if (isToolbarInteractiveTarget(event.target)) {
                         return;
                       }
@@ -5929,13 +7876,16 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-6 w-8 cursor-grab border-white/25 bg-black/30 p-0 active:cursor-grabbing"
+                      className={`h-6 w-8 border-white/25 bg-black/30 p-0 ${
+                        isCompactMobileViewport ? "cursor-default opacity-60" : "cursor-grab active:cursor-grabbing"
+                      }`}
                       onPointerDown={beginObjectToolbarDrag}
                       title="오브젝트 툴바 이동"
+                      disabled={isCompactMobileViewport}
                     >
                       <GripVertical className="h-3.5 w-3.5" />
                     </Button>
-                    <span className="text-[11px] text-zinc-200">{resolveElementName(selectedLayer)}</span>
+                    <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-200">{resolveElementName(selectedLayer)}</span>
                     {selectedLayer.type === "text" ? (
                       <div className="ml-auto flex items-center gap-1">
                         <Button
@@ -5987,7 +7937,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         </Button>
                       </div>
                     ) : null}
-                    {isDockedTextToolbar ? null : (
+                    {isCompactMobileViewport ? null : (
                       <div className="ml-auto flex items-center gap-1">
                         <Button
                           type="button"
@@ -6035,7 +7985,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     )}
                   </div>
                   {hasMultiSelection ? (
-                    <div className="mb-2 flex flex-wrap items-center gap-1 rounded-md border border-white/15 bg-black/25 px-2 py-2">
+                    <div className="app-table-scrollbar mb-2 flex items-center gap-1 overflow-x-auto rounded-md border border-white/15 bg-black/25 px-2 py-1.5 sm:flex-wrap sm:overflow-visible sm:py-2">
                       <span className="mr-1 text-[11px] text-zinc-200">{`다중 선택 ${selectedLayers.length}개`}</span>
                       <Button
                         type="button"
@@ -6109,15 +8059,15 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       </Button>
                     </div>
                   ) : null}
-                  <div className="mb-2 flex flex-wrap items-center gap-1 rounded-md border border-white/15 bg-black/25 px-2 py-2">
-                    <span className="mr-1 text-[11px] text-zinc-200">
+                  <div className="app-table-scrollbar mb-2 flex items-center gap-1 overflow-x-auto rounded-md border border-white/15 bg-black/25 px-2 py-1.5 sm:flex-wrap sm:overflow-visible sm:py-2">
+                    <span className="mr-1 shrink-0 text-[11px] text-zinc-200">
                       순서 {selectedLayerOrder.index >= 0 ? `${selectedLayerOrder.index + 1}/${selectedLayerOrder.total}` : ""}
                     </span>
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-7 px-2 text-[11px]"
+                      className="h-7 shrink-0 px-2 text-[11px]"
                       onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "back"))}
                       disabled={!selectedLayerOrder.canMoveBack}
                       title="맨 뒤로"
@@ -6128,7 +8078,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-7 px-2 text-[11px]"
+                      className="h-7 shrink-0 px-2 text-[11px]"
                       onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "down"))}
                       disabled={!selectedLayerOrder.canMoveDown}
                       title="뒤로"
@@ -6139,7 +8089,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-7 px-2 text-[11px]"
+                      className="h-7 shrink-0 px-2 text-[11px]"
                       onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "up"))}
                       disabled={!selectedLayerOrder.canMoveUp}
                       title="앞으로"
@@ -6150,7 +8100,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-7 px-2 text-[11px]"
+                      className="h-7 shrink-0 px-2 text-[11px]"
                       onClick={() => updateSelectedPage((page) => setLayerOrder(page, selectedLayer.id, "front"))}
                       disabled={!selectedLayerOrder.canMoveFront}
                       title="맨 앞으로"
@@ -6171,11 +8121,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           )
                         }
                         rows={2}
-                        className="min-h-[58px] w-full resize border-white/20 bg-black/30 text-xs text-white placeholder:text-zinc-300"
+                        className="min-h-[40px] w-full resize border-white/20 bg-black/30 text-xs text-white placeholder:text-zinc-300 sm:min-h-[50px]"
                         placeholder={selectedLayer.textMode === "plain" ? "일반 텍스트 입력" : "변수 텍스트 입력 (예: {{subject}})"}
                       />
-                      <div className="flex items-center gap-2">
-                        <Label className="text-xs text-zinc-200">텍스트 타입</Label>
+                      <div className="grid gap-1.5 sm:grid-cols-[minmax(150px,220px)_minmax(180px,1fr)]">
                         <select
                           value={selectedLayer.textMode}
                           onChange={(event) =>
@@ -6192,7 +8141,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                 : layer
                             )
                           }
-                          className="h-8 min-w-[150px] rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                          className="h-8 min-w-0 rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                          title="텍스트 오브젝트 타입"
                         >
                           <option value="variable">변수 텍스트 오브젝트</option>
                           <option value="plain">일반 텍스트 오브젝트</option>
@@ -6213,27 +8163,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                 : layer
                             )
                           }
-                          className="h-8 min-w-[180px] border-white/20 bg-black/30 text-xs text-white"
+                          className="h-8 min-w-0 border-white/20 bg-black/30 text-xs text-white"
                           placeholder="오브젝트 변수명 (예: newsBody)"
                           title="텍스트 오브젝트 변수명: 중복 시 자동으로 _2, _3이 붙습니다."
                         />
-                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={applyRubyToSelectedText}>
-                          루비
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-8"
-                          onClick={() => void applyAutoRuby()}
-                          disabled={furiganaLoading}
-                        >
-                          {furiganaLoading ? "자동 루비 생성 중..." : "자동 루비"}
-                        </Button>
                       </div>
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="app-table-scrollbar flex items-center gap-1.5 overflow-x-auto rounded-md border border-white/10 bg-white/[0.03] p-1 sm:flex-wrap sm:gap-1.5 sm:overflow-visible">
                       <div
-                        className="relative min-w-[180px] flex-[1_1_220px]"
+                        className="relative min-w-[132px] flex-[0_0_150px] sm:min-w-[180px] sm:flex-[1_1_200px]"
                         data-no-toolbar-drag="true"
                       >
                         <Button
@@ -6266,7 +8203,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             : "outline"
                         }
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 w-8 shrink-0 px-0"
                         onClick={() => toggleFavoriteFont(selectedLayer.fontFamily)}
                         title="폰트 즐겨찾기"
                       >
@@ -6276,7 +8213,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2 text-xs"
                         onClick={() => void loadLocalFonts()}
                         disabled={localFontLoading}
                         title="내 PC 설치 폰트 불러오기"
@@ -6287,7 +8224,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2 text-xs"
                         onClick={() => customFontInputRef.current?.click()}
                         disabled={customFontUploading}
                         title="커스텀 폰트 파일 업로드(복수 선택 가능)"
@@ -6315,7 +8252,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               : layer
                           )
                         }
-                        className="h-8 min-w-[78px] rounded-md border border-white/20 bg-black/30 px-2 text-xs text-white"
+                        className="h-8 min-w-[76px] shrink-0 rounded-md border border-white/20 bg-black/30 px-2 text-xs text-white"
                         title="폰트 크기(2단위)"
                       >
                         {buildTextFontSizeOptions(selectedLayer.fontSize).map((size) => (
@@ -6340,14 +8277,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               : layer
                           )
                         }
-                        className="h-8 w-20 border-white/20 bg-black/30 text-xs text-white"
+                        className="h-8 w-16 shrink-0 border-white/20 bg-black/30 text-xs text-white sm:w-20"
                         title="폰트 크기 직접 입력"
                       />
                       <Button
                         type="button"
                         variant={selectedLayer.bold ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, bold: !layer.bold } : layer
@@ -6360,7 +8297,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant={selectedLayer.italic ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, italic: !layer.italic } : layer
@@ -6373,7 +8310,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant={selectedLayer.strikeThrough ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, strikeThrough: !layer.strikeThrough } : layer
@@ -6386,7 +8323,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant={selectedLayer.underline ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, underline: !layer.underline } : layer
@@ -6399,7 +8336,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant={selectedLayer.textAlign === "left" ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, textAlign: "left" } : layer
@@ -6413,7 +8350,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant={selectedLayer.textAlign === "center" ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, textAlign: "center" } : layer
@@ -6427,7 +8364,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant={selectedLayer.textAlign === "right" ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, textAlign: "right" } : layer
@@ -6441,7 +8378,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         type="button"
                         variant={selectedLayer.autoWrap !== false ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text"
@@ -6461,7 +8398,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             layer.type === "text" ? { ...layer, color: event.target.value } : layer
                           )
                         }
-                        className="h-8 w-14 rounded border border-white/20 bg-black/30 p-1"
+                        className="h-8 w-11 shrink-0 rounded border border-white/20 bg-black/30 p-1 sm:w-14"
                         title="텍스트 색상"
                       />
                       <input
@@ -6472,10 +8409,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             layer.type === "text" ? { ...layer, backgroundColor: event.target.value } : layer
                           )
                         }
-                        className="h-8 w-14 rounded border border-white/20 bg-black/30 p-1"
+                        className="h-8 w-11 shrink-0 rounded border border-white/20 bg-black/30 p-1 sm:w-14"
                         title="텍스트 배경색"
                       />
-                      <Label className="text-[11px] text-zinc-200">배경 투명도</Label>
+                      <Label className="shrink-0 text-[11px] text-zinc-200">배경</Label>
                       <Input
                         type="range"
                         min={0}
@@ -6492,7 +8429,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               : layer
                           )
                         }
-                        className="h-8 w-24 flex-none sm:w-28"
+                        className="h-8 w-20 shrink-0 flex-none sm:w-28"
                         title="텍스트 배경 투명도"
                       />
                       <Input
@@ -6511,14 +8448,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               : layer
                           )
                         }
-                        className="h-8 w-16 border-white/20 bg-black/30 text-xs text-white"
+                        className="h-8 w-14 shrink-0 border-white/20 bg-black/30 text-xs text-white sm:w-16"
                         title="텍스트 배경 투명도(숫자)"
                       />
                       <Button
                         type="button"
                         variant={selectedLayer.shadowEnabled ? "default" : "outline"}
                         size="sm"
-                        className="h-8 px-2"
+                        className="h-8 shrink-0 px-2"
                         onClick={() =>
                           updateLayerById(selectedLayer.id, (layer) =>
                             layer.type === "text" ? { ...layer, shadowEnabled: !layer.shadowEnabled } : layer
@@ -6535,51 +8472,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             layer.type === "text" ? { ...layer, shadowColor: event.target.value } : layer
                           )
                         }
-                        className="h-8 w-14 rounded border border-white/20 bg-black/30 p-1"
+                        className="h-8 w-11 shrink-0 rounded border border-white/20 bg-black/30 p-1 sm:w-14"
                         title="그림자 색상"
                         disabled={!selectedLayer.shadowEnabled}
                       />
                       </div>
                       {localFontMessage ? <p className="text-[10px] text-zinc-300">{localFontMessage}</p> : null}
                       {customFontMessage ? <p className="text-[10px] text-zinc-300">{customFontMessage}</p> : null}
-                      {selectedLayerRubyTokens.length > 0 ? (
-                        <div className="space-y-2 rounded-md border border-white/15 bg-black/25 p-2">
-                          <p className="text-[11px] text-zinc-200">
-                            자동 루비 결과 수정 ({selectedLayerRubyTokens.length})
-                          </p>
-                          <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
-                            {selectedLayerRubyTokens.map((token) => (
-                              <div key={`${token.index}-${token.base}`} className="grid grid-cols-[1fr_1fr_auto] gap-1">
-                                <Input
-                                  value={token.base}
-                                  readOnly
-                                  className="h-8 border-white/20 bg-black/20 text-[11px] text-zinc-300"
-                                  title="원문"
-                                />
-                                <Input
-                                  value={token.ruby}
-                                  onChange={(event) => updateSelectedLayerRubyToken(token.index, event.target.value)}
-                                  className="h-8 border-white/20 bg-black/30 text-[11px] text-white"
-                                  title="후리가나"
-                                />
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-8 px-2 text-[11px]"
-                                  onClick={() => removeSelectedLayerRubyToken(token.index)}
-                                  title="루비 해제"
-                                >
-                                  해제
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                      <p className="text-[10px] text-zinc-300">
-                        루비 입력 형식: [漢字|かな] (예: [雨|あめ]). 부분 글자 색상/굵기 개별 편집은 아직 미지원입니다.
-                      </p>
                     </div>
                   ) : selectedLayer.type === "shape" ? (
                     <div className="space-y-2">
@@ -6816,38 +8715,43 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Label className="text-xs text-zinc-200">이미지 맞춤</Label>
-                        <select
-                          value={selectedLayer.fit}
-                          onChange={(event) =>
-                            updateLayerById(selectedLayer.id, (layer) =>
-                              layer.type === "image"
-                                ? { ...layer, fit: event.target.value === "contain" ? "contain" : "cover" }
-                                : layer
-                            )
-                          }
-                          className="h-8 min-w-[120px] rounded-md border border-white/20 bg-black/30 px-2 text-xs"
-                        >
-                          <option value="cover">Cover</option>
-                          <option value="contain">Contain</option>
-                        </select>
-                        <Button
-                          type="button"
-                          variant={selectedLayer.fit === "cover" ? "default" : "outline"}
-                          size="sm"
-                          className="h-8"
-                          onClick={() => setImageBoxFillMode(selectedLayer.id, selectedLayer.fit !== "cover")}
-                        >
-                          {selectedLayer.fit === "cover" ? "박스 꽉 채우기 ON" : "박스 꽉 채우기 OFF"}
-                        </Button>
-                        <label className="inline-flex items-center gap-1 rounded-md border border-white/20 px-2 py-1 text-xs text-zinc-100">
+                      <div className="grid gap-2">
+                        <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] p-2">
+                          <Label className="shrink-0 text-xs text-zinc-200">
+                            {selectedLayer.type === "video" ? "비디오 맞춤" : "이미지 맞춤"}
+                          </Label>
+                          <select
+                            value={selectedLayer.fit}
+                            onChange={(event) =>
+                              updateLayerById(selectedLayer.id, (layer) =>
+                                layer.type === "image" || layer.type === "video"
+                                  ? { ...layer, fit: event.target.value === "contain" ? "contain" : "cover" }
+                                  : layer
+                              )
+                            }
+                            className="h-8 min-w-[112px] rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                          >
+                            <option value="cover">Cover</option>
+                            <option value="contain">Contain</option>
+                          </select>
+                          <Button
+                            type="button"
+                            variant={selectedLayer.fit === "cover" ? "default" : "outline"}
+                            size="sm"
+                            className={`h-8 whitespace-nowrap ${
+                              selectedLayer.fit === "cover" ? "!bg-zinc-100 !text-zinc-950 hover:!bg-white" : ""
+                            }`}
+                            onClick={() => setImageBoxFillMode(selectedLayer.id, selectedLayer.fit !== "cover")}
+                          >
+                            {selectedLayer.fit === "cover" ? "박스 채우기 ON" : "박스 채우기 OFF"}
+                          </Button>
+                          <label className="inline-flex h-8 items-center gap-1 rounded-md border border-white/20 px-2 text-xs text-zinc-100">
                           <input
                             type="checkbox"
                             checked={Boolean(selectedLayer.aiGenerateEnabled)}
                             onChange={(event) =>
                               updateLayerById(selectedLayer.id, (layer) =>
-                              layer.type === "image"
+                              layer.type === "image" || layer.type === "video"
                                   ? {
                                       ...layer,
                                       aiGenerateEnabled: event.target.checked,
@@ -6860,6 +8764,96 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           />
                           AI 생성 사용
                         </label>
+                        </div>
+                        <div className="grid gap-2 rounded-md border border-white/15 bg-black/20 p-2">
+                          <div className="grid grid-cols-[4rem_minmax(0,1fr)_3.25rem] items-center gap-2">
+                            <span className="text-[11px] text-zinc-200">자르기 X</span>
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={String(clamp(Number(selectedLayer.cropX), 0, 100, 50))}
+                              onChange={(event) =>
+                                updateLayerById(selectedLayer.id, (layer) =>
+                                  layer.type === "image" || layer.type === "video"
+                                    ? { ...layer, cropX: clamp(Number(event.target.value), 0, 100, 50) }
+                                    : layer
+                                )
+                              }
+                              className="h-7 min-w-0 accent-emerald-400"
+                              title="이미지 자르기 가로 위치"
+                            />
+                            <Input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={String(Math.round(clamp(Number(selectedLayer.cropX), 0, 100, 50)))}
+                              onChange={(event) =>
+                                updateLayerById(selectedLayer.id, (layer) =>
+                                  layer.type === "image" || layer.type === "video"
+                                    ? { ...layer, cropX: clamp(Number(event.target.value), 0, 100, 50) }
+                                    : layer
+                                )
+                              }
+                              className="h-7 min-w-0 border-white/20 bg-black/30 px-2 text-xs text-white"
+                              title="이미지 자르기 가로 위치(%)"
+                            />
+                          </div>
+                          <div className="grid grid-cols-[4rem_minmax(0,1fr)_3.25rem] items-center gap-2">
+                            <span className="text-[11px] text-zinc-200">자르기 Y</span>
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={String(clamp(Number(selectedLayer.cropY), 0, 100, 50))}
+                              onChange={(event) =>
+                                updateLayerById(selectedLayer.id, (layer) =>
+                                  layer.type === "image" || layer.type === "video"
+                                    ? { ...layer, cropY: clamp(Number(event.target.value), 0, 100, 50) }
+                                    : layer
+                                )
+                              }
+                              className="h-7 min-w-0 accent-emerald-400"
+                              title="이미지 자르기 세로 위치"
+                            />
+                            <Input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={String(Math.round(clamp(Number(selectedLayer.cropY), 0, 100, 50)))}
+                              onChange={(event) =>
+                                updateLayerById(selectedLayer.id, (layer) =>
+                                  layer.type === "image" || layer.type === "video"
+                                    ? { ...layer, cropY: clamp(Number(event.target.value), 0, 100, 50) }
+                                    : layer
+                                )
+                              }
+                              className="h-7 min-w-0 border-white/20 bg-black/30 px-2 text-xs text-white"
+                              title="이미지 자르기 세로 위치(%)"
+                            />
+                          </div>
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() =>
+                                updateLayerById(selectedLayer.id, (layer) =>
+                                  layer.type === "image" || layer.type === "video" ? { ...layer, cropX: 50, cropY: 50 } : layer
+                                )
+                              }
+                              title="이미지 자르기 위치를 가운데로 초기화"
+                            >
+                              중앙
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] p-2">
                         <Button
                           type="button"
                           variant="outline"
@@ -6875,9 +8869,24 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           variant="outline"
                           size="sm"
                           className="h-8"
+                          onClick={() => void downloadSelectedLayerImage(selectedLayer.id)}
+                          disabled={
+                            !selectedLayer.imageUrl ||
+                            selectedLayer.mediaType === "video" ||
+                            inferMediaTypeFromSource(selectedLayer.imageUrl) === "video"
+                          }
+                        >
+                          <Download className="mr-1 h-4 w-4" />
+                          이미지 다운로드
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
                           onClick={() =>
                             updateLayerById(selectedLayer.id, (layer) =>
-                              layer.type === "image" ? { ...layer, imageUrl: "" } : layer
+                              layer.type === "image" || layer.type === "video" ? { ...layer, imageUrl: "" } : layer
                             )
                           }
                         >
@@ -6892,6 +8901,31 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         >
                           화면 꽉 채우기
                         </Button>
+                        <select
+                          value={imageApplyTargetPageId}
+                          onChange={(event) => setImageApplyTargetPageId(event.target.value)}
+                          className="h-8 min-w-[170px] rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                          title="동일 이미지를 적용할 대상 페이지"
+                        >
+                          <option value="__all__">다른 모든 페이지</option>
+                          {editor.pages
+                            .filter((page) => page.id !== selectedPageId)
+                            .map((page, index) => (
+                              <option key={`apply-image-target-${page.id}`} value={page.id}>
+                                {`${index + 1}. ${page.name}`}
+                              </option>
+                            ))}
+                        </select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          onClick={() => applySelectedImageToAllPages(selectedLayer.id, imageApplyTargetPageId)}
+                          disabled={editor.pages.filter((page) => page.id !== selectedPageId).length === 0}
+                        >
+                          선택 대상에 동일 적용
+                        </Button>
                         {isNewsMode ? (
                           <Button
                             type="button"
@@ -6904,6 +8938,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             {aiImageGeneratingLayerId === selectedLayer.id ? "생성 중..." : "뉴스 만들기 이미지 적용"}
                           </Button>
                         ) : null}
+                        </div>
                       </div>
                       {selectedLayer.aiGenerateEnabled ? (
                         <div className="space-y-2 rounded-md border border-white/10 bg-black/20 p-2">
@@ -6941,7 +8976,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                 value={String(selectedLayer.aiPromptVariableKey || "")}
                                 onChange={(event) =>
                                   updateLayerById(selectedLayer.id, (layer) =>
-                                    layer.type === "image"
+                                    layer.type === "image" || layer.type === "video"
                                       ? {
                                           ...layer,
                                           aiPromptVariableKey: sanitizeAiPromptVariableKey(String(event.target.value || ""))
@@ -6958,7 +8993,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               value={String(selectedLayer.aiPrompt || "")}
                               onChange={(event) =>
                                 updateLayerById(selectedLayer.id, (layer) =>
-                                  layer.type === "image" ? { ...layer, aiPrompt: event.target.value } : layer
+                                  layer.type === "image" || layer.type === "video" ? { ...layer, aiPrompt: event.target.value } : layer
                                 )
                               }
                               placeholder="예: 일본 전통 거리의 현실감 있는 사진, 자연광, 고해상도"
@@ -6970,7 +9005,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               value={resolveAiImageModel(selectedLayer.aiModel)}
                               onChange={(event) =>
                                 updateLayerById(selectedLayer.id, (layer) =>
-                                  layer.type === "image" ? { ...layer, aiModel: resolveAiImageModel(event.target.value) } : layer
+                                  layer.type === "image" || layer.type === "video" ? { ...layer, aiModel: resolveAiImageModel(event.target.value) } : layer
                                 )
                               }
                               className="h-8 min-w-[220px] rounded-md border border-white/20 bg-black/30 px-2 text-xs"
@@ -6985,7 +9020,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               value={resolveAiImageOrientation(selectedLayer.aiImageOrientation)}
                               onChange={(event) =>
                                 updateLayerById(selectedLayer.id, (layer) =>
-                                  layer.type === "image"
+                                  layer.type === "image" || layer.type === "video"
                                     ? { ...layer, aiImageOrientation: resolveAiImageOrientation(event.target.value) }
                                     : layer
                                 )
@@ -6999,7 +9034,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                               value={selectedLayer.aiStylePreset || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE}
                               onChange={(event) =>
                                 updateLayerById(selectedLayer.id, (layer) =>
-                                  layer.type === "image"
+                                  layer.type === "image" || layer.type === "video"
                                     ? { ...layer, aiStylePreset: event.target.value || DEFAULT_INSTAGRAM_AI_IMAGE_STYLE }
                                     : layer
                                 )
@@ -7015,7 +9050,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             <Button
                               type="button"
                               size="sm"
-                              className="h-8"
+                              className="h-8 !bg-zinc-100 !text-zinc-950 hover:!bg-white disabled:!bg-zinc-700 disabled:!text-zinc-300"
                               onClick={() => void generateAiLayerImage(selectedLayer.id)}
                               disabled={aiImageGeneratingLayerId === selectedLayer.id}
                             >
@@ -7025,12 +9060,227 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           <p className="text-[10px] text-zinc-300">
                             가로/세로 비율 선택 후 생성하면 해당 화면비를 우선 반영합니다. 카드 배경용은 `화면 꽉 채우기 + Cover`를 권장합니다.
                           </p>
+                          {selectedLayer.type === "video" ? (
+                          <div className="space-y-2 rounded-md border border-white/10 bg-black/20 p-2">
+                            <label className="flex items-center gap-2 text-xs text-zinc-100">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(selectedLayer.aiVideoEnabled)}
+                                onChange={(event) =>
+                                  updateLayerById(selectedLayer.id, (layer) =>
+                                    layer.type === "video"
+                                      ? {
+                                          ...layer,
+                                          aiVideoEnabled: event.target.checked,
+                                          aiVideoProvider: layer.aiVideoProvider === "openai" ? "openai" : "gemini",
+                                          aiVideoPrompt:
+                                            String(layer.aiVideoPrompt || "").trim() ||
+                                            "no music, no camera movement, no subtitles",
+                                          aiVideoDurationSec: Number(layer.aiVideoDurationSec) || 6,
+                                          aiVideoResolution: layer.aiVideoResolution === "1080p" ? "1080p" : "720p"
+                                        }
+                                      : layer
+                                  )
+                                }
+                              />
+                              AI 영상화 사용
+                            </label>
+                            {selectedLayer.aiVideoEnabled ? (
+                              <>
+                                <Textarea
+                                  rows={2}
+                                  value={String(selectedLayer.aiVideoPrompt || "no music, no camera movement, no subtitles")}
+                                  onChange={(event) =>
+                                    updateLayerById(selectedLayer.id, (layer) =>
+                                      layer.type === "video" ? { ...layer, aiVideoPrompt: event.target.value } : layer
+                                    )
+                                  }
+                                  className="min-h-[52px] text-xs"
+                                />
+                                <div className="grid gap-2 sm:grid-cols-3">
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px] text-zinc-300">제공자</Label>
+                                    <select
+                                      value={selectedLayer.aiVideoProvider || "gemini"}
+                                      onChange={(event) =>
+                                        updateLayerById(selectedLayer.id, (layer) =>
+                                          layer.type === "video"
+                                            ? {
+                                                ...layer,
+                                                aiVideoProvider:
+                                                  event.target.value === "openai" ? "openai" : "gemini"
+                                              }
+                                            : layer
+                                        )
+                                      }
+                                      className="h-8 w-full rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                                    >
+                                      <option value="gemini">Gemini · Veo 3.1 Lite</option>
+                                      <option value="openai">OpenAI · Sora 2</option>
+                                    </select>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px] text-zinc-300">길이</Label>
+                                    <select
+                                      value={String(selectedLayer.aiVideoDurationSec || 6)}
+                                      onChange={(event) =>
+                                        updateLayerById(selectedLayer.id, (layer) =>
+                                          layer.type === "video"
+                                            ? { ...layer, aiVideoDurationSec: Number(event.target.value) || 6 }
+                                            : layer
+                                        )
+                                      }
+                                      className="h-8 w-full rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                                    >
+                                      <option value="4">
+                                        {selectedLayer.aiVideoProvider === "openai" ? "4초 ($0.40)" : "4초 ($0.20)"}
+                                      </option>
+                                      <option value="6">
+                                        {selectedLayer.aiVideoProvider === "openai" ? "6초 선택 -> 8초 ($0.80)" : "6초 ($0.30)"}
+                                      </option>
+                                      <option value="8">
+                                        {selectedLayer.aiVideoProvider === "openai" ? "8초 ($0.80)" : "8초 ($0.40)"}
+                                      </option>
+                                    </select>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px] text-zinc-300">해상도</Label>
+                                    <select
+                                      value={selectedLayer.aiVideoResolution || "720p"}
+                                      onChange={(event) =>
+                                        updateLayerById(selectedLayer.id, (layer) =>
+                                          layer.type === "video"
+                                            ? {
+                                                ...layer,
+                                                aiVideoResolution:
+                                                  event.target.value === "1080p" ? "1080p" : "720p"
+                                              }
+                                            : layer
+                                        )
+                                      }
+                                      className="h-8 w-full rounded-md border border-white/20 bg-black/30 px-2 text-xs"
+                                    >
+                                      <option value="720p">720p</option>
+                                      <option value="1080p">1080p</option>
+                                    </select>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px] text-zinc-300">예상 비용</Label>
+                                    <div className="flex h-8 items-center rounded-md border border-white/20 px-2 text-xs">
+                                      {`약 $${estimateAiVideoCostUsd(selectedLayer).toFixed(2)}`}
+                                    </div>
+                                  </div>
+                                </div>
+                                <p className="text-[10px] text-zinc-400">
+                                  Gemini는 Veo 3.1 Lite, OpenAI는 Sora 2로 native audio/lip-sync를 시도합니다. 대사는 위 변수명 값에서 가져옵니다.
+                                </p>
+                                <div className="space-y-1 rounded-md border border-white/10 bg-black/30 p-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Label className="text-[11px] text-zinc-300">최종 프롬프트 미리보기</Label>
+                                    <span className="text-[10px] text-zinc-500">
+                                      {selectedLayer.aiPromptVariableKey
+                                        ? `대사: {{${selectedLayer.aiPromptVariableKey}}}`
+                                        : "대사 변수명 필요"}
+                                    </span>
+                                  </div>
+                                  <p className="app-panel-scrollbar max-h-24 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 text-[11px] leading-relaxed text-zinc-200">
+                                    {buildAiVideoFinalPromptPreview(selectedLayer, sampleData)}
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className="h-8"
+                                    onClick={() => void generateAiLayerVideo(selectedLayer.id)}
+                                    disabled={
+                                      aiVideoGeneratingLayerId === selectedLayer.id ||
+                                      aiImageGeneratingLayerId === selectedLayer.id
+                                    }
+                                  >
+                                    {aiVideoGeneratingLayerId === selectedLayer.id ? "영상 생성 중..." : "AI 영상 생성"}
+                                  </Button>
+                                  <p className="text-[10px] text-zinc-400">
+                                    생성 후 이 레이어가 영상 오브젝트로 바뀌며 캔버스에서 바로 재생됩니다.
+                                  </p>
+                                </div>
+                                {aiVideoGenerationProgress?.layerId === selectedLayer.id ? (
+                                  <div
+                                    className={`space-y-2 rounded-md border p-2 text-xs ${
+                                      aiVideoGenerationProgress.status === "error"
+                                        ? "border-red-500/40 bg-red-950/20 text-red-100"
+                                        : aiVideoGenerationProgress.status === "success"
+                                          ? "border-emerald-500/40 bg-emerald-950/20 text-emerald-100"
+                                          : "border-sky-500/40 bg-sky-950/20 text-sky-100"
+                                    }`}
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <span className="font-medium">
+                                        {aiVideoGenerationProgress.status === "running"
+                                          ? "AI 영상 생성 진행 중"
+                                          : aiVideoGenerationProgress.status === "success"
+                                            ? "AI 영상 생성 완료"
+                                            : "AI 영상 생성 실패"}
+                                      </span>
+                                      <span className="text-[11px] opacity-80">
+                                        {aiVideoGenerationProgress.provider === "openai" ? "OpenAI Sora 2" : "Gemini Veo 3.1 Lite"} ·
+                                        {` 예상 $${aiVideoGenerationProgress.estimatedCostUsd.toFixed(2)}`} ·
+                                        {` 경과 ${formatElapsedSeconds(
+                                          aiVideoGenerationProgress.startedAt,
+                                          Date.now() + aiVideoProgressTick * 0
+                                        )}`}
+                                      </span>
+                                    </div>
+                                    <div className="h-2 overflow-hidden rounded-full bg-black/40">
+                                      <div
+                                        className={`h-full rounded-full transition-all ${
+                                          aiVideoGenerationProgress.status === "error"
+                                            ? "bg-red-400"
+                                            : aiVideoGenerationProgress.status === "success"
+                                              ? "bg-emerald-400"
+                                              : "bg-sky-400"
+                                        }`}
+                                        style={{
+                                          width:
+                                            aiVideoGenerationProgress.status === "running"
+                                              ? `${Math.min(
+                                                  92,
+                                                  10 +
+                                                    Math.floor(
+                                                      (Date.now() +
+                                                        aiVideoProgressTick * 0 -
+                                                        aiVideoGenerationProgress.startedAt) /
+                                                        1000
+                                                    )
+                                                )}%`
+                                              : "100%"
+                                        }}
+                                      />
+                                    </div>
+                                    <p className="whitespace-pre-wrap break-words text-[11px] opacity-90">
+                                      {aiVideoGenerationProgress.message}
+                                    </p>
+                                    {aiVideoGenerationProgress.status === "running" ? (
+                                      <p className="text-[10px] opacity-70">
+                                        요청은 이미 전송되었습니다. 같은 레이어에서 버튼을 반복 클릭하지 마세요.
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : null}
+                          </div>
+                          ) : null}
                         </div>
                       ) : null}
                       <p className="text-[10px] text-zinc-300">PNG/WebP 투명 배경 이미지를 그대로 지원합니다.</p>
                     </div>
                   )}
                 </div>
+                ),
+                isCompactMobileViewport && mobileObjectToolbarHostRef.current
+                  ? mobileObjectToolbarHostRef.current
+                  : document.body
               ) : null}
               <input
                 ref={layerImageInputRef}
@@ -7193,6 +9443,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   );
                 }
 
+                const uploadProgress = layerMediaUploadProgress[layer.id];
                 return (
                   <div
                     key={layer.id}
@@ -7222,6 +9473,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         <video
                           src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                           className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
+                          style={{ objectPosition: `${clamp(Number(layer.cropX), 0, 100, 50)}% ${clamp(Number(layer.cropY), 0, 100, 50)}%` }}
                           autoPlay
                           muted
                           loop
@@ -7233,6 +9485,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                           alt="layer"
                           className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
+                          style={{ objectPosition: `${clamp(Number(layer.cropX), 0, 100, 50)}% ${clamp(Number(layer.cropY), 0, 100, 50)}%` }}
                           draggable={false}
                         />
                       )
@@ -7246,6 +9499,37 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         className="pointer-events-none absolute inset-0"
                         style={{ backgroundColor: withAlpha(layer.overlayColor, layer.overlayOpacity) }}
                       />
+                    ) : null}
+                    {uploadProgress ? (
+                      <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/55 p-3 text-white backdrop-blur-[1px]">
+                        <div className="w-full max-w-[92%] rounded-md border border-white/20 bg-black/65 p-2 shadow-lg">
+                          <div className="mb-1 flex items-center justify-between gap-2 text-[11px]">
+                            <span className="truncate font-semibold">
+                              {uploadProgress.status === "error"
+                                ? "업로드 실패"
+                                : uploadProgress.status === "success"
+                                  ? "업로드 완료"
+                                  : "업로드 중"}
+                            </span>
+                            <span>{Math.round(uploadProgress.percent)}%</span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-white/20">
+                            <div
+                              className={`h-full rounded-full transition-all ${
+                                uploadProgress.status === "error"
+                                  ? "bg-red-400"
+                                  : uploadProgress.status === "success"
+                                    ? "bg-emerald-400"
+                                    : "bg-sky-400"
+                              }`}
+                              style={{ width: `${Math.max(1, Math.min(100, uploadProgress.percent))}%` }}
+                            />
+                          </div>
+                          <p className="app-panel-scrollbar mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-relaxed text-white/80">
+                            {uploadProgress.message}
+                          </p>
+                        </div>
+                      </div>
                     ) : null}
                     {isSelected ? renderResizeHandleButtons(layer.id) : null}
                   </div>
@@ -7264,7 +9548,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             )}
           </div>
 
-          <div className="rounded-xl border bg-card p-3">
+          <div className="hidden">
             <p className="mb-2 text-sm font-semibold">다른 페이지 캔버스 목록</p>
             <div className="space-y-4">
               {editor.pages.filter((page) => page.id !== selectedPageId).length === 0 ? (
@@ -7516,6 +9800,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   <video
                                     src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                                     className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
+                                    style={{ objectPosition: `${clamp(Number(layer.cropX), 0, 100, 50)}% ${clamp(Number(layer.cropY), 0, 100, 50)}%` }}
                                     autoPlay
                                     muted
                                     loop
@@ -7527,6 +9812,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                     src={toInstagramMediaPreviewUrl(layer.imageUrl)}
                                     alt="layer"
                                     className={`h-full w-full ${layer.fit === "contain" ? "object-contain" : "object-cover"}`}
+                                    style={{ objectPosition: `${clamp(Number(layer.cropX), 0, 100, 50)}% ${clamp(Number(layer.cropY), 0, 100, 50)}%` }}
                                     draggable={false}
                                   />
                                 )
@@ -7552,6 +9838,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
               )}
             </div>
           </div>
+          </div>
         </div>
 
         <aside className="space-y-3">
@@ -7569,7 +9856,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             </button>
             {sections.layers ? (
               <div className="mt-3 space-y-2">
-                <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border p-2">
+                <div className="app-panel-scrollbar max-h-56 space-y-1 overflow-y-auto rounded-md border p-2">
                   {[...sortedLayers]
                     .sort((a, b) => b.zIndex - a.zIndex)
                     .map((layer) => (
@@ -7642,12 +9929,23 @@ export function InstagramTemplatesClient(): React.JSX.Element {
               <div className="mt-3 space-y-3">
                 {selectedPage ? (
                   <div className="space-y-2 rounded-md border p-2">
-                    <p className="text-xs font-semibold text-muted-foreground">현재 페이지</p>
+                    <p
+                      className="text-xs font-semibold text-muted-foreground"
+                      title="현재 편집 중인 페이지의 이름, 표시 시간, 배경, 오디오 설정을 관리합니다."
+                    >
+                      현재 페이지
+                    </p>
+                    <Label title="피드/릴스 카드 목록과 업로드 확인 화면에 표시되는 현재 페이지 이름입니다.">
+                      페이지 이름
+                    </Label>
                     <Input
                       value={selectedPage.name}
                       onChange={(event) => updateSelectedPage((page) => ({ ...page, name: event.target.value }))}
                       placeholder="Page name"
                     />
+                    <Label title="이 페이지가 MP4로 렌더링될 때 유지되는 시간입니다. 예: 4는 이 페이지를 4초 동안 보여줍니다.">
+                      페이지 길이(초)
+                    </Label>
                     <Input
                       type="number"
                       min={1}
@@ -7662,11 +9960,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     />
                     <ColorField
                       label="배경 색상"
+                      title="페이지 뒤쪽 기본 배경색입니다. 배경 이미지가 없거나 투명 영역이 있을 때 보입니다."
                       value={selectedPage.backgroundColor}
                       onChange={(value) => updateSelectedPage((page) => ({ ...page, backgroundColor: value }))}
                     />
                     <div className="space-y-1">
-                      <Label>배경 이미지</Label>
+                      <Label title="현재 페이지 전체 배경으로 사용할 이미지를 업로드하거나 제거합니다.">
+                        배경 이미지
+                      </Label>
                       <div className="flex gap-2">
                         <Button type="button" variant="outline" size="sm" onClick={() => pageBackgroundImageInputRef.current?.click()}>
                           <ImagePlus className="h-4 w-4" />
@@ -7697,7 +9998,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           }))
                         }
                       >
-                        <SelectTrigger className="bg-card dark:bg-zinc-900">
+                        <SelectTrigger
+                          className="bg-card dark:bg-zinc-900"
+                          title="Cover는 영역을 꽉 채우고 일부가 잘릴 수 있습니다. Contain은 전체 이미지를 보이게 하며 여백이 생길 수 있습니다."
+                        >
                           <SelectValue placeholder="배경 맞춤" />
                         </SelectTrigger>
                         <SelectContent>
@@ -7707,7 +10011,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       </Select>
                     </div>
                     <div className="space-y-1">
-                      <Label>페이지 오디오</Label>
+                      <Label title="체크된 페이지에만 AI 음성(TTS)을 생성해서 MP4에 합성합니다.">
+                        페이지 오디오
+                      </Label>
                       <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
                         <input
                           type="checkbox"
@@ -7719,12 +10025,102 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             }))
                           }
                         />
-                        오디오 사용 (체크된 페이지만 AI 오디오 합성)
+                        오디오 사용 (파일 첨부 또는 AI 오디오 합성)
                       </label>
+                      <div className="space-y-2 rounded-md border border-border bg-card/40 p-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => pageAudioInputRef.current?.click()}
+                            disabled={pageAudioUploading}
+                          >
+                            <Upload className="h-4 w-4" />
+                            {pageAudioUploading ? "오디오 업로드 중..." : "MP3/오디오 첨부"}
+                          </Button>
+                          {selectedPage.audioUrl ? (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  updateSelectedPage((page) => ({ ...page, audioUrl: "" }));
+                                  setAudioPreviewUrl(undefined);
+                                  setSuccess("첨부된 페이지 오디오를 제거했습니다.");
+                                }}
+                              >
+                                제거
+                              </Button>
+                              <audio
+                                src={toInstagramMediaPreviewUrl(selectedPage.audioUrl)}
+                                controls
+                                className="h-9 min-w-[220px] flex-1"
+                              />
+                            </>
+                          ) : null}
+                        </div>
+                        {selectedPage.audioUrl ? (
+                          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                            <select
+                              value={audioApplyTargetPageId}
+                              onChange={(event) => setAudioApplyTargetPageId(event.target.value)}
+                              className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-xs"
+                              title="현재 페이지에 첨부된 오디오를 적용할 대상 페이지"
+                            >
+                              <option value="__all__">다른 모든 페이지</option>
+                              {editor.pages
+                                .filter((page) => page.id !== selectedPageId)
+                                .map((page, index) => (
+                                  <option key={`apply-audio-target-${page.id}`} value={page.id}>
+                                    {`${index + 1}. ${page.name}`}
+                                  </option>
+                                ))}
+                            </select>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-9 whitespace-nowrap"
+                              onClick={() => applySelectedPageAudioToPages(audioApplyTargetPageId)}
+                              disabled={editor.pages.filter((page) => page.id !== selectedPageId).length === 0}
+                            >
+                              다른 페이지에 적용
+                            </Button>
+                          </div>
+                        ) : null}
+                        <input
+                          ref={pageAudioInputRef}
+                          type="file"
+                          accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.oga,.flac"
+                          className="hidden"
+                          onChange={(event) => void onPageAudioUpload(event)}
+                        />
+                        {typeof pageAudioUploadProgress === "number" ? (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                              <span>{pageAudioUploading ? "오디오 업로드" : "업로드 완료"}</span>
+                              <span>{pageAudioUploadProgress}%</span>
+                            </div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-emerald-400 transition-all"
+                                style={{ width: `${pageAudioUploadProgress}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                        <p className="text-[11px] text-muted-foreground">
+                          파일을 첨부하면 AI TTS 대신 첨부한 오디오가 우선 사용됩니다.
+                        </p>
+                      </div>
                       {selectedPage.audioEnabled ? (
                         <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                           <div className="space-y-1">
-                            <Label>TTS 제공자</Label>
+                            <Label title="이 페이지의 음성을 생성할 AI TTS 제공자입니다. 설정 따름은 설정 화면의 기본 TTS 제공자를 사용합니다.">
+                              TTS 제공자
+                            </Label>
                             <Select
                               value={
                                 selectedPage.audioProvider === "openai" || selectedPage.audioProvider === "gemini"
@@ -7749,6 +10145,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   };
                                 })
                               }
+                              disabled={Boolean(selectedPage.audioUrl)}
                             >
                               <SelectTrigger className="bg-card dark:bg-zinc-900">
                                 <SelectValue placeholder="TTS 제공자 선택" />
@@ -7761,7 +10158,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             </Select>
                           </div>
                           <div className="space-y-1">
-                            <Label>AI 목소리</Label>
+                            <Label title="AI 음성 합성에 사용할 목소리입니다. 선택한 TTS 제공자에 따라 옵션이 달라집니다.">
+                              AI 목소리
+                            </Label>
                             <Select
                               value={
                                 selectedPageVoiceOptions.some(
@@ -7777,6 +10176,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   audioVoice: value
                                 }))
                               }
+                              disabled={Boolean(selectedPage.audioUrl)}
                             >
                               <SelectTrigger className="bg-card dark:bg-zinc-900">
                                 <SelectValue placeholder="목소리 선택" />
@@ -7791,7 +10191,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             </Select>
                           </div>
                           <div className="space-y-1">
-                            <Label>배속</Label>
+                            <Label title="AI 음성 재생 속도입니다. 1.0x가 기본 속도이고, 낮으면 느리게 높으면 빠르게 읽습니다.">
+                              배속
+                            </Label>
                             <Select
                               value={String(clamp(Number(selectedPage.audioSpeed), 0.5, 2, 1))}
                               onValueChange={(value) =>
@@ -7800,6 +10202,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   audioSpeed: clamp(Number(value), 0.5, 2, 1)
                                 }))
                               }
+                              disabled={Boolean(selectedPage.audioUrl)}
                             >
                               <SelectTrigger className="bg-card dark:bg-zinc-900">
                                 <SelectValue placeholder="배속 선택" />
@@ -7823,9 +10226,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             audioPrompt: event.target.value
                           }))
                         }
-                        disabled={!selectedPage.audioEnabled}
+                        disabled={!selectedPage.audioEnabled || Boolean(selectedPage.audioUrl)}
                         rows={3}
-                        placeholder="오디오 사용 시 이 텍스트를 AI 음성(TTS)으로 생성해 MP4에 합성합니다."
+                        title="AI 음성으로 읽을 문장입니다. {{example_1_title}} 같은 변수는 선택된 row 값으로 치환됩니다."
+                        placeholder={
+                          selectedPage.audioUrl
+                            ? "첨부한 오디오 파일이 우선 사용됩니다. AI TTS 스크립트는 비워도 됩니다."
+                            : "오디오 사용 시 이 텍스트를 AI 음성(TTS)으로 생성해 MP4에 합성합니다."
+                        }
                       />
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
@@ -8212,7 +10620,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                             <p className="text-xs font-medium leading-relaxed">
                               {selectedNewsItem.summaryKo || selectedNewsItem.detailKo || selectedNewsItem.summaryOriginal || selectedNewsItem.title}
                             </p>
-                            <pre className="max-h-32 overflow-auto rounded bg-zinc-950 p-2 text-[11px] leading-relaxed text-zinc-100">
+                            <pre className="app-panel-scrollbar max-h-32 overflow-auto rounded bg-zinc-950 p-2 text-[11px] leading-relaxed text-zinc-100">
                               <code>{selectedNewsItem.imagePrompt || NEWS_IMAGE_PROMPT_FALLBACK}</code>
                             </pre>
                           </div>
@@ -8228,7 +10636,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                     {newsError ? <p className="text-xs text-destructive">{newsError}</p> : null}
                   </div>
                 ) : null}
-                <div className="flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-md border p-2">
+                <div className="app-panel-scrollbar flex max-h-32 flex-wrap gap-1 overflow-y-auto rounded-md border p-2">
                   {filteredBindingFields.map((field) => (
                     <Button key={field} type="button" size="sm" variant="outline" onClick={() => insertBindingToken(field)}>
                       {field}
@@ -8263,105 +10671,6 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             ) : null}
           </div>
 
-          <div className="rounded-xl border bg-card p-3">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between text-sm font-semibold"
-              onClick={() => setSections((prev) => ({ ...prev, output: !prev.output }))}
-            >
-              <span className="inline-flex items-center gap-1">
-                <FileImage className="h-4 w-4" />
-                Output (Final PNG / MP4)
-              </span>
-              <span>{sections.output ? "접기" : "펼치기"}</span>
-            </button>
-            {sections.output ? (
-              <div className="mt-3 space-y-2">
-                <Button type="button" onClick={() => void renderOutputPreview()} disabled={renderingOutput}>
-                  {renderingOutput ? "렌더링 중..." : "현재 페이지 PNG 렌더"}
-                </Button>
-                <Button type="button" variant="outline" onClick={downloadOutputPreview} disabled={!outputPreviewUrl}>
-                  <Download className="h-4 w-4" />
-                  PNG 다운로드
-                </Button>
-                <Button type="button" onClick={() => void renderOutputVideo()} disabled={renderingOutputVideo}>
-                  {renderingOutputVideo ? "렌더링 중..." : "현재 페이지 MP4 렌더"}
-                </Button>
-                <Button type="button" variant="outline" onClick={downloadOutputVideo} disabled={!outputVideoUrl}>
-                  <Download className="h-4 w-4" />
-                  MP4 다운로드
-                </Button>
-                {outputPreviewUrl ? (
-                  <div className="rounded-md border p-2">
-                    <img src={outputPreviewUrl} alt="output preview" className="mx-auto w-full rounded border" />
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">{`이 렌더 이미지는 현재 캔버스 레이어를 그대로 ${canvasWidth}x${canvasHeight}로 출력한 결과입니다.`}</p>
-                )}
-                {outputVideoUrl ? (
-                  <div className="space-y-2 rounded-md border p-2">
-                    <video src={outputVideoUrl} controls className="w-full rounded border bg-black" />
-                    <a
-                      href={outputVideoUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-emerald-400 underline"
-                    >
-                      MP4 결과 새 창에서 열기
-                    </a>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="rounded-xl border bg-card p-3">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between text-sm font-semibold"
-              onClick={() => setSections((prev) => ({ ...prev, json: !prev.json }))}
-            >
-              <span className="inline-flex items-center gap-1">
-                <FileJson className="h-4 w-4" />
-                Template JSON
-              </span>
-              <span>{sections.json ? "접기" : "펼치기"}</span>
-            </button>
-            {sections.json ? (
-              <div className="mt-3 space-y-2">
-                <Textarea
-                  rows={8}
-                  value={importJson}
-                  onChange={(event) => setImportJson(event.target.value)}
-                  placeholder='{"templateName":"example","pages":[...]}'
-                />
-                <input
-                  ref={jsonFileInputRef}
-                  type="file"
-                  accept=".json,application/json"
-                  className="hidden"
-                  onChange={onTemplateJsonFileChange}
-                />
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" onClick={loadCurrentTemplateJsonToTextarea}>
-                    현재 JSON 불러오기
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => void copyCurrentTemplateJson()}>
-                    JSON 복사
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => jsonFileInputRef.current?.click()}>
-                    JSON 파일 선택
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => void importTemplateFromJsonText()} disabled={busy}>
-                    JSON 텍스트로 추가
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  객체 1개, 배열, 또는 {"{ templates: [...] }"} 형태를 지원합니다.
-                </p>
-              </div>
-            ) : null}
-          </div>
         </aside>
       </div>
 
@@ -8383,7 +10692,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                 placeholder="폰트 검색"
                 className="mb-2 h-8 border-white/20 bg-black/40 text-xs text-white"
               />
-              <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+              <div className="app-panel-scrollbar max-h-64 space-y-2 overflow-y-auto pr-1">
                 {filteredFavoriteFonts.length > 0 ? (
                   <div className="space-y-1">
                     <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-300">Favorites</p>

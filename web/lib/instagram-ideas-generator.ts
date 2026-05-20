@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
 import { resolveApiKeys, resolveModelForTask, resolveProviderForTask } from "@/lib/ai-provider";
+import { INSTAGRAM_IDEA_SHEET_HEADERS } from "@/lib/instagram-ideas-prompt";
 import { IdeaLanguage } from "@/lib/types";
 
 type Provider = "openai" | "gemini";
@@ -42,40 +43,25 @@ function parseRows(raw: string): Record<string, string>[] {
     .filter((item): item is Record<string, string> => Boolean(item));
 }
 
+function normalizeHeaderKey(value: string): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
 function headersFromRows(rows: Record<string, string>[]): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
-  const preferred = [
-    "id",
-    "status",
-    "type",
-    "jlpt",
-    "Subject",
-    "kr_intonation",
-    "romaji_intonation",
-    "kr_mean",
-    "example_1_title",
-    "example_1_hira",
-    "example_1_romaji",
-    "example_1_mean",
-    "example_1_kanji",
-    "example_2_title",
-    "example_2_hira",
-    "example_2_romaji",
-    "example_2_mean",
-    "example_2_kanji",
-    "Caption"
-  ];
+  const preferred = [...INSTAGRAM_IDEA_SHEET_HEADERS];
 
   preferred.forEach((key) => {
-    if (rows.some((row) => key in row)) {
-      seen.add(key.toLowerCase());
-      output.push(key);
-    }
+    seen.add(normalizeHeaderKey(key));
+    output.push(key);
   });
   rows.forEach((row) => {
     Object.keys(row).forEach((key) => {
-      const normalized = key.toLowerCase();
+      const normalized = normalizeHeaderKey(key);
       if (seen.has(normalized)) return;
       seen.add(normalized);
       output.push(key);

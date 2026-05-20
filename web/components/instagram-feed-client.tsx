@@ -28,18 +28,27 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { renderInstagramPageToPngDataUrl } from "@/lib/instagram-page-renderer";
+import { renderInstagramPageToPngDataUrl, renderInstagramPageToVideoBlob } from "@/lib/instagram-page-renderer";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
 import {
   INSTAGRAM_FEED_DRAFT_KEY,
   INSTAGRAM_FEED_MAX_ROWS_KEY,
+  INSTAGRAM_FEED_PAGE_ORDER_KEY,
+  INSTAGRAM_FEED_SELECTED_ITEM_KEY,
   INSTAGRAM_FEED_STORAGE_KEY,
   INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY,
   type InstagramFeedDraft,
   type InstagramTemplateEditDraft
 } from "@/lib/instagram-feed-storage";
 import type { AppSettings } from "@/lib/types";
-import type { InstagramFeedPage, InstagramGeneratedFeedItem, InstagramImageElement, InstagramTemplate } from "@/lib/instagram-types";
+import type {
+  InstagramFeedPage,
+  InstagramGeneratedFeedItem,
+  InstagramImageElement,
+  InstagramPageElement,
+  InstagramTemplate,
+  InstagramVideoElement
+} from "@/lib/instagram-types";
 
 type MetaHealthResponse = {
   ok?: boolean;
@@ -87,6 +96,8 @@ type SheetRowsResponse = {
   error?: string;
 };
 
+type FeedSheetRow = NonNullable<SheetRowsResponse["rows"]>[number];
+
 type SheetTableResponse = {
   sheetName: string;
   headers: string[];
@@ -101,6 +112,17 @@ type GenerateImageResponse = {
   error?: string;
 };
 
+type GenerateImageVideoResponse = {
+  videoUrl?: string;
+  provider?: "gemini" | "openai";
+  model?: string;
+  durationSec?: number;
+  resolution?: "720p" | "1080p";
+  estimatedCostUsd?: number;
+  usedPrompt?: string;
+  error?: string;
+};
+
 function resolveAiImageOrientation(value: string | undefined): "vertical" | "horizontal" {
   return value === "horizontal" ? "horizontal" : "vertical";
 }
@@ -111,6 +133,31 @@ type RenderPageVideoResponse = {
   error?: string;
 };
 
+type MuxPageVideoResponse = {
+  outputUrl?: string;
+  error?: string;
+};
+
+type ComposePageVideoResponse = {
+  outputUrl?: string;
+  error?: string;
+};
+
+type TemplateMediaUploadUrlResponse = {
+  ok?: boolean;
+  uploadMethod?: "put" | "post";
+  uploadUrl?: string;
+  postUrl?: string;
+  fields?: Record<string, string>;
+  publicUrl?: string;
+  error?: string;
+};
+
+const INSTAGRAM_FEED_HASHTAG_TEMPLATE_KEY = "instagram-feed-caption-hashtag-template";
+const DEFAULT_INSTAGRAM_FEED_HASHTAG_TEMPLATE = `#일본어문법 #JLPTN{num} #일본어공부 #일본어회화 #실전일본어 #쑨에듀
+#日本語 #日本語学習 #日本語会話 #旅行日本語 #JLPT #毎日日本語
+#애니메이션 #일본 #일본애니메이션 #アニメーション #日本 #日本アニメ`;
+
 type RenderedFeedAsset = {
   pageId: string;
   pageName: string;
@@ -118,6 +165,15 @@ type RenderedFeedAsset = {
   mediaKind: "image" | "video";
   mediaUrl: string;
   audioUrl?: string;
+  blob?: Blob;
+  mimeType?: string;
+};
+
+type FeedLogEntry = {
+  id: string;
+  at: string;
+  level: "info" | "warn" | "error";
+  message: string;
 };
 
 const INSTAGRAM_MEDIA_PROXY_PATH = "/api/instagram/media-proxy";
@@ -153,14 +209,20 @@ function pagePrimaryMediaUrl(page: InstagramGeneratedFeedItem["pages"][number]):
   if (isRenderableMediaUrl(bg)) {
     return bg;
   }
-  const heroImageLayer = selectPrimaryEditableImageElement(page);
-  if (heroImageLayer && heroImageLayer.type === "image" && isRenderableMediaUrl(heroImageLayer.imageUrl)) {
-    return String(heroImageLayer.imageUrl || "");
+  const heroMediaLayer = selectPrimaryEditableImageElement(page);
+  if (
+    heroMediaLayer &&
+    (heroMediaLayer.type === "image" || heroMediaLayer.type === "video") &&
+    isRenderableMediaUrl(heroMediaLayer.imageUrl)
+  ) {
+    return String(heroMediaLayer.imageUrl || "");
   }
   const anyImageLayerWithUrl = page.elements.find(
-    (element) => element.type === "image" && isRenderableMediaUrl(String(element.imageUrl || ""))
+    (element) =>
+      (element.type === "image" || element.type === "video") &&
+      isRenderableMediaUrl(String(element.imageUrl || ""))
   );
-  if (anyImageLayerWithUrl && anyImageLayerWithUrl.type === "image") {
+  if (anyImageLayerWithUrl && (anyImageLayerWithUrl.type === "image" || anyImageLayerWithUrl.type === "video")) {
     return String(anyImageLayerWithUrl.imageUrl || "");
   }
   return "";
@@ -212,6 +274,30 @@ function getColumnValue(row: Record<string, string>, column: string): string {
     (key) => key.trim().toLowerCase().replace(/[\s_-]+/g, "") === target
   );
   return foundKey ? String(row[foundKey] || "").trim() : "";
+}
+
+function getSheetTableRowId(row: Record<string, string>): string {
+  return getColumnValue(row, "id") || getColumnValue(row, "ID");
+}
+
+function sheetTableRowToFeedRow(row: Record<string, string>): FeedSheetRow {
+  const id = getSheetTableRowId(row);
+  const keyword = getColumnValue(row, "keyword") || getColumnValue(row, "type") || getColumnValue(row, "jlpt");
+  const subject =
+    getColumnValue(row, "subject") ||
+    getColumnValue(row, "Subject") ||
+    getColumnValue(row, "example_1_title") ||
+    getColumnValue(row, "Caption") ||
+    id;
+  return {
+    id,
+    status: getColumnValue(row, "status") || getColumnValue(row, "Status"),
+    keyword,
+    subject,
+    description: getColumnValue(row, "description") || getColumnValue(row, "Caption"),
+    narration: getColumnValue(row, "narration"),
+    raw: row
+  };
 }
 
 function clamp(value: number, min: number, max: number, fallback: number): number {
@@ -288,6 +374,297 @@ function sanitizeDownloadName(value: string): string {
   return normalized || "file";
 }
 
+function getMediaDownloadExtension(contentType: string | null, source: string, fallback: string): string {
+  const normalizedType = String(contentType || "").toLowerCase();
+  if (normalizedType.includes("png")) return "png";
+  if (normalizedType.includes("jpeg") || normalizedType.includes("jpg")) return "jpg";
+  if (normalizedType.includes("webp")) return "webp";
+  if (normalizedType.includes("gif")) return "gif";
+  if (normalizedType.includes("mp4")) return "mp4";
+  const match = String(source || "")
+    .split("?")[0]
+    .split("#")[0]
+    .match(/\.([a-z0-9]{2,5})$/i);
+  return match ? match[1].toLowerCase() : fallback;
+}
+
+function downloadBlobFile(blob: Blob, fileName: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = sanitizeDownloadName(fileName);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(objectUrl);
+}
+
+function downloadRemoteFile(source: string, fileName: string): void {
+  const link = document.createElement("a");
+  link.href = String(source || "").trim();
+  link.download = sanitizeDownloadName(fileName);
+  link.rel = "noopener noreferrer";
+  link.target = "_blank";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) {
+    crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function writeUint16LE(target: number[], value: number): void {
+  target.push(value & 0xff, (value >>> 8) & 0xff);
+}
+
+function writeUint32LE(target: number[], value: number): void {
+  target.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+}
+
+function toDosDateTime(date: Date): { date: number; time: number } {
+  const year = Math.max(1980, date.getFullYear());
+  return {
+    date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2)
+  };
+}
+
+async function createStoredZipBlob(files: Array<{ name: string; blob: Blob }>): Promise<Blob> {
+  const encoder = new TextEncoder();
+  const fileParts: BlobPart[] = [];
+  const centralParts: BlobPart[] = [];
+  let offset = 0;
+  const now = toDosDateTime(new Date());
+
+  for (const file of files) {
+    const safeName = sanitizeDownloadName(file.name);
+    const nameBytes = encoder.encode(safeName);
+    const data = new Uint8Array(await file.blob.arrayBuffer());
+    const checksum = crc32(data);
+    const localHeader: number[] = [];
+    writeUint32LE(localHeader, 0x04034b50);
+    writeUint16LE(localHeader, 20);
+    writeUint16LE(localHeader, 0);
+    writeUint16LE(localHeader, 0);
+    writeUint16LE(localHeader, now.time);
+    writeUint16LE(localHeader, now.date);
+    writeUint32LE(localHeader, checksum);
+    writeUint32LE(localHeader, data.length);
+    writeUint32LE(localHeader, data.length);
+    writeUint16LE(localHeader, nameBytes.length);
+    writeUint16LE(localHeader, 0);
+    fileParts.push(new Uint8Array(localHeader), nameBytes, data);
+
+    const centralHeader: number[] = [];
+    writeUint32LE(centralHeader, 0x02014b50);
+    writeUint16LE(centralHeader, 20);
+    writeUint16LE(centralHeader, 20);
+    writeUint16LE(centralHeader, 0);
+    writeUint16LE(centralHeader, 0);
+    writeUint16LE(centralHeader, now.time);
+    writeUint16LE(centralHeader, now.date);
+    writeUint32LE(centralHeader, checksum);
+    writeUint32LE(centralHeader, data.length);
+    writeUint32LE(centralHeader, data.length);
+    writeUint16LE(centralHeader, nameBytes.length);
+    writeUint16LE(centralHeader, 0);
+    writeUint16LE(centralHeader, 0);
+    writeUint16LE(centralHeader, 0);
+    writeUint16LE(centralHeader, 0);
+    writeUint32LE(centralHeader, 0);
+    writeUint32LE(centralHeader, offset);
+    centralParts.push(new Uint8Array(centralHeader), nameBytes);
+
+    offset += localHeader.length + nameBytes.length + data.length;
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => {
+    if (part instanceof Uint8Array) return sum + part.length;
+    if (typeof part === "string") return sum + new TextEncoder().encode(part).length;
+    return sum + (part as Blob).size;
+  }, 0);
+  const endHeader: number[] = [];
+  writeUint32LE(endHeader, 0x06054b50);
+  writeUint16LE(endHeader, 0);
+  writeUint16LE(endHeader, 0);
+  writeUint16LE(endHeader, files.length);
+  writeUint16LE(endHeader, files.length);
+  writeUint32LE(endHeader, centralSize);
+  writeUint32LE(endHeader, offset);
+  writeUint16LE(endHeader, 0);
+
+  return new Blob([...fileParts, ...centralParts, new Uint8Array(endHeader)], {
+    type: "application/zip"
+  });
+}
+
+async function downloadMediaFile(source: string, fileName: string, fallbackExtension = "png"): Promise<void> {
+  const raw = String(source || "").trim();
+  if (!raw) {
+    throw new Error("다운로드할 미디어가 없습니다.");
+  }
+  const response = await fetch(toInstagramMediaPreviewUrl(raw), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`미디어 다운로드 요청 실패 (${response.status})`);
+  }
+  const blob = await response.blob();
+  const extension = getMediaDownloadExtension(response.headers.get("content-type") || blob.type, raw, fallbackExtension);
+  const safeName = sanitizeDownloadName(fileName);
+  downloadBlobFile(blob, /\.[a-z0-9]{2,5}$/i.test(safeName) ? safeName : `${safeName}.${extension}`);
+}
+
+async function downloadMediaBlob(source: string, fileNameBase: string, fallbackExtension = "png"): Promise<void> {
+  await downloadMediaFile(source, fileNameBase, fallbackExtension);
+}
+
+function normalizeHashtags(raw: unknown): string[] {
+  const blocked = new Set(["#한겨레"]);
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((tag) => String(tag || "").trim().replace(/^#+/, ""))
+    .filter(Boolean)
+    .map((tag) => `#${tag}`)
+    .filter((tag) => !blocked.has(tag))
+    .slice(0, 20);
+}
+
+function sanitizeCaptionText(raw: string): string {
+  const blocked = new Set(["#한겨레"]);
+  const lines = String(raw || "")
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .split(/\s+/)
+        .filter(Boolean)
+        .filter((token) => {
+          const normalized = token.replace(/^#+/, "");
+          if (!normalized) return true;
+          if (!token.startsWith("#")) return true;
+          return !blocked.has(`#${normalized}`);
+        })
+        .join(" ")
+        .trim()
+    )
+    .filter(Boolean);
+  return lines.join("\n").trim();
+}
+
+function extractJlptNumber(item?: InstagramGeneratedFeedItem): string {
+  if (!item) return "";
+  const sample = item.sampleData || {};
+  const candidates = [
+    sample.jlpt,
+    sample.JLPT,
+    sample.level,
+    item.keyword,
+    item.subject,
+    item.rowId,
+    item.templateName
+  ];
+  for (const candidate of candidates) {
+    const match = String(candidate || "").match(/(?:JLPT\s*)?N\s*([1-5])/i);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return "";
+}
+
+function materializeCaptionHashtagTemplate(template: string, item?: InstagramGeneratedFeedItem): string {
+  const jlptNum = extractJlptNumber(item);
+  const sample = item?.sampleData || {};
+  return sanitizeCaptionText(
+    String(template || "")
+      .replace(/\{num\}/g, jlptNum)
+      .replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, key) => String(sample[String(key).trim()] || ""))
+  );
+}
+
+function removeHashtagOnlyLines(value: string): string {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.split(/\s+/).every((token) => token.startsWith("#")))
+    .join("\n")
+    .trim();
+}
+
+function buildFeedCaptionWithStoredHashtags(args: {
+  baseCaption: string;
+  hashtagTemplate: string;
+  item?: InstagramGeneratedFeedItem;
+}): string {
+  const base = removeHashtagOnlyLines(args.baseCaption);
+  const hashtags = materializeCaptionHashtagTemplate(args.hashtagTemplate, args.item);
+  return sanitizeCaptionText([base, hashtags].filter(Boolean).join("\n"));
+}
+
+function getPayloadValueByField(payload: Record<string, string>, field: string): string {
+  const normalizedField = String(field || "").trim();
+  if (!normalizedField) return "";
+  const exact = payload[normalizedField];
+  if (typeof exact === "string" && exact.trim()) {
+    return exact.trim();
+  }
+  const matchedKey = Object.keys(payload || {}).find((key) => key.toLowerCase() === normalizedField.toLowerCase());
+  return matchedKey ? String(payload[matchedKey] || "").trim() : "";
+}
+
+function buildTemplateCaptionFromPayload(args: {
+  template: InstagramTemplate;
+  payload: Record<string, string>;
+  fallbackSubject: string;
+  hashtags: string[];
+}): string {
+  const captionFields = (args.template.captionSourceFields || [])
+    .map((field) => String(field || "").trim())
+    .filter(Boolean);
+  const baseLines =
+    captionFields.length > 0
+      ? captionFields.map((field) => getPayloadValueByField(args.payload, field)).filter(Boolean)
+      : [
+          getPayloadValueByField(args.payload, "Caption") ||
+            getPayloadValueByField(args.payload, "caption") ||
+            getPayloadValueByField(args.payload, "Subject") ||
+            getPayloadValueByField(args.payload, "subject") ||
+            args.fallbackSubject
+        ].filter(Boolean);
+  const baseCaption = Array.from(new Set(baseLines)).join("\n").trim();
+  const hashtagLine = normalizeHashtags(args.hashtags).join(" ");
+  return sanitizeCaptionText([baseCaption, hashtagLine].filter(Boolean).join("\n"));
+}
+
+function normalizeFeedItemTopic(item: InstagramGeneratedFeedItem): string {
+  const sample = item.sampleData || {};
+  return String(sample.type || sample.jlpt || item.keyword || item.subject || "").trim();
+}
+
+function normalizeFeedItem(item: InstagramGeneratedFeedItem): InstagramGeneratedFeedItem {
+  return {
+    ...item,
+    caption: sanitizeCaptionText(String(item.caption || "")),
+    keyword: normalizeFeedItemTopic(item),
+    hashtags: normalizeHashtags(item.hashtags)
+  };
+}
+
 function guessExtensionFromUrl(url: string, kind: "image" | "video"): string {
   const source = String(url || "").trim().toLowerCase();
   if (source.startsWith("data:image/png")) return "png";
@@ -299,6 +676,147 @@ function guessExtensionFromUrl(url: string, kind: "image" | "video"): string {
   const match = source.split("?")[0].split("#")[0].match(/\.([a-z0-9]{2,5})$/i);
   if (match) return match[1];
   return kind === "video" ? "mp4" : "png";
+}
+
+function guessVideoExtensionFromMime(mimeType: string): string {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized.includes("webm")) return "webm";
+  if (normalized.includes("ogg")) return "ogv";
+  return "mp4";
+}
+
+async function readJsonOrUploadError<T>(response: Response, fallback: string): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    if (!response.ok) {
+      throw new Error(text.trim() || fallback);
+    }
+    throw new Error(fallback);
+  }
+}
+
+function uploadWithPresignedPost(args: {
+  postUrl: string;
+  fields: Record<string, string>;
+  file: File;
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const iframeName = `ig-feed-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const iframe = document.createElement("iframe");
+    const form = document.createElement("form");
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("S3 form 업로드 완료 신호를 제한 시간 내에 받지 못했습니다."));
+    }, 10 * 60 * 1000);
+    let submitted = false;
+
+    function cleanup(): void {
+      window.clearTimeout(timeout);
+      iframe.remove();
+      form.remove();
+    }
+
+    iframe.name = iframeName;
+    iframe.style.display = "none";
+    iframe.onload = () => {
+      if (!submitted) return;
+      try {
+        const text = iframe.contentDocument?.body?.textContent || "";
+        if (text.includes("\"ok\":true") || text.includes('"ok": true')) {
+          cleanup();
+          resolve();
+          return;
+        }
+      } catch {
+        cleanup();
+        reject(new Error("S3 form 업로드 후 완료 redirect를 확인하지 못했습니다."));
+        return;
+      }
+      cleanup();
+      reject(new Error("S3 form 업로드가 완료 응답 없이 종료되었습니다."));
+    };
+
+    form.action = args.postUrl;
+    form.method = "POST";
+    form.enctype = "multipart/form-data";
+    form.target = iframeName;
+    form.style.display = "none";
+
+    Object.entries(args.fields).forEach(([key, value]) => {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = key;
+      input.value = value;
+      form.appendChild(input);
+    });
+
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.name = "file";
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(args.file);
+      fileInput.files = transfer.files;
+    } catch {
+      cleanup();
+      reject(new Error("브라우저가 form 기반 S3 업로드 파일 첨부를 지원하지 않습니다."));
+      return;
+    }
+    form.appendChild(fileInput);
+    document.body.appendChild(iframe);
+    document.body.appendChild(form);
+    submitted = true;
+    form.submit();
+  });
+}
+
+async function uploadRenderedFeedBlob(blob: Blob, fileName: string): Promise<string> {
+  const file = new File([blob], fileName, { type: blob.type || "application/octet-stream" });
+  const metadataResponse = await fetch("/api/instagram/template-media/upload-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileName: file.name,
+      contentType: file.type || "application/octet-stream",
+      contentLength: file.size
+    })
+  });
+  const metadata = await readJsonOrUploadError<TemplateMediaUploadUrlResponse>(
+    metadataResponse,
+    "피드 렌더 미디어 업로드 URL을 생성하지 못했습니다."
+  );
+  if (!metadataResponse.ok || !metadata.publicUrl) {
+    throw new Error(metadata.error || "피드 렌더 미디어 업로드 URL을 생성하지 못했습니다.");
+  }
+
+  if (metadata.uploadMethod === "post" || metadata.postUrl || metadata.fields) {
+    if (!metadata.postUrl || !metadata.fields) {
+      throw new Error("S3 form 업로드 정보가 불완전합니다.");
+    }
+    await uploadWithPresignedPost({
+      postUrl: metadata.postUrl,
+      fields: metadata.fields,
+      file
+    });
+    return metadata.publicUrl;
+  }
+
+  if (!metadata.uploadUrl) {
+    throw new Error(metadata.error || "피드 렌더 미디어 업로드 URL을 생성하지 못했습니다.");
+  }
+  const uploadResponse = await fetch(metadata.uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream"
+    },
+    body: file
+  });
+  if (!uploadResponse.ok) {
+    throw new Error(`피드 렌더 미디어 S3 업로드 실패 (${uploadResponse.status})`);
+  }
+  return metadata.publicUrl;
 }
 
 function normalizeCanvasWidth(value: number): number {
@@ -314,13 +832,198 @@ function normalizeCanvasHeight(value: number): number {
 }
 
 function pageOutputKind(page: InstagramFeedPage): "image" | "video" {
-  // Feed mode currently renders video only when page audio is explicitly enabled.
-  // This keeps output predictable: static card image pages remain image.
+  if (
+    page.elements.some(
+      (element) =>
+        (element.type === "image" || element.type === "video") &&
+        (element.type === "video" || inferMediaKind(String(element.imageUrl || "")) === "video")
+    )
+  ) {
+    return "video";
+  }
   return Boolean(page.audioEnabled) ? "video" : "image";
+}
+
+function pageHasMovingVideoLayer(page: InstagramFeedPage): boolean {
+  if (inferMediaKind(String(page.backgroundImageUrl || "")) === "video") {
+    return true;
+  }
+  return page.elements.some(
+    (element) =>
+      (element.type === "image" || element.type === "video") &&
+      (element.type === "video" || inferMediaKind(String(element.imageUrl || "")) === "video")
+  );
+}
+
+function firstMovingVideoLayerUrl(page: InstagramFeedPage): string {
+  const backgroundUrl = String(page.backgroundImageUrl || "").trim();
+  if (inferMediaKind(backgroundUrl) === "video") {
+    return backgroundUrl;
+  }
+  const videoElement = page.elements.find(
+    (element) =>
+      (element.type === "image" || element.type === "video") &&
+      (element.type === "video" || inferMediaKind(String(element.imageUrl || "")) === "video") &&
+      String(element.imageUrl || "").trim()
+  );
+  return videoElement && (videoElement.type === "image" || videoElement.type === "video")
+    ? String(videoElement.imageUrl || "").trim()
+    : "";
+}
+
+function primaryMovingVideoLayer(page: InstagramFeedPage): InstagramImageElement | InstagramVideoElement | undefined {
+  return page.elements
+    .filter(
+      (element): element is InstagramImageElement | InstagramVideoElement =>
+        (element.type === "image" || element.type === "video") &&
+        (element.type === "video" || inferMediaKind(String(element.imageUrl || "")) === "video") &&
+        String(element.imageUrl || "").trim().length > 0
+    )
+    .sort((a, b) => a.zIndex - b.zIndex)[0];
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [header, payload] = dataUrl.split(",", 2);
+  if (!header || !payload) {
+    throw new Error("PNG 렌더 결과를 Blob으로 변환하지 못했습니다.");
+  }
+  const mimeMatch = header.match(/^data:([^;]+);base64$/);
+  const mimeType = mimeMatch?.[1] || "image/png";
+  const binary = window.atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+function buildCompleteOrderedPages(
+  selectedItem: InstagramGeneratedFeedItem,
+  orderedPages: InstagramFeedPage[]
+): InstagramFeedPage[] {
+  const selectedPageIds = new Set(selectedItem.pages.map((page) => page.id));
+  const result: InstagramFeedPage[] = [];
+  const seen = new Set<string>();
+
+  for (const page of orderedPages) {
+    if (!selectedPageIds.has(page.id) || seen.has(page.id)) {
+      continue;
+    }
+    result.push(page);
+    seen.add(page.id);
+  }
+
+  for (const page of selectedItem.pages) {
+    if (seen.has(page.id)) {
+      continue;
+    }
+    result.push(page);
+    seen.add(page.id);
+  }
+
+  return result;
+}
+
+function assertSafeFinalFeedRender(pages: InstagramFeedPage[]): void {
+  void pages;
 }
 
 function collapseWhitespace(value: string): string {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function sanitizeAiPromptVariableKey(value: string): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const tokenMatch = normalized.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
+  return tokenMatch ? String(tokenMatch[1] || "").trim() : normalized;
+}
+
+function firstTemplateVariableKey(value: string): string {
+  const match = String(value || "").match(/\{\{\s*([^}]+?)\s*\}\}/);
+  return sanitizeAiPromptVariableKey(String(match?.[1] || ""));
+}
+
+function getPayloadValueByKey(payload: Record<string, string>, key: string): string {
+  const normalizedKey = normalizeTemplateKey(sanitizeAiPromptVariableKey(key));
+  if (!normalizedKey) {
+    return "";
+  }
+  const matchedKey = Object.keys(payload).find((candidate) => normalizeTemplateKey(candidate) === normalizedKey);
+  return matchedKey ? String(payload[matchedKey] ?? "") : "";
+}
+
+function inferPageVariableKey(page: InstagramFeedPage, payload: Record<string, string>): string {
+  const pageName = String(page.name || "");
+  const pageIndexMatch = pageName.match(/(?:문제|example|예문)\s*([1-9]\d*)/i);
+  const pageIndex = pageIndexMatch?.[1] || "";
+  const candidates = [
+    firstTemplateVariableKey(String(page.audioPrompt || "")),
+    pageIndex ? `example_${pageIndex}_title` : "",
+    pageIndex ? `example_${pageIndex}_kanji` : "",
+    pageIndex ? `example_${pageIndex}_mean` : "",
+    "example_1_title",
+    "example_2_title"
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (collapseWhitespace(getPayloadValueByKey(payload, candidate))) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function buildFeedPromptFromPayload(args: {
+  page: InstagramFeedPage;
+  payload: Record<string, string>;
+  rowId: string;
+  rowSubject: string;
+  rowKeyword: string;
+  variableValue?: string;
+  stylePreset?: string;
+  orientation?: "vertical" | "horizontal";
+}): string {
+  return buildPromptFallbackFromCurrentItem({
+    page: args.page,
+    item: {
+      id: "",
+      templateId: "",
+      templateName: "",
+      rowId: args.rowId,
+      subject: args.rowSubject,
+      keyword: args.rowKeyword,
+      generatedAt: "",
+      sampleData: args.payload,
+      pages: []
+    },
+    variableValue: args.variableValue,
+    stylePreset: args.stylePreset,
+    orientation: args.orientation
+  });
+}
+
+function resolveFeedTextForPayload(args: {
+  page: InstagramFeedPage;
+  element: InstagramPageElement;
+  payload: Record<string, string>;
+}): string {
+  const element = args.element;
+  if (element.type !== "text") {
+    return "";
+  }
+
+  const rawText = String(element.text || "");
+  const tokenized = materialize(rawText, args.payload);
+  // Feed generation must only replace explicit {{column}} tokens.
+  // Position/content guessing can corrupt fixed labels such as logos or guide text.
+  return tokenized;
+}
+
+function resolveFeedPageAudioPrompt(page: InstagramFeedPage, payload: Record<string, string>): string {
+  const rawPrompt = String(page.audioPrompt || "");
+  // Audio follows the same rule as text: only explicit tokens are replaced.
+  return materialize(rawPrompt, payload);
 }
 
 function normalizeLayerDimensionPercent(value: number | undefined): number {
@@ -336,7 +1039,7 @@ function layerCoverageScore(layer: { width?: number; height?: number }): number 
 }
 
 function selectPrimaryEditableImageElement(page: InstagramFeedPage): InstagramFeedPage["elements"][number] | undefined {
-  const imageElements = page.elements.filter((element) => element.type === "image");
+  const imageElements = page.elements.filter((element) => element.type === "image" || element.type === "video");
   if (imageElements.length === 0) {
     return undefined;
   }
@@ -345,19 +1048,119 @@ function selectPrimaryEditableImageElement(page: InstagramFeedPage): InstagramFe
   return candidate || undefined;
 }
 
+function inferFeedPromptSubject(args: {
+  page: InstagramFeedPage;
+  item?: InstagramGeneratedFeedItem;
+  variableValue?: string;
+}): string {
+  const direct = collapseWhitespace(args.variableValue || "");
+  if (direct) {
+    return direct;
+  }
+
+  const sampleData = args.item?.sampleData || {};
+  const audioPrompt = String(args.page.audioPrompt || "");
+  const materializedAudioPrompt = collapseWhitespace(materialize(audioPrompt, sampleData));
+  if (materializedAudioPrompt && !/\{\{\s*[^}]+?\s*\}\}/.test(materializedAudioPrompt)) {
+    return materializedAudioPrompt;
+  }
+
+  const pageName = String(args.page.name || "");
+  const pageIndexMatch = pageName.match(/(?:문제|example|예문)\s*([1-9]\d*)/i);
+  const pageIndex = pageIndexMatch?.[1] || "";
+  const preferredKeys = [
+    pageIndex ? `example_${pageIndex}_title` : "",
+    pageIndex ? `example_${pageIndex}_kanji` : "",
+    pageIndex ? `example_${pageIndex}_mean` : "",
+    "example_1_title",
+    "example_2_title",
+    "Subject",
+    "subject",
+    "Caption",
+    "caption"
+  ].filter(Boolean);
+
+  for (const key of preferredKeys) {
+    const value = collapseWhitespace(getPayloadValueByKey(sampleData, key));
+    if (value) {
+      return value;
+    }
+  }
+
+  return collapseWhitespace(args.item?.subject || args.item?.keyword || "");
+}
+
+function buildPromptFallbackFromCurrentItem(args: {
+  page: InstagramFeedPage;
+  item?: InstagramGeneratedFeedItem;
+  variableValue?: string;
+  stylePreset?: string;
+  orientation?: "vertical" | "horizontal";
+}): string {
+  const subject = inferFeedPromptSubject({
+    page: args.page,
+    item: args.item,
+    variableValue: args.variableValue
+  });
+  const keyword = collapseWhitespace(args.item?.keyword || args.item?.sampleData?.type || args.item?.sampleData?.jlpt || "");
+  const pageName = collapseWhitespace(args.page.name || "Page");
+  const style = collapseWhitespace(args.stylePreset || "Anime cel-shaded");
+  const framing = args.orientation === "horizontal" ? "16:9 horizontal framing" : "9:16 vertical portrait framing";
+  return collapseWhitespace(
+    `${style} style, present-day Japanese learning scene illustrating "${subject}". ` +
+      `${keyword ? `Context: ${keyword}. ` : ""}` +
+      `Page role: ${pageName}. East Asian Japanese people/context when people appear, natural real-world props and environment, ${framing}. ` +
+      "Strictly avoid holograms, futuristic HUD/UI overlays, transparent projection screens, AR/VR goggles, neon cyberpunk effects, sci-fi control panels, robots/androids, floating digital graphics, and fantasy magic effects. Keep scenes grounded in present-day real-world context with plausible props, attire, and environments."
+  );
+}
+
 function buildDefaultPageImagePrompt(page: InstagramFeedPage, item?: InstagramGeneratedFeedItem): string {
   const primaryImageLayer = selectPrimaryEditableImageElement(page);
-  const promptFromLayer =
-    primaryImageLayer && primaryImageLayer.type === "image" && collapseWhitespace(primaryImageLayer.aiPrompt).length > 0
+  const promptLayer =
+    primaryImageLayer && (primaryImageLayer.type === "image" || primaryImageLayer.type === "video")
       ? primaryImageLayer
-      : page.elements.find((element) => element.type === "image" && collapseWhitespace(element.aiPrompt).length > 0);
-  if (promptFromLayer && promptFromLayer.type === "image") {
+      : page.elements.find((element) => element.type === "image" || element.type === "video");
+  const sampleData = item?.sampleData || {};
+  if (promptLayer && (promptLayer.type === "image" || promptLayer.type === "video") && item) {
+    const variableKey =
+      sanitizeAiPromptVariableKey(String(promptLayer.aiPromptVariableKey || "")) ||
+      firstTemplateVariableKey(String(promptLayer.aiPrompt || "")) ||
+      firstTemplateVariableKey(String(promptLayer.imageUrl || ""));
+    const variableValue = collapseWhitespace(getPayloadValueByKey(sampleData, variableKey));
+    if (variableValue) {
+      return buildPromptFallbackFromCurrentItem({
+        page,
+        item,
+        variableValue,
+        stylePreset: promptLayer.aiStylePreset,
+        orientation: resolveAiImageOrientation(promptLayer.aiImageOrientation)
+      });
+    }
+    const materializedPrompt = collapseWhitespace(materialize(String(promptLayer.aiPrompt || ""), sampleData));
+    if (materializedPrompt && materializedPrompt !== collapseWhitespace(String(promptLayer.aiPrompt || ""))) {
+      return materializedPrompt;
+    }
+    return buildPromptFallbackFromCurrentItem({
+      page,
+      item,
+      stylePreset: promptLayer.aiStylePreset,
+      orientation: resolveAiImageOrientation(promptLayer.aiImageOrientation)
+    });
+  }
+  const promptFromLayer =
+    primaryImageLayer &&
+    (primaryImageLayer.type === "image" || primaryImageLayer.type === "video") &&
+    collapseWhitespace(primaryImageLayer.aiPrompt).length > 0
+      ? primaryImageLayer
+      : page.elements.find(
+          (element) =>
+            (element.type === "image" || element.type === "video") &&
+            collapseWhitespace(element.aiPrompt).length > 0
+        );
+  if (promptFromLayer && (promptFromLayer.type === "image" || promptFromLayer.type === "video")) {
     return collapseWhitespace(promptFromLayer.aiPrompt);
   }
-  const subject = collapseWhitespace(item?.subject || "");
-  const keyword = collapseWhitespace(item?.keyword || "");
-  const pageName = collapseWhitespace(page.name || "Page");
-  return collapseWhitespace(`${subject} ${keyword} ${pageName} 인스타그램 카드뉴스용 사실적 이미지`);
+  return buildPromptFallbackFromCurrentItem({ page, item });
 }
 
 function applyImageToFeedPage(args: {
@@ -372,10 +1175,13 @@ function applyImageToFeedPage(args: {
   }
 
   const primaryImageLayer = selectPrimaryEditableImageElement(args.page);
-  const primaryImageLayerId = primaryImageLayer && primaryImageLayer.type === "image" ? primaryImageLayer.id : undefined;
+  const primaryImageLayerId =
+    primaryImageLayer && (primaryImageLayer.type === "image" || primaryImageLayer.type === "video")
+      ? primaryImageLayer.id
+      : undefined;
   let imageLayerUpdated = false;
   const elements = args.page.elements.map((element) => {
-    if (element.type !== "image" || imageLayerUpdated) {
+    if ((element.type !== "image" && element.type !== "video") || imageLayerUpdated) {
       return element;
     }
     if (!primaryImageLayerId || element.id !== primaryImageLayerId) {
@@ -401,7 +1207,7 @@ function toFeedPreviewPage(page: InstagramFeedPage): InstagramFeedPage {
     ...page,
     backgroundImageUrl: toInstagramMediaPreviewUrl(String(page.backgroundImageUrl || "")),
     elements: page.elements.map((element) =>
-      element.type === "image"
+      element.type === "image" || element.type === "video"
         ? {
             ...element,
             imageUrl: toInstagramMediaPreviewUrl(String(element.imageUrl || ""))
@@ -417,12 +1223,15 @@ function buildSampleDataFromFeedItem(
 ): Record<string, string> {
   const matchedRow = rows?.find((row) => String(row.id) === String(item.rowId));
   const snapshot = item.sampleData || {};
+  const normalizedTopic = String(
+    matchedRow?.raw?.type || matchedRow?.raw?.jlpt || item.keyword || snapshot.keyword || ""
+  ).trim();
   return {
     ...snapshot,
     ...(matchedRow?.raw || {}),
     id: String(matchedRow?.id || item.rowId || ""),
     status: String(matchedRow?.status || "준비"),
-    keyword: String(matchedRow?.keyword || item.keyword || snapshot.keyword || ""),
+    keyword: normalizedTopic,
     subject: String(matchedRow?.subject || item.subject || snapshot.subject || ""),
     description: String(matchedRow?.description || snapshot.description || ""),
     narration: String(matchedRow?.narration || snapshot.narration || "")
@@ -430,11 +1239,13 @@ function buildSampleDataFromFeedItem(
 }
 
 export function InstagramFeedClient(): React.JSX.Element {
+  const RENDER_PIPELINE_VERSION = "2026-05-04-direct-video-layer-compose";
   const router = useRouter();
   const [items, setItems] = useState<InstagramGeneratedFeedItem[]>([]);
   const [templates, setTemplates] = useState<InstagramTemplate[]>([]);
   const [sheetRows, setSheetRows] = useState<SheetRowsResponse["rows"]>([]);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+  const [selectedSheetRowIds, setSelectedSheetRowIds] = useState<string[]>([]);
   const [maxRows, setMaxRows] = useState("3");
   const [loadingContext, setLoadingContext] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -442,6 +1253,7 @@ export function InstagramFeedClient(): React.JSX.Element {
   const [selectedItemId, setSelectedItemId] = useState<string>();
   const [orderedPageIdsByItem, setOrderedPageIdsByItem] = useState<Record<string, string[]>>({});
   const [caption, setCaption] = useState("");
+  const [captionHashtagTemplate, setCaptionHashtagTemplate] = useState(DEFAULT_INSTAGRAM_FEED_HASHTAG_TEMPLATE);
   const [metaHealth, setMetaHealth] = useState<MetaHealthResponse>();
   const [checkingMeta, setCheckingMeta] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -471,6 +1283,9 @@ export function InstagramFeedClient(): React.JSX.Element {
   const [mediaDialogPageId, setMediaDialogPageId] = useState<string>();
   const [mediaDialogUrl, setMediaDialogUrl] = useState("");
   const [mediaDialogPrompt, setMediaDialogPrompt] = useState("");
+  const [mediaDialogApplyMode, setMediaDialogApplyMode] = useState<"current" | "selected" | "all">("current");
+  const [mediaDialogApplyPageIds, setMediaDialogApplyPageIds] = useState<string[]>([]);
+  const [mediaDialogSourcePageId, setMediaDialogSourcePageId] = useState("");
   const [mediaDialogBusy, setMediaDialogBusy] = useState(false);
   const [mediaDialogError, setMediaDialogError] = useState<string>();
   const [mediaDialogPreviewIndex, setMediaDialogPreviewIndex] = useState(0);
@@ -479,6 +1294,44 @@ export function InstagramFeedClient(): React.JSX.Element {
   const [mediaWorkspacePageId, setMediaWorkspacePageId] = useState<string>();
   const [incomingDraft, setIncomingDraft] = useState<InstagramFeedDraft | null>(null);
   const [feedItemsHydrated, setFeedItemsHydrated] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(INSTAGRAM_FEED_HASHTAG_TEMPLATE_KEY);
+      if (saved && saved.trim()) {
+        setCaptionHashtagTemplate(saved);
+      }
+    } catch {
+      // Ignore localStorage access failures.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(INSTAGRAM_FEED_HASHTAG_TEMPLATE_KEY, captionHashtagTemplate);
+    } catch {
+      // Ignore localStorage access failures.
+    }
+  }, [captionHashtagTemplate]);
+  const [feedLogs, setFeedLogs] = useState<FeedLogEntry[]>([]);
+
+  function pushFeedLog(level: FeedLogEntry["level"], message: string): void {
+    const entry: FeedLogEntry = {
+      id: uid(),
+      at: new Date().toISOString(),
+      level,
+      message
+    };
+    setFeedLogs((prev) => [...prev, entry].slice(-120));
+  }
+
+  function formatElapsed(startedAt: number): string {
+    const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+    if (elapsedMs < 1000) {
+      return `${elapsedMs}ms`;
+    }
+    return `${(elapsedMs / 1000).toFixed(1)}s`;
+  }
 
   const sheetShortcutUrl = useMemo(() => {
     const id = spreadsheetId.trim();
@@ -499,10 +1352,22 @@ export function InstagramFeedClient(): React.JSX.Element {
       return;
     }
     try {
-      const parsed = JSON.parse(raw) as InstagramGeneratedFeedItem[];
+      const parsed = (JSON.parse(raw) as InstagramGeneratedFeedItem[]).map(normalizeFeedItem);
       setItems(parsed);
+      const savedSelectedItemId = String(window.localStorage.getItem(INSTAGRAM_FEED_SELECTED_ITEM_KEY) || "").trim();
       if (parsed.length > 0) {
-        setSelectedItemId((prev) => (prev && parsed.some((item) => item.id === prev) ? prev : parsed[0].id));
+        setSelectedItemId((prev) => {
+          if (prev && parsed.some((item) => item.id === prev)) return prev;
+          if (savedSelectedItemId && parsed.some((item) => item.id === savedSelectedItemId)) return savedSelectedItemId;
+          return parsed[0].id;
+        });
+      }
+      const savedOrder = window.localStorage.getItem(INSTAGRAM_FEED_PAGE_ORDER_KEY);
+      if (savedOrder) {
+        const parsedOrder = JSON.parse(savedOrder) as Record<string, string[]>;
+        if (parsedOrder && typeof parsedOrder === "object") {
+          setOrderedPageIdsByItem(parsedOrder);
+        }
       }
     } catch {
       setItems([]);
@@ -510,6 +1375,45 @@ export function InstagramFeedClient(): React.JSX.Element {
       setFeedItemsHydrated(true);
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !feedItemsHydrated) {
+      return;
+    }
+    try {
+      if (items.length > 0) {
+        window.localStorage.setItem(INSTAGRAM_FEED_STORAGE_KEY, JSON.stringify(items.map(normalizeFeedItem)));
+      }
+    } catch {
+      // Ignore persistence quota errors; explicit saveFeedItems still surfaces generation errors.
+    }
+  }, [feedItemsHydrated, items]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !feedItemsHydrated) {
+      return;
+    }
+    try {
+      if (selectedItemId) {
+        window.localStorage.setItem(INSTAGRAM_FEED_SELECTED_ITEM_KEY, selectedItemId);
+      } else {
+        window.localStorage.removeItem(INSTAGRAM_FEED_SELECTED_ITEM_KEY);
+      }
+    } catch {
+      // noop
+    }
+  }, [feedItemsHydrated, selectedItemId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !feedItemsHydrated) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(INSTAGRAM_FEED_PAGE_ORDER_KEY, JSON.stringify(orderedPageIdsByItem));
+    } catch {
+      // noop
+    }
+  }, [feedItemsHydrated, orderedPageIdsByItem]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -540,7 +1444,7 @@ export function InstagramFeedClient(): React.JSX.Element {
     const draftSelectedItemId = String(incomingDraft.selectedItemId || "").trim();
 
     if (draftCaption) {
-      setCaption(draftCaption);
+      setCaption(sanitizeCaptionText(draftCaption));
     }
     if (draftSelectedItemId && items.some((item) => item.id === draftSelectedItemId)) {
       setSelectedItemId(draftSelectedItemId);
@@ -586,12 +1490,18 @@ export function InstagramFeedClient(): React.JSX.Element {
       if (existing && existing.length > 0) return prev;
       return { ...prev, [selected.id]: selected.pages.map((page) => page.id) };
     });
-    setCaption((prev) =>
-      prev.trim()
-        ? prev
-        : `${selected.subject}\n#${selected.keyword}`
-    );
-  }, [items, selectedItemId]);
+    const defaultHashtagSource = captionHashtagTemplate.trim()
+      ? captionHashtagTemplate
+      : normalizeHashtags(selected.hashtags).join(" ");
+    const defaultCaption = selected.caption
+      ? sanitizeCaptionText(selected.caption)
+      : buildFeedCaptionWithStoredHashtags({
+          baseCaption: selected.subject,
+          hashtagTemplate: defaultHashtagSource,
+          item: selected
+        });
+    setCaption(sanitizeCaptionText(defaultCaption));
+  }, [captionHashtagTemplate, items, selectedItemId]);
 
   const selectedItem = useMemo(
     () => items.find((item) => item.id === selectedItemId),
@@ -634,6 +1544,18 @@ export function InstagramFeedClient(): React.JSX.Element {
     });
   }, [mediaDialogUrl]);
   const mediaDialogPreviewUrl = mediaDialogPreviewCandidates[mediaDialogPreviewIndex] || "";
+  const mediaDialogSourcePageOptions = useMemo(
+    () =>
+      orderedPages
+        .filter((page) => page.id !== mediaDialogPageId && isRenderableMediaUrl(pagePrimaryMediaUrl(page)))
+        .map((page, index) => ({
+          id: page.id,
+          label: `${index + 1}. ${page.name}`,
+          mediaUrl: pagePrimaryMediaUrl(page),
+          prompt: buildDefaultPageImagePrompt(page, selectedItem)
+        })),
+    [mediaDialogPageId, orderedPages, selectedItem]
+  );
 
   useEffect(() => {
     if (mediaDialogOpen && mediaDialogPageId && !selectedMediaDialogPage) {
@@ -663,8 +1585,11 @@ export function InstagramFeedClient(): React.JSX.Element {
         const mediaUrl = pagePrimaryMediaUrl(page);
         const kind = pageOutputKind(page);
         const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), selectedSampleData).trim();
-        const requiresAudioPrompt = Boolean(page.audioEnabled) && !resolvedAudioPrompt;
-        const hasUnresolvedAudioToken = Boolean(page.audioEnabled && /\{\{[^}]+\}\}/.test(resolvedAudioPrompt));
+        const hasAttachedAudio = Boolean(String(page.audioUrl || "").trim());
+        const requiresAudioPrompt = Boolean(page.audioEnabled) && !hasAttachedAudio && !resolvedAudioPrompt;
+        const hasUnresolvedAudioToken = Boolean(
+          page.audioEnabled && !hasAttachedAudio && /\{\{[^}]+\}\}/.test(resolvedAudioPrompt)
+        );
         return {
           pageId: page.id,
           index,
@@ -784,6 +1709,14 @@ export function InstagramFeedClient(): React.JSX.Element {
       return statusMatches && keywordMatches;
     });
   }, [sheetTableRows, statusFilter, selectedKeywords]);
+  const filteredSheetRowIds = useMemo(
+    () => filteredSheetRows.map(getSheetTableRowId).filter(Boolean),
+    [filteredSheetRows]
+  );
+  const selectedVisibleSheetRowCount = useMemo(() => {
+    const visible = new Set(filteredSheetRowIds);
+    return selectedSheetRowIds.filter((id) => visible.has(id)).length;
+  }, [filteredSheetRowIds, selectedSheetRowIds]);
 
   useEffect(() => {
     if (selectedKeywords.length === 0) {
@@ -796,9 +1729,22 @@ export function InstagramFeedClient(): React.JSX.Element {
     }
   }, [keywordOptions, selectedKeywords]);
 
+  useEffect(() => {
+    if (selectedSheetRowIds.length === 0) {
+      return;
+    }
+    const availableIds = new Set(sheetTableRows.map(getSheetTableRowId).filter(Boolean));
+    const next = selectedSheetRowIds.filter((id) => availableIds.has(id));
+    if (next.length !== selectedSheetRowIds.length) {
+      setSelectedSheetRowIds(next);
+    }
+  }, [selectedSheetRowIds, sheetTableRows]);
+
   function clearAll(): void {
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(INSTAGRAM_FEED_STORAGE_KEY);
+      window.localStorage.removeItem(INSTAGRAM_FEED_SELECTED_ITEM_KEY);
+      window.localStorage.removeItem(INSTAGRAM_FEED_PAGE_ORDER_KEY);
     }
     setItems([]);
     setSelectedItemId(undefined);
@@ -881,10 +1827,31 @@ export function InstagramFeedClient(): React.JSX.Element {
     );
   }
 
+  function toggleSheetRowSelection(rowId: string): void {
+    const normalized = String(rowId || "").trim();
+    if (!normalized) return;
+    setSelectedSheetRowIds((prev) =>
+      prev.includes(normalized) ? prev.filter((id) => id !== normalized) : [...prev, normalized]
+    );
+  }
+
+  function setVisibleSheetRowSelection(checked: boolean): void {
+    const visibleIds = filteredSheetRowIds;
+    if (visibleIds.length === 0) return;
+    setSelectedSheetRowIds((prev) => {
+      if (!checked) {
+        const visible = new Set(visibleIds);
+        return prev.filter((id) => !visible.has(id));
+      }
+      return [...prev, ...visibleIds.filter((id) => !prev.includes(id))];
+    });
+  }
+
   function saveFeedItems(nextItems: InstagramGeneratedFeedItem[]): void {
-    setItems(nextItems);
+    const normalizedItems = nextItems.map(normalizeFeedItem);
+    setItems(normalizedItems);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(INSTAGRAM_FEED_STORAGE_KEY, JSON.stringify(nextItems));
+      window.localStorage.setItem(INSTAGRAM_FEED_STORAGE_KEY, JSON.stringify(normalizedItems));
     }
   }
 
@@ -901,18 +1868,63 @@ export function InstagramFeedClient(): React.JSX.Element {
     }
 
     setGenerating(true);
+    const runStartedAt = performance.now();
     try {
       const max = Math.max(1, Math.min(10, Number.parseInt(maxRows, 10) || 3));
-      const pickedRows = (sheetRows || []).slice(0, max);
+      const selectedIds = selectedSheetRowIds.map((id) => String(id || "").trim()).filter(Boolean);
+      const sheetRowById = new Map<string, FeedSheetRow>(
+        (sheetRows || []).map((row) => [String(row.id || "").trim(), row])
+      );
+      const tableRowById = new Map<string, Record<string, string>>();
+      sheetTableRows.forEach((row) => {
+        const rowId = getSheetTableRowId(row);
+        if (rowId) {
+          tableRowById.set(rowId, row);
+        }
+      });
+      const pickedRows =
+        selectedIds.length > 0
+          ? selectedIds
+              .map((id) => sheetRowById.get(id) || (tableRowById.get(id) ? sheetTableRowToFeedRow(tableRowById.get(id) as Record<string, string>) : undefined))
+              .filter((row): row is FeedSheetRow => Boolean(row && row.id))
+          : (sheetRows || []).slice(0, max);
+      if (selectedIds.length > 0 && pickedRows.length === 0) {
+        setError("선택한 row를 생성 가능한 소스에서 찾지 못했습니다. 소스 새로고침 후 다시 선택해 주세요.");
+        return;
+      }
       const templateMap = new Map(templates.map((item) => [item.id, item]));
       const generated: InstagramGeneratedFeedItem[] = [];
       const imageGenerationErrors: string[] = [];
+      const selectedTemplates = selectedTemplateIds
+        .map((templateId) => templateMap.get(templateId))
+        .filter(Boolean) as InstagramTemplate[];
+      const estimatedPages = pickedRows.length * selectedTemplates.reduce((sum, template) => sum + template.pages.length, 0);
+      const estimatedAiImageLayers = pickedRows.length * selectedTemplates.reduce(
+        (sum, template) =>
+          sum +
+          template.pages.reduce(
+            (pageSum, page) =>
+              pageSum +
+                page.elements.filter(
+                  (element) => (element.type === "image" || element.type === "video") && element.aiGenerateEnabled
+                ).length,
+            0
+          ),
+        0
+      );
+      pushFeedLog(
+        "info",
+        `컨테이너 생성 시작 · ${selectedIds.length > 0 ? `선택 row ${pickedRows.length}개` : `row ${pickedRows.length}개`} · 템플릿 ${selectedTemplates.length}개 · 페이지 ${estimatedPages}개 · AI 이미지 대상 ${estimatedAiImageLayers}개`
+      );
 
       for (const row of pickedRows) {
-        const payload = {
+        const rowStartedAt = performance.now();
+        const rowTopic = String(row.raw?.type || row.raw?.jlpt || row.subject || "").trim();
+        pushFeedLog("info", `[${row.id}] row 처리 시작 · ${rowTopic || row.subject || "제목 없음"}`);
+        const payload: Record<string, string> = {
           id: row.id,
           status: row.status,
-          keyword: row.keyword,
+          keyword: rowTopic,
           subject: row.subject,
           description: row.description,
           narration: row.narration,
@@ -922,24 +1934,149 @@ export function InstagramFeedClient(): React.JSX.Element {
         for (const templateId of selectedTemplateIds) {
           const template = templateMap.get(templateId);
           if (!template) continue;
+          const templateStartedAt = performance.now();
+          pushFeedLog(
+            "info",
+            `[${row.id}/${template.templateName}] 템플릿 적용 시작 · 페이지 ${template.pages.length}개`
+          );
           const pages: InstagramFeedPage[] = [];
           for (const page of template.pages) {
+            const pageStartedAt = performance.now();
             const nextElements = [];
+            const aiImageLayerCount = page.elements.filter(
+              (element) => (element.type === "image" || element.type === "video") && element.aiGenerateEnabled
+            ).length;
+            pushFeedLog(
+              "info",
+              `[${row.id}/${template.templateName}/${page.name}] 페이지 구성 시작 · AI 이미지 ${aiImageLayerCount}개`
+            );
             for (const element of page.elements) {
               if (element.type === "text") {
-                nextElements.push({ ...element, text: materialize(element.text, payload) });
+                nextElements.push({
+                  ...element,
+                  text: resolveFeedTextForPayload({ page, element, payload })
+                });
                 continue;
               }
-              if (element.type === "image") {
-                const nextImageElement: InstagramImageElement = {
+              if (element.type === "image" || element.type === "video") {
+                const nextImageElement: InstagramImageElement | InstagramVideoElement = {
                   ...element,
                   imageUrl: materialize(String(element.imageUrl || ""), payload),
                   aiPrompt: materialize(String(element.aiPrompt || ""), payload)
                 };
+                const variableKey =
+                  sanitizeAiPromptVariableKey(String(nextImageElement.aiPromptVariableKey || "")) ||
+                  firstTemplateVariableKey(String(element.aiPrompt || "")) ||
+                  firstTemplateVariableKey(String(nextImageElement.imageUrl || ""));
+                let aiVideoDialogue = "";
+                if (nextImageElement.aiGenerateEnabled && variableKey) {
+                  const variableValueRaw = getPayloadValueByKey(payload, variableKey);
+                  const variableValue = collapseWhitespace(variableValueRaw);
+                  aiVideoDialogue = variableValue;
+                  if (variableValue) {
+                    nextImageElement.aiPromptVariableKey = variableKey;
+                    try {
+                      const promptStartedAt = performance.now();
+                      pushFeedLog(
+                        "info",
+                        `[${row.id}/${template.templateName}/${page.name}] 변수 프롬프트 생성 시작 · ${variableKey}`
+                      );
+                      const promptResponse = await fetch("/api/instagram/generate-image-prompt", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          mode: "instagram",
+                          subject: String(payload.subject || row.subject || "").trim(),
+                          topic: String(payload.keyword || row.keyword || "").trim(),
+                          description: "",
+                          stylePreset: String(nextImageElement.aiStylePreset || "Cinematic photo-real"),
+                          variableKey,
+                          variableValue,
+                          strictVariableOnly: true
+                        })
+                      });
+                      const promptData = (await promptResponse.json()) as { prompt?: string; error?: string };
+                      if (!promptResponse.ok) {
+                        throw new Error(promptData.error || "변수명 기반 프롬프트 생성 실패");
+                      }
+                      const variablePrompt = collapseWhitespace(String(promptData.prompt || ""));
+                      if (variablePrompt) {
+                        nextImageElement.aiPrompt = variablePrompt;
+                      } else {
+                        nextImageElement.aiPrompt = buildFeedPromptFromPayload({
+                          page,
+                          payload,
+                          rowId: row.id,
+                          rowSubject: row.subject,
+                          rowKeyword: rowTopic,
+                          variableValue,
+                          stylePreset: nextImageElement.aiStylePreset,
+                          orientation: resolveAiImageOrientation(nextImageElement.aiImageOrientation)
+                        });
+                      }
+                      pushFeedLog(
+                        "info",
+                        `[${row.id}/${template.templateName}/${page.name}] 변수 프롬프트 생성 완료 · ${variableKey}="${variableValue.slice(0, 40)}" · ${formatElapsed(promptStartedAt)}`
+                      );
+                    } catch (promptError) {
+                      const message = promptError instanceof Error ? promptError.message : "생성 실패";
+                      nextImageElement.aiPrompt = buildFeedPromptFromPayload({
+                        page,
+                        payload,
+                        rowId: row.id,
+                        rowSubject: row.subject,
+                        rowKeyword: rowTopic,
+                        variableValue,
+                        stylePreset: nextImageElement.aiStylePreset,
+                        orientation: resolveAiImageOrientation(nextImageElement.aiImageOrientation)
+                      });
+                      imageGenerationErrors.push(
+                        `[${row.id}/${template.templateName}/${page.name}] 변수명 프롬프트 실패(${variableKey}): ${message}`
+                      );
+                      pushFeedLog(
+                        "error",
+                        `[${row.id}/${template.templateName}/${page.name}] 변수 프롬프트 실패 · ${variableKey} · 현재 row fallback 사용 · ${message}`
+                      );
+                    }
+                  } else {
+                    nextImageElement.aiPrompt = buildFeedPromptFromPayload({
+                      page,
+                      payload,
+                      rowId: row.id,
+                      rowSubject: row.subject,
+                      rowKeyword: rowTopic,
+                      stylePreset: nextImageElement.aiStylePreset,
+                      orientation: resolveAiImageOrientation(nextImageElement.aiImageOrientation)
+                    });
+                    pushFeedLog(
+                      "warn",
+                      `[${row.id}/${template.templateName}/${page.name}] 변수값 없음 · ${variableKey} · 현재 row fallback 사용 · 사용 가능: ${Object.keys(payload).slice(0, 12).join(", ")}`
+                    );
+                  }
+                } else if (nextImageElement.aiGenerateEnabled) {
+                  nextImageElement.aiPrompt = buildFeedPromptFromPayload({
+                    page,
+                    payload,
+                    rowId: row.id,
+                    rowSubject: row.subject,
+                    rowKeyword: rowTopic,
+                    stylePreset: nextImageElement.aiStylePreset,
+                    orientation: resolveAiImageOrientation(nextImageElement.aiImageOrientation)
+                  });
+                  pushFeedLog(
+                    "warn",
+                    `[${row.id}/${template.templateName}/${page.name}] 변수명 없음 · 저장된 프롬프트 대신 현재 row fallback 사용`
+                  );
+                }
                 if (nextImageElement.aiGenerateEnabled && collapseWhitespace(nextImageElement.aiPrompt)) {
                   try {
+                    const imageStartedAt = performance.now();
                     const orientation = resolveAiImageOrientation(nextImageElement.aiImageOrientation);
                     const imageAspectRatio = orientation === "horizontal" ? "16:9" : "9:16";
+                    pushFeedLog(
+                      "info",
+                      `[${row.id}/${template.templateName}/${page.name}] AI 이미지 생성 시작 · ${String(nextImageElement.aiModel || "auto")} · ${imageAspectRatio}`
+                    );
                     const response = await fetch("/api/instagram/generate-image", {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
@@ -956,12 +2093,77 @@ export function InstagramFeedClient(): React.JSX.Element {
                     if (response.ok && data.imageUrl) {
                       nextImageElement.imageUrl = String(data.imageUrl || "");
                       nextImageElement.mediaType = "image";
+                      pushFeedLog(
+                        "info",
+                        `[${row.id}/${template.templateName}/${page.name}] AI 이미지 생성 완료 · ${formatElapsed(imageStartedAt)}`
+                      );
                     } else {
                       throw new Error(data.error || "AI 이미지 생성 실패");
                     }
                   } catch (generateError) {
+                    const message = generateError instanceof Error ? generateError.message : "AI 이미지 생성 실패";
                     imageGenerationErrors.push(
-                      `[${row.id}/${template.templateName}/${page.name}] ${generateError instanceof Error ? generateError.message : "AI 이미지 생성 실패"}`
+                      `[${row.id}/${template.templateName}/${page.name}] ${message}`
+                    );
+                    pushFeedLog(
+                      "error",
+                      `[${row.id}/${template.templateName}/${page.name}] AI 이미지 생성 실패 · ${message}`
+                    );
+                  }
+                }
+                if (
+                  nextImageElement.type === "video" &&
+                  nextImageElement.aiGenerateEnabled &&
+                  nextImageElement.aiVideoEnabled &&
+                  isRenderableMediaUrl(String(nextImageElement.imageUrl || "")) &&
+                  inferMediaKind(String(nextImageElement.imageUrl || "")) === "image"
+                ) {
+                  try {
+                    const videoStartedAt = performance.now();
+                    const provider = nextImageElement.aiVideoProvider === "openai" ? "openai" : "gemini";
+                    const durationSec = Math.max(4, Math.min(8, Math.round(Number(nextImageElement.aiVideoDurationSec) || 6)));
+                    const resolution = nextImageElement.aiVideoResolution === "1080p" ? "1080p" : "720p";
+                    const estimatedDurationSec = provider === "openai" && durationSec > 4 ? 8 : durationSec;
+                    const estimatedCostUsd =
+                      estimatedDurationSec * (provider === "openai" ? 0.1 : resolution === "1080p" ? 0.08 : 0.05);
+                    const orientation = resolveAiImageOrientation(nextImageElement.aiImageOrientation);
+                    const aspectRatio = orientation === "horizontal" ? "16:9" : "9:16";
+                    pushFeedLog(
+                      "info",
+                      `[${row.id}/${template.templateName}/${page.name}] AI 영상화 시작 · ${provider === "openai" ? "OpenAI Sora 2" : "Veo 3.1 Lite"} · ${estimatedDurationSec}s · 720p · 예상 $${estimatedCostUsd.toFixed(2)}`
+                    );
+                    const response = await fetch("/api/instagram/generate-image-video", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        imageUrl: nextImageElement.imageUrl,
+                        provider,
+                        prompt: String(nextImageElement.aiVideoPrompt || "no music, no camera movement, no subtitles"),
+                        dialogue: aiVideoDialogue,
+                        durationSec,
+                        resolution,
+                        aspectRatio
+                      })
+                    });
+                    const data = (await response.json()) as GenerateImageVideoResponse;
+                    if (response.ok && data.videoUrl) {
+                      nextImageElement.imageUrl = String(data.videoUrl || "");
+                      nextImageElement.mediaType = "video";
+                      pushFeedLog(
+                        "info",
+                        `[${row.id}/${template.templateName}/${page.name}] AI 영상화 완료 · ${formatElapsed(videoStartedAt)} · 비용예상 $${Number(data.estimatedCostUsd || estimatedCostUsd).toFixed(2)}`
+                      );
+                    } else {
+                      throw new Error(data.error || "AI 영상화 실패");
+                    }
+                  } catch (videoError) {
+                    const message = videoError instanceof Error ? videoError.message : "AI 영상화 실패";
+                    imageGenerationErrors.push(
+                      `[${row.id}/${template.templateName}/${page.name}] AI 영상화 실패: ${message}`
+                    );
+                    pushFeedLog(
+                      "error",
+                      `[${row.id}/${template.templateName}/${page.name}] AI 영상화 실패 · ${message}`
                     );
                   }
                 }
@@ -973,34 +2175,67 @@ export function InstagramFeedClient(): React.JSX.Element {
             pages.push({
               ...page,
               backgroundImageUrl: materialize(String(page.backgroundImageUrl || ""), payload),
-              audioPrompt: materialize(String(page.audioPrompt || ""), payload),
+              audioPrompt: resolveFeedPageAudioPrompt(page, payload),
               elements: nextElements
             });
+            pushFeedLog(
+              "info",
+              `[${row.id}/${template.templateName}/${page.name}] 페이지 구성 완료 · ${formatElapsed(pageStartedAt)}`
+            );
           }
+          const feedHashtags = normalizeHashtags((template as { hashtags?: unknown }).hashtags);
+          const feedCaption = buildTemplateCaptionFromPayload({
+            template,
+            payload,
+            fallbackSubject: row.subject,
+            hashtags: feedHashtags
+          });
           generated.push({
             id: uid(),
             templateId: template.id,
             templateName: template.templateName,
             rowId: row.id,
             subject: row.subject,
-            keyword: row.keyword,
+            keyword: rowTopic,
+            caption: feedCaption,
+            hashtags: feedHashtags,
             generatedAt: new Date().toISOString(),
             sampleData: payload,
             pages
           });
+          if (typeof window !== "undefined") {
+            try {
+              window.localStorage.setItem(INSTAGRAM_FEED_STORAGE_KEY, JSON.stringify(generated.map(normalizeFeedItem)));
+              window.localStorage.setItem(INSTAGRAM_FEED_SELECTED_ITEM_KEY, generated[0]?.id || "");
+            } catch {
+              // Final saveFeedItems will surface persistence/generation issues if they matter.
+            }
+          }
+          pushFeedLog(
+            "info",
+            `[${row.id}/${template.templateName}] 컨테이너 생성 완료 · ${formatElapsed(templateStartedAt)}`
+          );
         }
+        pushFeedLog("info", `[${row.id}] row 처리 완료 · ${formatElapsed(rowStartedAt)}`);
       }
 
       saveFeedItems(generated);
       setSelectedItemId(generated[0]?.id);
       if (imageGenerationErrors.length > 0) {
+        pushFeedLog(
+          "warn",
+          `컨테이너 생성 종료 · 결과 ${generated.length}개 · 이미지 오류 ${imageGenerationErrors.length}건 · ${formatElapsed(runStartedAt)}`
+        );
         setError(`컨테이너는 생성했지만 일부 이미지 자동 생성 실패 (${imageGenerationErrors.length}건)`);
         setSuccess(`컨테이너 ${generated.length}개를 생성했습니다. (AI 이미지 자동 생성 일부 실패)`);
       } else {
+        pushFeedLog("info", `컨테이너 생성 종료 · 결과 ${generated.length}개 · ${formatElapsed(runStartedAt)}`);
         setSuccess(`컨테이너 ${generated.length}개를 생성했습니다.`);
       }
     } catch (buildError) {
-      setError(buildError instanceof Error ? buildError.message : "컨테이너 생성에 실패했습니다.");
+      const message = buildError instanceof Error ? buildError.message : "컨테이너 생성에 실패했습니다.";
+      pushFeedLog("error", `컨테이너 생성 실패 · ${message} · ${formatElapsed(runStartedAt)}`);
+      setError(message);
     } finally {
       setGenerating(false);
     }
@@ -1015,7 +2250,7 @@ export function InstagramFeedClient(): React.JSX.Element {
       return;
     }
     try {
-      const parsed = JSON.parse(raw) as InstagramGeneratedFeedItem[];
+      const parsed = (JSON.parse(raw) as InstagramGeneratedFeedItem[]).map(normalizeFeedItem);
       setItems(parsed);
       if (parsed.length > 0) {
         setSelectedItemId((prev) => (prev && parsed.some((item) => item.id === prev) ? prev : parsed[0].id));
@@ -1064,6 +2299,9 @@ export function InstagramFeedClient(): React.JSX.Element {
     setMediaWorkspacePageId(page.id);
     setMediaDialogUrl(pagePrimaryMediaUrl(page));
     setMediaDialogPrompt(buildDefaultPageImagePrompt(page, selectedItem));
+    setMediaDialogApplyMode("current");
+    setMediaDialogApplyPageIds([page.id]);
+    setMediaDialogSourcePageId("");
     setMediaDialogError(undefined);
     setMediaDialogPreviewBroken(false);
     setMediaDialogOpen(true);
@@ -1081,6 +2319,13 @@ export function InstagramFeedClient(): React.JSX.Element {
       return;
     }
     openMediaDialogForPage(targetPage);
+  }
+
+  function refreshMediaDialogPrompt(): void {
+    if (!selectedMediaDialogPage) {
+      return;
+    }
+    setMediaDialogPrompt(buildDefaultPageImagePrompt(selectedMediaDialogPage, selectedItem));
   }
 
   function openDetailedTemplateEditor(): void {
@@ -1116,13 +2361,29 @@ export function InstagramFeedClient(): React.JSX.Element {
       source: "instagram-feed",
       focusPageId: clonedPages[0]?.id,
       template: draftTemplate,
-      sampleData: buildSampleDataFromFeedItem(selectedItem, sheetRows)
+      sampleData: buildSampleDataFromFeedItem(selectedItem, sheetRows),
+      sourceFeedItem: selectedItem
     };
 
     if (typeof window !== "undefined") {
       window.localStorage.setItem(INSTAGRAM_TEMPLATE_EDIT_DRAFT_KEY, JSON.stringify(draftPayload));
     }
     router.push("/instagram/templates");
+  }
+
+  function resolveMediaDialogTargetPageIds(): string[] {
+    if (!mediaDialogPageId) {
+      return [];
+    }
+    if (mediaDialogApplyMode === "all") {
+      return orderedPages.map((page) => page.id);
+    }
+    if (mediaDialogApplyMode === "selected") {
+      const validIds = new Set(orderedPages.map((page) => page.id));
+      const selectedIds = mediaDialogApplyPageIds.filter((pageId) => validIds.has(pageId));
+      return selectedIds.length > 0 ? selectedIds : [mediaDialogPageId];
+    }
+    return [mediaDialogPageId];
   }
 
   function applyMediaToSelectedPage(mediaUrl: string, prompt: string): boolean {
@@ -1133,6 +2394,11 @@ export function InstagramFeedClient(): React.JSX.Element {
     if (!resolvedMediaUrl) {
       return false;
     }
+    const targetPageIds = resolveMediaDialogTargetPageIds();
+    if (targetPageIds.length === 0) {
+      return false;
+    }
+    const targetPageIdSet = new Set(targetPageIds);
     const nextItems = items.map((item) => {
       if (item.id !== selectedItem.id) {
         return item;
@@ -1140,7 +2406,7 @@ export function InstagramFeedClient(): React.JSX.Element {
       return {
         ...item,
         pages: item.pages.map((page) =>
-          page.id === mediaDialogPageId
+          targetPageIdSet.has(page.id)
             ? applyImageToFeedPage({
                 page,
                 mediaUrl: resolvedMediaUrl,
@@ -1152,6 +2418,27 @@ export function InstagramFeedClient(): React.JSX.Element {
     });
     saveFeedItems(nextItems);
     return true;
+  }
+
+  function applyMediaFromSourcePage(sourcePageId: string): void {
+    const source = orderedPages.find((page) => page.id === sourcePageId);
+    if (!source) {
+      return;
+    }
+    const sourceUrl = pagePrimaryMediaUrl(source);
+    setMediaDialogSourcePageId(sourcePageId);
+    setMediaDialogUrl(sourceUrl);
+    setMediaDialogPrompt(buildDefaultPageImagePrompt(source, selectedItem));
+    setMediaDialogPreviewBroken(false);
+  }
+
+  function toggleMediaDialogApplyPage(pageId: string): void {
+    setMediaDialogApplyPageIds((prev) => {
+      if (prev.includes(pageId)) {
+        return prev.filter((id) => id !== pageId);
+      }
+      return [...prev, pageId];
+    });
   }
 
   async function applyMediaUrlFromDialog(): Promise<void> {
@@ -1247,20 +2534,33 @@ export function InstagramFeedClient(): React.JSX.Element {
       templateId: selectedItem?.templateId || "",
       page,
       index,
+      renderPipelineVersion: RENDER_PIPELINE_VERSION,
       sampleData: selectedSampleData,
       canvasWidth,
       canvasHeight
     });
   }
 
-  async function renderPageVideoAsset(page: InstagramFeedPage, index: number): Promise<RenderedFeedAsset> {
+  async function renderPageVideoAsset(
+    page: InstagramFeedPage,
+    index: number,
+    forceRerender = false,
+    sampleDataOverride?: Record<string, string>,
+    options?: { uploadBrowserRenderedVideo?: boolean }
+  ): Promise<RenderedFeedAsset> {
     if (!selectedItem) {
       throw new Error("업로드할 피드를 선택해 주세요.");
     }
 
-    const fingerprint = buildPageRenderFingerprint(page, index);
+    const renderSampleData = sampleDataOverride || selectedSampleData;
+    const uploadBrowserRenderedVideo = options?.uploadBrowserRenderedVideo !== false;
+    const fingerprint = JSON.stringify({
+      base: buildPageRenderFingerprint(page, index),
+      renderSampleData,
+      uploadBrowserRenderedVideo
+    });
     const cached = renderedVideoCache[page.id];
-    if (cached?.fingerprint === fingerprint) {
+    if (!forceRerender && cached?.fingerprint === fingerprint) {
       return cached.asset;
     }
 
@@ -1270,35 +2570,193 @@ export function InstagramFeedClient(): React.JSX.Element {
     const pageName = sanitizeDownloadName(page.name || `page-${index + 1}`);
     await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
 
-    const imageDataUrl = await renderInstagramPageToPngDataUrl({
-      page: toFeedPreviewPage(page),
-      sampleData: selectedSampleData,
-      canvasWidth,
-      canvasHeight
-    });
-    const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), selectedSampleData).trim();
-    const response = await fetch("/api/instagram/render-page-video", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateName: selectedItem.templateName,
-        pageName: page.name,
-        imageDataUrl,
-        useAudio: Boolean(page.audioEnabled && resolvedAudioPrompt),
-        audioPrompt: resolvedAudioPrompt || undefined,
-        ttsProvider:
-          page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
-        sampleData: selectedSampleData,
-        audioVoice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
-        audioSpeed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
-        durationSec: Math.max(1, Number(page.durationSec) || 4),
-        outputWidth: canvasWidth,
-        outputHeight: canvasHeight
-      })
-    });
-    const data = (await response.json()) as RenderPageVideoResponse;
-    if (!response.ok || !data.outputUrl) {
-      throw new Error(data.error || `${page.name} MP4 렌더링에 실패했습니다.`);
+    const previewPage = toFeedPreviewPage(page);
+    const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), renderSampleData).trim();
+    const attachedAudioUrl = String(page.audioUrl || "").trim();
+    const useAudio = Boolean(page.audioEnabled && (resolvedAudioPrompt || attachedAudioUrl));
+    const safeDurationSec = Math.max(10, Math.min(55, Math.round(Number(page.durationSec) || 10)));
+    const renderStaticPageVideo = async (): Promise<RenderPageVideoResponse> => {
+      const imageDataUrl = await renderInstagramPageToPngDataUrl({
+        page: previewPage,
+        sampleData: renderSampleData,
+        canvasWidth,
+        canvasHeight
+      });
+      const response = await fetch("/api/instagram/render-page-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          templateName: selectedItem.templateName,
+          pageName: page.name,
+          imageDataUrl,
+          useAudio,
+          audioUrl: attachedAudioUrl || undefined,
+          audioPrompt: resolvedAudioPrompt || undefined,
+          ttsProvider:
+            page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
+          sampleData: renderSampleData,
+          audioVoice: String(page.audioVoice || "alloy").trim().toLowerCase() || "alloy",
+          audioSpeed: clamp(Number(page.audioSpeed), 0.5, 2, 1),
+          durationSec: safeDurationSec,
+          outputWidth: canvasWidth,
+          outputHeight: canvasHeight
+        })
+      });
+      const data = (await response.json()) as RenderPageVideoResponse;
+      if (!response.ok || !data.outputUrl) {
+        throw new Error(data.error || `${page.name} MP4 렌더링에 실패했습니다.`);
+      }
+      return data;
+    };
+
+    let outputUrl = "";
+    let audioUrl: string | undefined;
+    if (pageHasMovingVideoLayer(previewPage)) {
+      const sourceVideoLayer = primaryMovingVideoLayer(page);
+      const previewVideoLayer = sourceVideoLayer
+        ? (previewPage.elements.find((element) => element.id === sourceVideoLayer.id) as
+            | InstagramImageElement
+            | InstagramVideoElement
+            | undefined)
+        : undefined;
+      if (!useAudio && sourceVideoLayer && previewVideoLayer) {
+        const sourceVideoUrl = String(sourceVideoLayer.imageUrl || "").trim();
+        if (!sourceVideoUrl) {
+          throw new Error(`${page.name} 원본 비디오 URL을 찾지 못했습니다.`);
+        }
+        const videoWidth = Math.max(1, Math.round((Number(sourceVideoLayer.width) / 100) * canvasWidth));
+        const videoHeight = Math.max(1, Math.round((Number(sourceVideoLayer.height) / 100) * canvasHeight));
+        const videoX = Math.round((Number(sourceVideoLayer.x) / 100) * canvasWidth - videoWidth / 2);
+        const videoY = Math.round((Number(sourceVideoLayer.y) / 100) * canvasHeight - videoHeight / 2);
+        setUploadStageMessage(`${page.name} 템플릿 레이어 분리 렌더링 중...`);
+        const underlayDataUrl = await renderInstagramPageToPngDataUrl({
+          page: previewPage,
+          sampleData: renderSampleData,
+          canvasWidth,
+          canvasHeight,
+          includeBackground: true,
+          layerFilter: (layer) => layer.id !== sourceVideoLayer.id && layer.zIndex < sourceVideoLayer.zIndex
+        });
+        const overlayDataUrl = await renderInstagramPageToPngDataUrl({
+          page: previewPage,
+          sampleData: renderSampleData,
+          canvasWidth,
+          canvasHeight,
+          includeBackground: false,
+          transparentBackground: true,
+          layerFilter: (layer) => layer.id !== sourceVideoLayer.id && layer.zIndex >= sourceVideoLayer.zIndex
+        });
+        const underlayUrl = await uploadRenderedFeedBlob(
+          dataUrlToBlob(underlayDataUrl),
+          `${selectedItem.rowId || "row"}-${String(index + 1).padStart(2, "0")}-${pageName}-underlay.png`
+        );
+        const overlayUrl = await uploadRenderedFeedBlob(
+          dataUrlToBlob(overlayDataUrl),
+          `${selectedItem.rowId || "row"}-${String(index + 1).padStart(2, "0")}-${pageName}-overlay.png`
+        );
+        setUploadStageMessage(`${page.name} 원본 MP4 기반 최종 합성 중...`);
+        const composeResponse = await fetch("/api/instagram/compose-page-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            templateName: selectedItem.templateName,
+            pageName: page.name,
+            videoUrl: sourceVideoUrl,
+            underlayUrl,
+            overlayUrl,
+            x: videoX,
+            y: videoY,
+            width: videoWidth,
+            height: videoHeight,
+            outputWidth: canvasWidth,
+            outputHeight: canvasHeight,
+            fit: sourceVideoLayer.fit === "contain" ? "contain" : "cover",
+            durationSec: safeDurationSec
+          })
+        });
+        const composeData = (await composeResponse.json()) as ComposePageVideoResponse;
+        if (!composeResponse.ok || !composeData.outputUrl) {
+          throw new Error(composeData.error || `${page.name} 원본 MP4 기반 합성에 실패했습니다.`);
+        }
+        outputUrl = String(composeData.outputUrl || "");
+        audioUrl = sourceVideoUrl;
+        const asset: RenderedFeedAsset = {
+          pageId: page.id,
+          pageName,
+          index,
+          mediaKind: "video",
+          mediaUrl: outputUrl,
+          audioUrl,
+          mimeType: "video/mp4"
+        };
+        setRenderedVideoCache((prev) => ({
+          ...prev,
+          [page.id]: { fingerprint, asset }
+        }));
+        return asset;
+      }
+
+      setUploadStageMessage(`${page.name} 비디오 레이어 화면 렌더링 중...`);
+      const audioSeed = useAudio ? await renderStaticPageVideo() : undefined;
+      audioUrl = audioSeed?.audioUrl || firstMovingVideoLayerUrl(page);
+      if (!audioUrl) {
+        throw new Error(`${page.name} 오디오 소스를 찾지 못했습니다.`);
+      }
+      const recorded = await renderInstagramPageToVideoBlob({
+        page: previewPage,
+        sampleData: renderSampleData,
+        canvasWidth,
+        canvasHeight,
+        durationSec: safeDurationSec,
+        fps: 15,
+        audioUrl: undefined
+      });
+      const extension = guessVideoExtensionFromMime(recorded.mimeType);
+      if (extension !== "mp4") {
+        throw new Error(
+          `${page.name} 합성 결과가 MP4가 아닙니다(${recorded.mimeType}). Instagram 업로드용 MP4 녹화를 지원하는 Chrome에서 다시 시도해 주세요.`
+        );
+      }
+      setUploadStageMessage(`${page.name} 화면 MP4 임시 업로드 중...`);
+      const visualVideoUrl = await uploadRenderedFeedBlob(
+        recorded.blob,
+        `${selectedItem.rowId || "row"}-${String(index + 1).padStart(2, "0")}-${pageName}-visual.${extension}`
+      );
+      setUploadStageMessage(`${page.name} FFmpeg 오디오 합성 중...`);
+      const muxResponse = await fetch("/api/instagram/mux-page-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          templateName: selectedItem.templateName,
+          pageName: page.name,
+          videoUrl: visualVideoUrl,
+          audioUrl,
+          durationSec: safeDurationSec
+        })
+      });
+      const muxData = (await muxResponse.json()) as MuxPageVideoResponse;
+      if (!muxResponse.ok || !muxData.outputUrl) {
+        throw new Error(muxData.error || `${page.name} 비디오/오디오 합성에 실패했습니다.`);
+      }
+      outputUrl = String(muxData.outputUrl || "");
+      const asset: RenderedFeedAsset = {
+        pageId: page.id,
+        pageName,
+        index,
+        mediaKind: "video",
+        mediaUrl: outputUrl,
+        audioUrl,
+        mimeType: "video/mp4"
+      };
+      setRenderedVideoCache((prev) => ({
+        ...prev,
+        [page.id]: { fingerprint, asset }
+      }));
+      return asset;
+    } else {
+      const data = await renderStaticPageVideo();
+      outputUrl = String(data.outputUrl || "");
+      audioUrl = data.audioUrl;
     }
 
     const asset: RenderedFeedAsset = {
@@ -1306,8 +2764,8 @@ export function InstagramFeedClient(): React.JSX.Element {
       pageName,
       index,
       mediaKind: "video",
-      mediaUrl: data.outputUrl,
-      audioUrl: data.audioUrl
+      mediaUrl: outputUrl,
+      audioUrl
     };
     setRenderedVideoCache((prev) => ({
       ...prev,
@@ -1318,6 +2776,7 @@ export function InstagramFeedClient(): React.JSX.Element {
 
   async function previewPageAudio(page: InstagramFeedPage): Promise<void> {
     const resolvedAudioPrompt = materialize(String(page.audioPrompt || ""), selectedSampleData).trim();
+    const attachedAudioUrl = String(page.audioUrl || "").trim();
     setAudioPreviewError(undefined);
     setError(undefined);
 
@@ -1325,11 +2784,11 @@ export function InstagramFeedClient(): React.JSX.Element {
       setAudioPreviewError("오디오가 켜진 비디오 페이지에서만 미리듣기할 수 있습니다.");
       return;
     }
-    if (!resolvedAudioPrompt) {
-      setAudioPreviewError(`${page.name} 오디오 스크립트가 비어 있습니다.`);
+    if (!attachedAudioUrl && !resolvedAudioPrompt) {
+      setAudioPreviewError(`${page.name} 오디오 파일 또는 오디오 스크립트가 비어 있습니다.`);
       return;
     }
-    if (/\{\{[^}]+\}\}/.test(resolvedAudioPrompt)) {
+    if (!attachedAudioUrl && /\{\{[^}]+\}\}/.test(resolvedAudioPrompt)) {
       setAudioPreviewError(`${page.name} 오디오 스크립트에 치환되지 않은 변수가 남아 있습니다: ${resolvedAudioPrompt}`);
       return;
     }
@@ -1339,6 +2798,11 @@ export function InstagramFeedClient(): React.JSX.Element {
       if (audioPreviewObjectUrlRef.current) {
         URL.revokeObjectURL(audioPreviewObjectUrlRef.current);
         audioPreviewObjectUrlRef.current = undefined;
+      }
+      if (attachedAudioUrl) {
+        setAudioPreviewPageId(page.id);
+        setAudioPreviewUrl(toInstagramMediaPreviewUrl(attachedAudioUrl));
+        return;
       }
       const index = orderedPages.findIndex((candidate) => candidate.id === page.id);
       const asset = await renderPageVideoAsset(page, Math.max(0, index));
@@ -1351,7 +2815,10 @@ export function InstagramFeedClient(): React.JSX.Element {
     }
   }
 
-  async function buildRenderedMediaAssets(): Promise<RenderedFeedAsset[]> {
+  async function buildRenderedMediaAssets(
+    forceVideoRerender = false,
+    options?: { uploadBrowserRenderedVideo?: boolean }
+  ): Promise<RenderedFeedAsset[]> {
     if (!selectedItem) {
       return [];
     }
@@ -1363,13 +2830,22 @@ export function InstagramFeedClient(): React.JSX.Element {
     await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
 
     const renderedAssets: RenderedFeedAsset[] = [];
+    const pagesForRender = buildCompleteOrderedPages(selectedItem, orderedPages);
+    const expectedPageCount = selectedItem.pages.length;
 
-    for (let index = 0; index < orderedPages.length; index += 1) {
-      const page = orderedPages[index];
+    if (pagesForRender.length !== expectedPageCount) {
+      throw new Error(
+        `렌더 페이지 수가 맞지 않습니다. 선택 피드 ${expectedPageCount}개, 렌더 대상 ${pagesForRender.length}개입니다. 새로고침 후 다시 생성해 주세요.`
+      );
+    }
+    assertSafeFinalFeedRender(pagesForRender);
+
+    for (let index = 0; index < pagesForRender.length; index += 1) {
+      const page = pagesForRender[index];
       const pageName = sanitizeDownloadName(page.name || `page-${index + 1}`);
 
       if (pageOutputKind(page) === "video") {
-        renderedAssets.push(await renderPageVideoAsset(page, index));
+        renderedAssets.push(await renderPageVideoAsset(page, index, forceVideoRerender, sampleData, options));
         continue;
       }
 
@@ -1387,6 +2863,12 @@ export function InstagramFeedClient(): React.JSX.Element {
         mediaKind: "image",
         mediaUrl: imageDataUrl
       });
+    }
+
+    if (renderedAssets.length !== expectedPageCount) {
+      throw new Error(
+        `최종 렌더 결과 수가 맞지 않습니다. 선택 피드 ${expectedPageCount}개, 렌더 결과 ${renderedAssets.length}개입니다. 업로드를 중단했습니다.`
+      );
     }
 
     return renderedAssets;
@@ -1414,16 +2896,26 @@ export function InstagramFeedClient(): React.JSX.Element {
           .join(", ");
         throw new Error(`오디오 스크립트 확인이 필요한 페이지가 있습니다: ${names}`);
       }
-      const renderedAssets = await buildRenderedMediaAssets();
+      setUploadStageMessage("최종 업로드 파일 렌더링 중...");
+      const renderedAssets = await buildRenderedMediaAssets(false);
       if (renderedAssets.length === 0) {
         throw new Error("업로드에 사용할 렌더 결과가 없습니다.");
+      }
+      if (renderedAssets.length !== selectedItem.pages.length) {
+        throw new Error(
+          `업로드 파일 수가 맞지 않습니다. 템플릿/피드 페이지 ${selectedItem.pages.length}개, 렌더 결과 ${renderedAssets.length}개입니다.`
+        );
+      }
+      const missingMediaUrl = renderedAssets.find((asset) => !asset.mediaUrl);
+      if (missingMediaUrl) {
+        throw new Error(`${missingMediaUrl.pageName} 최종 업로드 URL이 없어 업로드를 중단했습니다.`);
       }
       setUploadStageMessage(`Meta 업로드 요청 중... (${renderedAssets.length}개 페이지)`);
       const response = await fetch("/api/instagram/meta/upload-feed", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          caption: caption.trim(),
+          caption: sanitizeCaptionText(caption),
           mediaUrls: renderedAssets.map((asset) => asset.mediaUrl),
           rowId: selectedItem.rowId,
           sheetName: sourceSheetName || undefined
@@ -1464,40 +2956,103 @@ export function InstagramFeedClient(): React.JSX.Element {
     setError(undefined);
     setSuccess(undefined);
     try {
-      const renderedAssets = await buildRenderedMediaAssets();
+      const renderedAssets = await buildRenderedMediaAssets(true, { uploadBrowserRenderedVideo: false });
+      const expectedMediaCount = selectedItem.pages.length;
+      if (renderedAssets.length !== expectedMediaCount) {
+        throw new Error(
+          `검토 파일 수가 맞지 않습니다. 템플릿/피드 페이지 ${expectedMediaCount}개, 렌더 결과 ${renderedAssets.length}개입니다.`
+        );
+      }
       const prepared = renderedAssets.map((asset) => {
-        const ext = guessExtensionFromUrl(asset.mediaUrl, asset.mediaKind);
+        const ext = asset.blob
+          ? getMediaDownloadExtension(asset.mimeType || asset.blob.type, asset.mediaUrl, asset.mediaKind === "video" ? "mp4" : "png")
+          : guessExtensionFromUrl(asset.mediaUrl, asset.mediaKind);
         return {
+          blob: asset.blob,
           url: asset.mediaUrl,
           fileName: `${String(asset.index + 1).padStart(2, "0")}-${asset.pageName}.${ext}`
         };
       });
 
+      let downloadedMediaCount = 0;
       for (const asset of prepared) {
-        const link = document.createElement("a");
-        link.href = asset.url;
-        link.download = asset.fileName;
-        link.rel = "noreferrer";
-        link.target = "_blank";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        await new Promise((resolve) => setTimeout(resolve, 120));
+        if (asset.blob) {
+          downloadBlobFile(asset.blob, asset.fileName);
+        } else {
+          if (!asset.url) {
+            throw new Error(`${asset.fileName} 다운로드 URL이 없습니다.`);
+          }
+          downloadRemoteFile(asset.url, asset.fileName);
+        }
+        downloadedMediaCount += 1;
+        await new Promise((resolve) => setTimeout(resolve, 180));
       }
 
       const captionBlob = new Blob([caption || ""], { type: "text/plain;charset=utf-8" });
-      const captionUrl = URL.createObjectURL(captionBlob);
-      const captionLink = document.createElement("a");
-      captionLink.href = captionUrl;
-      captionLink.download = `${sanitizeDownloadName(selectedItem.subject || selectedItem.rowId || "feed")}-caption.txt`;
-      document.body.appendChild(captionLink);
-      captionLink.click();
-      document.body.removeChild(captionLink);
-      URL.revokeObjectURL(captionUrl);
+      downloadBlobFile(captionBlob, "caption.txt");
 
-      setSuccess(`다운로드 시작: 최종 렌더 미디어 ${prepared.length}개 + caption.txt`);
+      setSuccess(
+        `검토 파일 다운로드 시작: 최종 렌더 미디어 ${downloadedMediaCount}개 + caption.txt. 업로드는 현재 피드 상태를 다시 최종 렌더링해 진행합니다.`
+      );
     } catch (downloadError) {
       setError(downloadError instanceof Error ? downloadError.message : "다운로드에 실패했습니다.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function downloadPageAiImage(page: InstagramGeneratedFeedItem["pages"][number], index: number): Promise<void> {
+    if (!selectedItem) {
+      setError("다운로드할 피드를 선택해 주세요.");
+      return;
+    }
+    const mediaUrl = pagePrimaryMediaUrl(page);
+    if (!mediaUrl) {
+      setError("다운로드할 AI 이미지가 없습니다. 먼저 이미지를 생성해 주세요.");
+      return;
+    }
+    if (inferMediaKind(mediaUrl) === "video") {
+      setError("선택한 페이지의 대표 미디어는 비디오입니다. AI 이미지가 있는 페이지를 선택해 주세요.");
+      return;
+    }
+    setError(undefined);
+    try {
+      await downloadMediaBlob(
+        mediaUrl,
+        `${selectedItem.templateName || "instagram-feed"}-${selectedItem.rowId || "row"}-${String(index + 1).padStart(2, "0")}-${page.name || "page"}`
+      );
+      setSuccess("AI 이미지 다운로드를 시작했습니다.");
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "AI 이미지 다운로드에 실패했습니다.");
+    }
+  }
+
+  async function downloadFeedAiImages(): Promise<void> {
+    if (!selectedItem) {
+      setError("다운로드할 피드를 선택해 주세요.");
+      return;
+    }
+    const imageAssets = orderedPages
+      .map((page, index) => ({ page, index, mediaUrl: pagePrimaryMediaUrl(page) }))
+      .filter((asset) => asset.mediaUrl && inferMediaKind(asset.mediaUrl) === "image");
+    if (imageAssets.length === 0) {
+      setError("다운로드할 AI 이미지가 없습니다. 먼저 이미지를 생성해 주세요.");
+      return;
+    }
+    setDownloading(true);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      for (const asset of imageAssets) {
+        await downloadMediaBlob(
+          asset.mediaUrl,
+          `${selectedItem.templateName || "instagram-feed"}-${selectedItem.rowId || "row"}-${String(asset.index + 1).padStart(2, "0")}-${asset.page.name || "page"}`
+        );
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      setSuccess(`AI 이미지 다운로드를 시작했습니다. (${imageAssets.length}개)`);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "AI 이미지 다운로드에 실패했습니다.");
     } finally {
       setDownloading(false);
     }
@@ -1580,6 +3135,47 @@ export function InstagramFeedClient(): React.JSX.Element {
       </div>
 
       <div className="rounded-xl border bg-card p-3">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold">로그</p>
+            <p className="text-xs text-muted-foreground">
+              컨테이너 생성 중 row, 템플릿, 페이지, AI 이미지 호출 단계를 최근 순서로 확인합니다.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {generating ? (
+              <span className="rounded-full border px-2 py-1 text-xs text-emerald-500">실행 중</span>
+            ) : null}
+            <span className="text-xs text-muted-foreground">최근 {feedLogs.length}건</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => setFeedLogs([])}>
+              비우기
+            </Button>
+          </div>
+        </div>
+        {feedLogs.length > 0 ? (
+          <div className="app-panel-scrollbar max-h-56 overflow-auto rounded-lg border bg-background p-2 font-mono text-xs">
+            {feedLogs.slice().reverse().map((log) => {
+              const tone =
+                log.level === "error"
+                  ? "text-red-500"
+                  : log.level === "warn"
+                    ? "text-amber-500"
+                    : "text-muted-foreground";
+              return (
+                <p key={log.id} className={`whitespace-pre-wrap break-words leading-relaxed ${tone}`}>
+                  [{new Date(log.at).toLocaleTimeString("ko-KR")}] {log.message}
+                </p>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="rounded-lg border bg-background p-3 text-sm text-muted-foreground">
+            표시할 피드 생성 로그가 없습니다.
+          </p>
+        )}
+      </div>
+
+      <div className="rounded-xl border bg-card p-3">
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-semibold">Google Sheet 테이블 뷰</p>
@@ -1653,7 +3249,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                         선택 해제
                       </Button>
                     </div>
-                    <div className="max-h-40 space-y-1 overflow-auto pr-1">
+                    <div className="app-panel-scrollbar max-h-40 space-y-1 overflow-auto pr-1">
                       {keywordOptions.length === 0 ? (
                         <p className="text-xs text-muted-foreground">keyword 데이터가 없습니다.</p>
                       ) : (
@@ -1690,11 +3286,34 @@ export function InstagramFeedClient(): React.JSX.Element {
             </div>
             <p className="text-xs text-muted-foreground">
               표시 행: {filteredSheetRows.length} / 전체 {sheetTableRows.length} · 준비 row: {sheetRows?.length || 0}
+              {selectedSheetRowIds.length > 0 ? ` · 선택 row: ${selectedSheetRowIds.length}` : ""}
             </p>
-            <div className="max-h-[56vh] overflow-auto rounded-lg border">
+            {selectedSheetRowIds.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                <span>체크된 row {selectedSheetRowIds.length}개가 컨테이너 생성 대상입니다.</span>
+                <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => setSelectedSheetRowIds([])}>
+                  선택 해제
+                </Button>
+              </div>
+            ) : null}
+            <div className="app-table-scrollbar max-h-[56vh] overflow-auto rounded-lg border">
               <table className="min-w-full text-sm">
                 <thead className="sticky top-0 bg-muted/50">
                   <tr>
+                    <th className="w-12 px-3 py-2 text-left font-medium">
+                      <input
+                        type="checkbox"
+                        aria-label="표시된 row 전체 선택"
+                        checked={filteredSheetRowIds.length > 0 && selectedVisibleSheetRowCount === filteredSheetRowIds.length}
+                        ref={(node) => {
+                          if (node) {
+                            node.indeterminate =
+                              selectedVisibleSheetRowCount > 0 && selectedVisibleSheetRowCount < filteredSheetRowIds.length;
+                          }
+                        }}
+                        onChange={(event) => setVisibleSheetRowSelection(event.target.checked)}
+                      />
+                    </th>
                     {sheetHeaders.map((header) => (
                       <th key={`ig-feed-head-${header}`} className="px-3 py-2 text-left font-medium">
                         {header}
@@ -1705,23 +3324,36 @@ export function InstagramFeedClient(): React.JSX.Element {
                 <tbody>
                   {filteredSheetRows.length === 0 ? (
                     <tr>
-                      <td className="px-3 py-4 text-muted-foreground" colSpan={sheetHeaders.length}>
+                      <td className="px-3 py-4 text-muted-foreground" colSpan={sheetHeaders.length + 1}>
                         필터 조건에 맞는 데이터가 없습니다.
                       </td>
                     </tr>
                   ) : (
-                    filteredSheetRows.map((row, rowIndex) => (
-                      <tr key={`ig-feed-row-${rowIndex}`} className="border-t align-top">
-                        {sheetHeaders.map((header) => (
-                          <td
-                            key={`ig-feed-cell-${rowIndex}-${header}`}
-                            className={`px-3 py-2 ${wrapSheetCells ? "whitespace-pre-wrap break-words" : "whitespace-nowrap"}`}
-                          >
-                            {row[header] || ""}
+                    filteredSheetRows.map((row, rowIndex) => {
+                      const rowId = getSheetTableRowId(row);
+                      const checked = rowId ? selectedSheetRowIds.includes(rowId) : false;
+                      return (
+                        <tr key={`ig-feed-row-${rowIndex}`} className={`border-t align-top ${checked ? "bg-emerald-500/10" : ""}`}>
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`${rowId || rowIndex + 1} row 선택`}
+                              checked={checked}
+                              disabled={!rowId}
+                              onChange={() => toggleSheetRowSelection(rowId)}
+                            />
                           </td>
-                        ))}
-                      </tr>
-                    ))
+                          {sheetHeaders.map((header) => (
+                            <td
+                              key={`ig-feed-cell-${rowIndex}-${header}`}
+                              className={`px-3 py-2 ${wrapSheetCells ? "whitespace-pre-wrap break-words" : "whitespace-nowrap"}`}
+                            >
+                              {row[header] || ""}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -1734,7 +3366,7 @@ export function InstagramFeedClient(): React.JSX.Element {
         <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="order-2 rounded-xl border bg-card p-3 lg:order-1">
             <p className="mb-2 text-sm font-semibold">결과 선택</p>
-            <div className="max-h-[42vh] space-y-2 overflow-y-auto pr-1 md:max-h-[70vh]">
+            <div className="app-sidebar-scrollbar max-h-[42vh] space-y-2 overflow-y-auto pr-1 md:max-h-[70vh]">
               {items.map((item) => (
                 <button
                   key={item.id}
@@ -1751,7 +3383,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                 >
                   <p className="text-xs text-muted-foreground">{item.templateName}</p>
                   <p className="line-clamp-2 text-sm font-medium">{item.subject}</p>
-                  <p className="text-xs text-muted-foreground">#{item.keyword} · row {item.rowId}</p>
+                  <p className="text-xs text-muted-foreground">주제: {item.keyword || "-"} · row {item.rowId}</p>
                   <p className="mt-1 text-[11px] text-muted-foreground">페이지 {item.pages.length}개</p>
                 </button>
               ))}
@@ -1766,7 +3398,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                     <div>
                       <p className="text-xs text-muted-foreground">{selectedItem.templateName}</p>
                       <h2 className="text-base font-semibold">{selectedItem.subject}</h2>
-                      <p className="text-xs text-muted-foreground">#{selectedItem.keyword} · row {selectedItem.rowId}</p>
+                      <p className="text-xs text-muted-foreground">주제: {selectedItem.keyword || "-"} · row {selectedItem.rowId}</p>
                     </div>
                     <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-wrap">
                       <Button
@@ -1804,7 +3436,18 @@ export function InstagramFeedClient(): React.JSX.Element {
                         disabled={downloading || orderedPages.length === 0}
                       >
                         <Download className="mr-1 h-4 w-4" />
-                        {downloading ? "다운로드 중..." : "다운로드"}
+                        {downloading ? "검토 파일 준비 중..." : "검토 파일 다운로드"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full sm:w-auto"
+                        onClick={() => void downloadFeedAiImages()}
+                        disabled={downloading || orderedPages.length === 0}
+                        title="생성된 AI 이미지 원본을 페이지별로 다운로드"
+                      >
+                        <Download className="mr-1 h-4 w-4" />
+                        AI 이미지 다운로드
                       </Button>
                       <Button
                         type="button"
@@ -1825,12 +3468,54 @@ export function InstagramFeedClient(): React.JSX.Element {
                   </div>
 
                   <div className="mt-3 space-y-2">
-                    <Label>캡션</Label>
-                    <Input
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Label>캡션</Label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          setCaption(
+                            buildFeedCaptionWithStoredHashtags({
+                              baseCaption: caption || selectedItem.subject,
+                              hashtagTemplate: captionHashtagTemplate,
+                              item: selectedItem
+                            })
+                          )
+                        }
+                      >
+                        저장 해시태그 적용
+                      </Button>
+                    </div>
+                    <Textarea
+                      rows={3}
                       value={caption}
-                      onChange={(event) => setCaption(event.target.value)}
+                      onChange={(event) => setCaption(sanitizeCaptionText(event.target.value))}
                       placeholder="업로드 캡션 입력"
                     />
+                    <div className="rounded-lg border bg-muted/20 p-2">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <Label className="text-xs">저장 해시태그 템플릿</Label>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setCaptionHashtagTemplate(DEFAULT_INSTAGRAM_FEED_HASHTAG_TEMPLATE)}
+                        >
+                          기본값 복원
+                        </Button>
+                      </div>
+                      <Textarea
+                        rows={4}
+                        value={captionHashtagTemplate}
+                        onChange={(event) => setCaptionHashtagTemplate(event.target.value)}
+                        placeholder="#태그 입력"
+                        className="text-xs"
+                      />
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {"{num}"}은 선택 row의 JLPT 레벨 숫자로 치환됩니다. 예: jlpt=N4 → #JLPTN4
+                      </p>
+                    </div>
                   </div>
 
                   <div className="mt-3 rounded-lg border p-2 text-xs">
@@ -1869,7 +3554,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                     }
                   }}
                 >
-                  <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto p-4 sm:p-6">
+                  <DialogContent className="app-panel-scrollbar max-h-[90vh] max-w-2xl overflow-y-auto p-4 sm:p-6">
                     <DialogHeader>
                       <DialogTitle>Instagram 업로드 확인</DialogTitle>
                       <DialogDescription>
@@ -1886,7 +3571,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                       </div>
                       <div className="rounded-lg border p-3">
                         <p className="mb-1 text-xs text-muted-foreground">업로드 캡션</p>
-                        <p className="max-h-36 overflow-auto whitespace-pre-wrap break-words text-sm">
+                        <p className="app-panel-scrollbar max-h-36 overflow-auto whitespace-pre-wrap break-words text-sm">
                           {caption.trim() || "(빈 캡션)"}
                         </p>
                       </div>
@@ -1894,7 +3579,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                         <p className="mb-2 text-xs text-muted-foreground">
                           업로드 페이지 ({mediaPlan.length}개)
                         </p>
-                        <div className="max-h-52 space-y-1 overflow-auto text-sm">
+                        <div className="app-panel-scrollbar max-h-52 space-y-1 overflow-auto text-sm">
                           {mediaPlan.map((item) => (
                             <div
                               key={`upload-plan-${item.pageId}`}
@@ -1910,7 +3595,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                               </div>
                               {item.mediaKind === "video" ? (
                                 <div className="mt-2 space-y-2">
-                                  <p className="max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-2 text-xs">
+                                  <p className="app-panel-scrollbar max-h-16 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-2 text-xs">
                                     {item.resolvedAudioPrompt || "(치환 후 오디오 스크립트 없음)"}
                                   </p>
                                   <div className="flex flex-wrap items-center gap-2">
@@ -1959,11 +3644,20 @@ export function InstagramFeedClient(): React.JSX.Element {
                       </Button>
                       <Button
                         type="button"
+                        variant="outline"
+                        className="w-full sm:w-auto"
+                        onClick={() => void downloadFeedAssets()}
+                        disabled={downloading || uploading || orderedPages.length === 0}
+                      >
+                        {downloading ? "검토 파일 준비 중..." : "검토 파일 다운로드"}
+                      </Button>
+                      <Button
+                        type="button"
                         className="w-full sm:w-auto"
                         onClick={() => void uploadFeed()}
                         disabled={uploading || orderedPages.length === 0}
                       >
-                        {uploading ? "업로드 중..." : "확인 후 업로드"}
+                        {uploading ? "업로드 중..." : "업로드"}
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -2001,7 +3695,92 @@ export function InstagramFeedClient(): React.JSX.Element {
                         />
                       </div>
                       <div className="space-y-1">
-                        <Label>AI 이미지 프롬프트</Label>
+                        <Label>다른 페이지 이미지 가져오기</Label>
+                        <Select
+                          value={mediaDialogSourcePageId || "__none__"}
+                          onValueChange={(value) => {
+                            if (value === "__none__") {
+                              setMediaDialogSourcePageId("");
+                              return;
+                            }
+                            applyMediaFromSourcePage(value);
+                          }}
+                          disabled={mediaDialogBusy || mediaDialogSourcePageOptions.length === 0}
+                        >
+                          <SelectTrigger className="bg-card dark:bg-zinc-900">
+                            <SelectValue placeholder="이미지를 가져올 페이지 선택" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">선택 안 함</SelectItem>
+                            {mediaDialogSourcePageOptions.map((page) => (
+                              <SelectItem key={`media-source-page-${page.id}`} value={page.id}>
+                                {page.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2 rounded-md border p-2">
+                        <Label>같은 이미지 적용 대상</Label>
+                        <Select
+                          value={mediaDialogApplyMode}
+                          onValueChange={(value) => {
+                            const mode =
+                              value === "selected" || value === "all" ? value : "current";
+                            setMediaDialogApplyMode(mode);
+                            if (mode === "current" && mediaDialogPageId) {
+                              setMediaDialogApplyPageIds([mediaDialogPageId]);
+                            } else if (mode === "all") {
+                              setMediaDialogApplyPageIds(orderedPages.map((page) => page.id));
+                            }
+                          }}
+                          disabled={mediaDialogBusy}
+                        >
+                          <SelectTrigger className="bg-card dark:bg-zinc-900">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="current">현재 페이지만</SelectItem>
+                            <SelectItem value="selected">선택한 페이지</SelectItem>
+                            <SelectItem value="all">모든 페이지</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        {mediaDialogApplyMode === "selected" ? (
+                          <div className="max-h-32 space-y-1 overflow-auto rounded-md border bg-background p-2">
+                            {orderedPages.map((page, index) => (
+                              <label
+                                key={`media-apply-page-${page.id}`}
+                                className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-accent/50"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={mediaDialogApplyPageIds.includes(page.id)}
+                                  onChange={() => toggleMediaDialogApplyPage(page.id)}
+                                  disabled={mediaDialogBusy}
+                                />
+                                <span>
+                                  {index + 1}. {page.name}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label>AI 이미지 프롬프트</Label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={refreshMediaDialogPrompt}
+                            disabled={mediaDialogBusy || !selectedMediaDialogPage}
+                            title="현재 선택한 row/주제로 프롬프트를 다시 생성"
+                          >
+                            <RefreshCw className="mr-1 h-3.5 w-3.5" />
+                            새로고침
+                          </Button>
+                        </div>
                         <Textarea
                           rows={4}
                           value={mediaDialogPrompt}
@@ -2119,7 +3898,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                       </Button>
                     </div>
                   </div>
-                  <div className="overflow-x-auto">
+                  <div className="app-table-scrollbar overflow-x-auto">
                     <div className="flex min-w-max items-center gap-3 pb-2">
                       {orderedPages.map((page, index) => {
                         const mediaUrl = pagePrimaryMediaUrl(page);
@@ -2205,6 +3984,17 @@ export function InstagramFeedClient(): React.JSX.Element {
                                 onClick={() => openMediaDialogForPage(page)}
                               >
                                 {isMediaMissing ? "이미지 추가" : "이미지 변경"}
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="mt-1 h-7 w-full px-2 text-[11px]"
+                                onClick={() => void downloadPageAiImage(page, index)}
+                                disabled={isMediaMissing || kind === "video"}
+                              >
+                                <Download className="mr-1 h-3.5 w-3.5" />
+                                이미지 다운로드
                               </Button>
                             </article>
                             {index < orderedPages.length - 1 ? (
