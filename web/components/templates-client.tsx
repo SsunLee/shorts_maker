@@ -1,7 +1,21 @@
 "use client";
 
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Eye, Pencil, Plus, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Download,
+  Eye,
+  FileJson,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Save,
+  Trash2,
+  Upload
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1001,6 +1015,7 @@ export function TemplatesClient(): React.JSX.Element {
   const [templateSelectOpen, setTemplateSelectOpen] = useState(true);
   const [templateNameOpen, setTemplateNameOpen] = useState(true);
   const [voiceSectionOpen, setVoiceSectionOpen] = useState(true);
+  const [templateMenuOpen, setTemplateMenuOpen] = useState<"file" | "features" | undefined>();
   const [templateImportJson, setTemplateImportJson] = useState("");
   const [templateImportMessage, setTemplateImportMessage] = useState<string>();
   const [templateImportError, setTemplateImportError] = useState<string>();
@@ -1967,6 +1982,26 @@ export function TemplatesClient(): React.JSX.Element {
     }
   }
 
+  function downloadCurrentTemplateJson(): void {
+    const jsonText = JSON.stringify(currentPayload, null, 2);
+    const safeName =
+      (editor.templateName.trim() || "youtube-template")
+        .replace(/[\\/:*?"<>|]+/g, "-")
+        .replace(/\s+/g, "-")
+        .slice(0, 80) || "youtube-template";
+    const blob = new Blob([jsonText], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${safeName}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setTemplateImportError(undefined);
+    setTemplateImportMessage("현재 템플릿 JSON 파일 다운로드를 시작했습니다.");
+  }
+
   function onTemplateImportFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -2042,6 +2077,150 @@ export function TemplatesClient(): React.JSX.Element {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <div className="relative">
+              <Button
+                type="button"
+                variant={templateMenuOpen === "file" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setTemplateMenuOpen((current) => (current === "file" ? undefined : "file"))}
+              >
+                파일
+                <ChevronDown className="ml-1 h-4 w-4" />
+              </Button>
+              {templateMenuOpen === "file" ? (
+                <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-lg border bg-popover p-1 text-sm text-popover-foreground shadow-xl sm:left-0 sm:right-auto">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      void saveAsNew();
+                    }}
+                    disabled={busy}
+                  >
+                    <Plus className="h-4 w-4" />
+                    다른 이름으로 저장
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      void updateCurrent();
+                    }}
+                    disabled={busy || selectedTemplateId === "__new__"}
+                  >
+                    <Save className="h-4 w-4" />
+                    저장
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      if (selectedTemplateId !== "__new__") {
+                        void removeTemplate(selectedTemplateId);
+                      }
+                    }}
+                    disabled={busy || selectedTemplateId === "__new__"}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    삭제
+                  </button>
+                </div>
+              ) : null}
+            </div>
+            <div className="relative">
+              <Button
+                type="button"
+                variant={templateMenuOpen === "features" ? "default" : "outline"}
+                size="sm"
+                onClick={() =>
+                  setTemplateMenuOpen((current) => (current === "features" ? undefined : "features"))
+                }
+              >
+                기능
+                <ChevronDown className="ml-1 h-4 w-4" />
+              </Button>
+              {templateMenuOpen === "features" ? (
+                <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-lg border bg-popover p-1 text-sm text-popover-foreground shadow-xl">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      if (selectedTemplateId !== "__new__") {
+                        void setActive(selectedTemplateId);
+                      }
+                    }}
+                    disabled={busy || selectedTemplateId === "__new__"}
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    자동화 기본 지정
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      loadCurrentTemplateJson();
+                    }}
+                    disabled={busy}
+                  >
+                    <FileJson className="h-4 w-4" />
+                    현재 JSON 불러오기
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      void copyCurrentTemplateJson();
+                    }}
+                    disabled={busy}
+                  >
+                    <FileJson className="h-4 w-4" />
+                    JSON 복사
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      downloadCurrentTemplateJson();
+                    }}
+                    disabled={busy}
+                  >
+                    <Download className="h-4 w-4" />
+                    JSON 다운로드
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      templateImportFileRef.current?.click();
+                    }}
+                    disabled={busy}
+                  >
+                    <Upload className="h-4 w-4" />
+                    JSON 파일 가져오기
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    onClick={() => {
+                      setTemplateMenuOpen(undefined);
+                      void importTemplatesFromJsonText(templateImportJson);
+                    }}
+                    disabled={busy}
+                  >
+                    <Upload className="h-4 w-4" />
+                    JSON 텍스트 가져오기
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <div className="hidden items-center gap-2 md:flex">
               <span className="text-xs text-muted-foreground">좌/우 너비</span>
               <Button
@@ -2078,6 +2257,7 @@ export function TemplatesClient(): React.JSX.Element {
               </span>
             </div>
             <Button type="button" variant="outline" onClick={() => void refreshTemplates()} disabled={busy}>
+              <RefreshCw className="mr-1 h-4 w-4" />
               새로고침
             </Button>
           </div>

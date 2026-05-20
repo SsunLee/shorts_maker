@@ -562,6 +562,38 @@ function resolveLanguageInstruction(language: IdeaLanguage): string {
   return "Write Keyword, Subject, Description, Narration in Korean.";
 }
 
+function describeOutputLanguage(language: IdeaLanguage): string {
+  if (language === "en") {
+    return "English";
+  }
+  if (language === "ja") {
+    return "Japanese";
+  }
+  if (language === "es") {
+    return "Spanish";
+  }
+  if (language === "hi") {
+    return "Hindi";
+  }
+  return "Korean";
+}
+
+function translateTopicHint(topic: string, language: IdeaLanguage): string {
+  const normalized = String(topic || "").replace(/\s+/g, " ").trim();
+  if (language === "ja" && normalized === "일본 연예 뉴스") {
+    return "日本の芸能ニュース";
+  }
+  return "";
+}
+
+function normalizeJapaneseGeneratedText(value: string): string {
+  return String(value || "")
+    .replace(/韓口/g, "韓国")
+    .replace(/日木/g, "日本")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function describeLanguageForError(language: IdeaLanguage): string {
   if (language === "en") {
     return "영어";
@@ -595,6 +627,26 @@ function containsJapaneseKana(text: string): boolean {
 
 function containsHan(text: string): boolean {
   return /\p{Script=Han}/u.test(text);
+}
+
+function hangulTextRatio(text: string): number {
+  const letters = Array.from(String(text || "")).filter((char) => /[\p{L}\p{N}]/u.test(char));
+  if (letters.length === 0) {
+    return 0;
+  }
+  const hangulCount = letters.filter((char) => /[가-힣]/u.test(char)).length;
+  return hangulCount / letters.length;
+}
+
+function hasTooMuchHangulForJapaneseLongform(text: string): boolean {
+  const hangulCount = Array.from(String(text || "")).filter((char) => /[가-힣]/u.test(char)).length;
+  if (hangulCount === 0) {
+    return false;
+  }
+  if (hangulCount <= 12) {
+    return false;
+  }
+  return hangulTextRatio(text) > 0.18;
 }
 
 function containsDevanagari(text: string): boolean {
@@ -675,6 +727,7 @@ function matchesRequestedLanguageText(
     cleaned,
     languageExemptAnchors
   );
+  const matchedOnlyExemptAnchors = !cleanedWithoutExemptAnchors && cleaned !== "";
   const candidate = cleanedWithoutExemptAnchors || cleaned;
   if (language === "ko") {
     return /[가-힣]/u.test(candidate);
@@ -684,9 +737,12 @@ function matchesRequestedLanguageText(
       return false;
     }
     if (field === "keyword") {
+      if (matchedOnlyExemptAnchors) {
+        return true;
+      }
       return containsJapaneseKana(candidate) || containsHan(candidate);
     }
-    return containsJapaneseKana(candidate) || containsHan(candidate);
+    return (containsJapaneseKana(candidate) || containsHan(candidate)) && !hasTooMuchHangulForJapaneseLongform(candidate);
   }
   if (language === "hi") {
     return containsDevanagari(candidate);
@@ -981,7 +1037,8 @@ async function fetchLatestNewsContext(topic: string, language: IdeaLanguage): Pr
 
   const mergedLimit = parsePositiveInt(process.env.IDEA_NEWS_MERGED_LIMIT, 6);
   const topicAnchors = normalizeTopicAnchorsForLanguage(extractTopicAnchors(topic), language);
-  const query = buildNewsSearchQuery(topic, language);
+  const translatedTopic = translateTopicHint(topic, language);
+  const query = buildNewsSearchQuery(translatedTopic || topic, language);
 
   if (hasNewsIntent(topic)) {
     const newsCountry = resolveNewsCountryByLanguage(language);
@@ -1056,6 +1113,8 @@ function buildPrompt(
     ? `- Do not reuse existing keywords: ${excludedText}\n`
     : "- Do not duplicate existing keywords.\n";
   const hardSpecificity = requiresHardSpecificity(topic);
+  const translatedTopicHint = translateTopicHint(topic, language);
+  const outputLanguage = describeOutputLanguage(language);
   const specificityRule =
     "- Avoid vague placeholders with no concrete referent (e.g. 'innovative new material' alone).\n" +
     "- Prefer including at least one concrete anchor noun relevant to the topic in Subject or Narration.\n" +
@@ -1084,6 +1143,26 @@ function buildPrompt(
       ? "[Topic Anchors]\n" +
         "- User topic includes anchors in a different script/language.\n" +
         "- Keep the same entity meaning, but express anchor terms naturally in the requested output language.\n\n"
+      : "";
+  const translatedTopicHintBlock = translatedTopicHint
+    ? "[Translated Topic Hint]\n" +
+      `- Treat the user topic "${topic}" as "${translatedTopicHint}" for the requested output language.\n` +
+      `- Prefer Japanese terms like "${translatedTopicHint}" instead of copying the Korean input phrase.\n\n`
+    : "";
+  const topicTranslationRuleBlock =
+    language === "ko"
+      ? ""
+      : "[Cross-language Topic Rule]\n" +
+        `- The user topic may be written in Korean or another language. First internally translate/interpret it into ${outputLanguage}.\n` +
+        `- Generate Keyword, Subject, Description, and Narration from that ${outputLanguage} meaning, not by copying the original topic text.\n` +
+        `- If the original topic contains Korean words, do not copy those Korean words into Keyword, Subject, Description, or Narration unless they are unavoidable proper nouns.\n` +
+        `- For Japanese output, use natural Japanese terms and scripts such as kanji, hiragana, and katakana.\n\n`;
+  const japaneseScriptRuleBlock =
+    language === "ja"
+      ? "[Japanese Script Quality Rule]\n" +
+        "- Do not output Hangul/Korean script in Keyword, Subject, Description, or Narration.\n" +
+        "- Convert Korean names to their common Japanese katakana notation when needed. Example: 예성 -> イェソン.\n" +
+        "- Use correct Japanese/Kanji words. Example: 韓国, not 韓口.\n\n"
       : "";
   const latestNewsContextBlock =
     latestNewsItems.length > 0
@@ -1145,6 +1224,9 @@ function buildPrompt(
     `- Language: ${resolveLanguageInstruction(language)}\n` +
     topicAnchorBlock +
     crossLanguageAnchorGuidanceBlock +
+    translatedTopicHintBlock +
+    topicTranslationRuleBlock +
+    japaneseScriptRuleBlock +
     latestNewsContextBlock +
     domainSpecificityRule +
     specificityRule +
@@ -1238,11 +1320,21 @@ function enforceRules(args: {
     if (output.length >= args.count) {
       return;
     }
-    if (!rowMatchesRequestedLanguage(row, args.language, args.languageExemptAnchors)) {
+    const rowForValidation =
+      args.language === "ja"
+        ? {
+            ...row,
+            Keyword: normalizeJapaneseGeneratedText(row.Keyword),
+            Subject: normalizeJapaneseGeneratedText(row.Subject),
+            Description: normalizeJapaneseGeneratedText(row.Description),
+            Narration: normalizeJapaneseGeneratedText(row.Narration)
+          }
+        : row;
+    if (!rowMatchesRequestedLanguage(rowForValidation, args.language, args.languageExemptAnchors)) {
       languageRejectedCount += 1;
       return;
     }
-    const keyword = normalizeField(row.Keyword);
+    const keyword = normalizeField(rowForValidation.Keyword);
     const keywordKey = normalizeKeywordKey(keyword);
     if (!keywordKey) {
       return;
@@ -1253,9 +1345,9 @@ function enforceRules(args: {
     const normalized: IdeaDraftRow = {
       Status: "준비",
       Keyword: keyword,
-      Subject: normalizeField(row.Subject),
-      Description: normalizeField(row.Description),
-      Narration: normalizeNarrationForIdeas(normalizeField(row.Narration), args.language),
+      Subject: normalizeField(rowForValidation.Subject),
+      Description: normalizeField(rowForValidation.Description),
+      Narration: normalizeNarrationForIdeas(normalizeField(rowForValidation.Narration), args.language),
       publish: "대기중"
     };
     if (rowContainsPlaceholder(normalized)) {

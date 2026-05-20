@@ -4,6 +4,7 @@ import {
   writeAutomationScheduleState
 } from "@/lib/automation-schedule-store";
 import {
+  appendAutomationLog,
   getAutomationState,
   startAutomationRun,
   waitForAutomationRunCompletion
@@ -380,6 +381,7 @@ export async function runAutomationScheduleTick(
       lastResult = "skipped_running";
       lastError = "기존 자동화가 실행 중이라 이번 스케줄은 건너뛰었습니다.";
     } else {
+      appendAutomationLog(userId, "info", "[자동화 스케줄] 자동화 실행 시작");
       await startAutomationRun(userId, {
         sheetName: state.config.sheetName,
         privacyStatus: state.config.privacyStatus,
@@ -392,14 +394,18 @@ export async function runAutomationScheduleTick(
         autoIdeaLanguage: state.config.autoIdeaLanguage,
         autoIdeaIdBase: state.config.autoIdeaIdBase
       });
+      appendAutomationLog(userId, "info", "[자동화 스케줄] 자동화 실행 요청 완료");
       if (options?.waitForCompletion) {
+        appendAutomationLog(userId, "info", "[자동화 스케줄] 자동화 완료 대기 시작");
         const finalState = await waitForAutomationRunCompletion(userId);
         if (finalState.phase === "failed") {
           lastResult = "failed";
           lastError = finalState.lastError || "자동화 실행이 실패했습니다.";
+          appendAutomationLog(userId, "error", `[자동화 스케줄] 자동화 실패: ${lastError}`);
         } else {
           lastResult = "started";
           lastError = undefined;
+          appendAutomationLog(userId, "info", "[자동화 스케줄] 자동화 완료");
         }
       } else {
         lastResult = "started";

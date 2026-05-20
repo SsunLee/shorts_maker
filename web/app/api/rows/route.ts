@@ -3,7 +3,7 @@ import { listRows } from "@/lib/repository";
 import { listWorkflows } from "@/lib/workflow-store";
 import { progressFromStatus } from "@/lib/status";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
-import { toReadableWorkflowMediaUrl } from "@/lib/workflow-media-url";
+import { toPlayableWorkflowVideoUrl } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
 
@@ -16,15 +16,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const withWorkflowHydration = request.nextUrl.searchParams.get("withWorkflow") === "1";
   const rows = await listRows(userId);
+  const rowsWithPlayableVideo = await Promise.all(rows.map(async (row) => ({
+    ...row,
+    videoUrl: await toPlayableWorkflowVideoUrl(row.videoUrl)
+  })));
   if (!withWorkflowHydration) {
-    return NextResponse.json({ rows });
+    return NextResponse.json({ rows: rowsWithPlayableVideo });
   }
 
   const workflows = await listWorkflows(userId);
   const workflowById = new Map(workflows.map((item) => [item.id, item]));
-  const hydratedRows = await Promise.all(rows.map(async (row) => {
+  const hydratedRows = await Promise.all(rowsWithPlayableVideo.map(async (row) => {
     const workflow = workflowById.get(row.id);
-    const fallbackVideoUrl = await toReadableWorkflowMediaUrl(
+    const fallbackVideoUrl = await toPlayableWorkflowVideoUrl(
       workflow?.finalVideoUrl || workflow?.previewVideoUrl
     );
 

@@ -4,7 +4,7 @@ import { runDueInstagramAutomationSchedules } from "@/lib/instagram-automation-s
 
 export const runtime = "nodejs";
 // Keep cron invocation alive while the due automation run finishes.
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 function isAuthorizedCronRequest(request: NextRequest): boolean {
   const secret = String(process.env.CRON_SECRET || "").trim();

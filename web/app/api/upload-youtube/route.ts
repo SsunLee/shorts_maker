@@ -4,9 +4,10 @@ import { getRow, upsertRow } from "@/lib/repository";
 import { getWorkflow } from "@/lib/workflow-store";
 import { uploadVideoToYoutube } from "@/lib/youtube-service";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
+import { appendAutomationLog, markAutomationYoutubeUploadComplete } from "@/lib/automation-runner";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const schema = z.object({
   id: z.string().optional(),
@@ -61,6 +62,11 @@ async function performYoutubeUpload(args: {
       videoUrl: row.videoUrl || videoUrl
     }, args.userId);
   }
+  appendAutomationLog(
+    args.userId,
+    "info",
+    `[${args.payload.id || row?.id || "unknown"}] YouTube 업로드 시작 (${args.payload.defer ? "스케줄/백그라운드" : "즉시 실행"})`
+  );
 
   const requestId = crypto.randomUUID();
   const youtubeUrl = await uploadVideoToYoutube({
@@ -86,6 +92,24 @@ async function performYoutubeUpload(args: {
       status: "uploaded"
     }, args.userId);
   }
+  appendAutomationLog(
+    args.userId,
+    "info",
+    `[${args.payload.id || row?.id || "unknown"}] YouTube 업로드 완료: ${youtubeUrl}`
+  );
+  if (args.payload.defer) {
+    await markAutomationYoutubeUploadComplete({
+      userId: args.userId,
+      rowId: args.payload.id || row?.id,
+      youtubeUrl
+    }).catch((error) => {
+      console.error("[upload-youtube.defer] failed to reconcile automation state", {
+        userId: args.userId,
+        id: args.payload.id || row?.id,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    });
+  }
 
   return youtubeUrl;
 }
@@ -110,9 +134,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
       after(async () => {
         try {
+          appendAutomationLog(userId, "info", `[${payload.id || "unknown"}] YouTube 백그라운드 업로드 실행`);
           await performYoutubeUpload({ payload, userId });
         } catch (error) {
           const message = error instanceof Error ? error.message : "Upload failed";
+          appendAutomationLog(userId, "error", `[${payload.id || "unknown"}] YouTube 업로드 실패: ${message}`);
           console.error("[upload-youtube.defer] failed", {
             userId,
             id: payload.id,

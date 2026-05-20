@@ -6,17 +6,24 @@ import {
   generateNarration,
   generateTtsAudio
 } from "@/lib/openai-service";
+import { appendAutomationLog } from "@/lib/automation-runner";
 import { buildVideoWithEngine } from "@/lib/video-engine-service";
 
 const activeJobs = new Map<string, Promise<void>>();
 
 async function processJob(id: string, payload: CreateVideoRequest, userId?: string): Promise<void> {
+  const log = (level: "info" | "error", message: string): void => {
+    appendAutomationLog(userId, level, `[${id}] ${message}`);
+  };
+
   try {
+    log("info", "Regenerate 시작");
     await upsertRow({
       id,
       status: "generating_script"
     }, userId);
 
+    log("info", "스크립트 준비 시작");
     const narration =
       payload.narration?.trim() ||
       (await generateNarration({
@@ -25,6 +32,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
         targetLengthSec: payload.videoLengthSec
       }, userId));
 
+    log("info", `이미지 프롬프트 생성 시작 (sceneCount=${payload.sceneCount ?? 5})`);
     const imagePrompts = await generateImagePrompts({
       title: payload.title,
       narration,
@@ -38,6 +46,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
         `Image prompt generation returned ${imagePrompts.length} scene(s). At least 3 scenes are required.`
       );
     }
+    log("info", `이미지 프롬프트 생성 완료 (${imagePrompts.length}개)`);
 
     await upsertRow({
       id,
@@ -47,6 +56,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       progress: 45
     }, userId);
 
+    log("info", `이미지 생성 시작 (${imagePrompts.length}개)`);
     const imageUrls = await generateImages(id, imagePrompts, {
       imageAspectRatio: payload.imageAspectRatio === "16:9" ? "16:9" : "9:16",
       visualPolicy: "news_strict",
@@ -59,6 +69,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
           status: "generating_images",
           progress
         }, userId);
+        log("info", `이미지 생성 진행: ${completed}/${total}`);
       }
     }, userId);
     if (imageUrls.length < 3) {
@@ -66,24 +77,28 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
         `Image generation returned ${imageUrls.length} image(s). At least 3 images are required for rendering.`
       );
     }
+    log("info", `이미지 생성 완료 (${imageUrls.length}개)`);
 
     await upsertRow({
       id,
       status: "generating_tts"
     }, userId);
 
+    log("info", "TTS 생성 시작");
     const tts = await generateTtsAudio({
       jobId: id,
       narration,
       voice: payload.voice,
       speed: payload.voiceSpeed
     }, userId);
+    log("info", "TTS 생성 완료");
 
     await upsertRow({
       id,
       status: "video_rendering"
     }, userId);
 
+    log("info", "video-engine 렌더링 요청 시작");
     const video = await buildVideoWithEngine({
       jobId: id,
       imageUrls,
@@ -94,6 +109,7 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       useSfx: payload.useSfx,
       targetDurationSec: payload.videoLengthSec
     }, userId);
+    log("info", "video-engine 렌더링 완료");
 
     await upsertRow({
       id,
@@ -110,12 +126,15 @@ async function processJob(id: string, payload: CreateVideoRequest, userId?: stri
       useSfx: payload.useSfx,
       videoLengthSec: payload.videoLengthSec
     }, userId);
+    log("info", "Regenerate 완료");
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown generation error";
     await upsertRow({
       id,
       status: "failed",
-      error: error instanceof Error ? error.message : "Unknown generation error"
+      error: message
     }, userId);
+    log("error", `Regenerate 실패: ${message}`);
   }
 }
 
@@ -150,4 +169,8 @@ export async function enqueueGeneration(payload: CreateVideoRequest, userId?: st
 
 export function isJobActive(id: string): boolean {
   return activeJobs.has(id);
+}
+
+export async function waitForGeneration(id: string): Promise<void> {
+  await activeJobs.get(id);
 }

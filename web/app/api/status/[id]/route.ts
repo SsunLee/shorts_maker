@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getRow } from "@/lib/repository";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
+import { toPlayableWorkflowVideoUrl } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
 
@@ -20,5 +21,8 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  return NextResponse.json(row);
+  return NextResponse.json({
+    ...row,
+    videoUrl: await toPlayableWorkflowVideoUrl(row.videoUrl)
+  });
 }

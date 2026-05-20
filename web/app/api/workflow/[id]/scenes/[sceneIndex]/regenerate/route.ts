@@ -5,6 +5,7 @@ import { getAuthenticatedUserId } from "@/lib/auth-server";
 import { withReadableWorkflowMediaUrls } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
+export const maxDuration = 800;
 
 const payloadSchema = z
   .object({

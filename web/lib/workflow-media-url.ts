@@ -1,4 +1,5 @@
 import type { VideoWorkflow } from "@/lib/types";
+import { toSignedStorageReadUrl } from "@/lib/object-storage";
 
 const WORKFLOW_MEDIA_PROXY_PATH = "/api/instagram/media-proxy";
 
@@ -29,6 +30,31 @@ export async function toReadableWorkflowMediaUrl(raw?: string): Promise<string |
 
   if (/^https?:\/\//i.test(source)) {
     return toWorkflowMediaProxyUrl(source);
+  }
+
+  return source;
+}
+
+export async function toPlayableWorkflowVideoUrl(raw?: string): Promise<string | undefined> {
+  const source = String(raw || "").trim();
+  if (!source) {
+    return undefined;
+  }
+
+  if (source.startsWith("data:")) {
+    return source;
+  }
+
+  if (source.startsWith("/api/instagram/media-proxy")) {
+    return source;
+  }
+
+  if (source.startsWith("/")) {
+    return source;
+  }
+
+  if (/^https?:\/\//i.test(source)) {
+    return toSignedStorageReadUrl(source, 60 * 60);
   }
 
   return source;

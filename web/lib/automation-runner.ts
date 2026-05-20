@@ -168,6 +168,14 @@ function pushLog(userId: string | undefined, level: "info" | "error", message: s
   schedulePersistState(userId);
 }
 
+export function appendAutomationLog(
+  userId: string | undefined,
+  level: "info" | "error",
+  message: string
+): void {
+  pushLog(userId, level, message);
+}
+
 function logServer(
   level: "info" | "error",
   message: string,
@@ -193,6 +201,49 @@ function normalizeAutoIdeaCount(raw: number | undefined, fallback: number): numb
   return Math.max(1, Math.min(10, Number.isFinite(value) ? value : fallback));
 }
 
+function limitRecentValues(values: string[], limit: number): string[] {
+  const safeLimit = Math.max(1, Math.floor(limit));
+  return values.slice(Math.max(0, values.length - safeLimit));
+}
+
+function formatIdeaGenerationDebug(error: unknown): string | undefined {
+  const debug = (error as { debug?: Record<string, unknown> } | undefined)?.debug;
+  if (!debug || typeof debug !== "object") {
+    return undefined;
+  }
+  const parts = [
+    `provider=${String(debug.provider || "-")}`,
+    `attempts=${String(debug.attemptsTried || 0)}/${String(debug.maxAttempts || 0)}`,
+    `generated=${String(debug.generatedCount || 0)}/${String(debug.requestedCount || 0)}`,
+    `parseFail=${String(debug.parseFailureCount || 0)}`,
+    `langReject=${String(debug.languageRejectedCount || 0)}`,
+    `specificityReject=${String(debug.specificityRejectedCount || 0)}`,
+    `narrationReject=${String(debug.narrationRejectedCount || 0)}`,
+    `placeholderReject=${String(debug.placeholderRejectedCount || 0)}`,
+    `duplicateReject=${String(debug.duplicateRejectedCount || 0)}`,
+    `news=${String(debug.latestNewsItemCount || 0)}`
+  ];
+  const anchors = Array.isArray(debug.appliedTopicAnchors)
+    ? debug.appliedTopicAnchors.map((item) => String(item)).filter(Boolean).slice(0, 6)
+    : [];
+  if (anchors.length > 0) {
+    parts.push(`anchors=${anchors.join("/")}`);
+  }
+  return parts.join(", ");
+}
+
+function isRetryableIdeaGenerationError(error: unknown): boolean {
+  const code = String((error as { code?: unknown } | undefined)?.code || "");
+  return (
+    code === "LANGUAGE_REJECTED" ||
+    code === "JSON_PARSE_FAILED" ||
+    code === "SPECIFICITY_REJECTED" ||
+    code === "PLACEHOLDER_REJECTED" ||
+    code === "NARRATION_REJECTED" ||
+    code === "INSUFFICIENT_UNIQUE_RESULTS"
+  );
+}
+
 function findRowValue(row: Record<string, string>, aliases: string[]): string {
   const aliasSet = new Set(aliases.map((item) => item.trim().toLowerCase()));
   const key = Object.keys(row).find((item) => aliasSet.has(item.trim().toLowerCase()));
@@ -205,6 +256,36 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
     return fallback;
   }
   return parsed;
+}
+
+function parseBoundedPositiveInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = parsePositiveInt(value, fallback);
+  return Math.max(min, Math.min(max, parsed));
+}
+
+async function withAutomationTimeout<T>(
+  task: Promise<T>,
+  args: { label: string; timeoutMs: number }
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${args.label} timed out after ${args.timeoutMs}ms`));
+        }, args.timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function clampInt(value: number, min: number, max: number): number {
@@ -526,8 +607,25 @@ async function generateIdeasForAutomation(args: {
   language: IdeaLanguage;
   idBase?: string;
   count: number;
+  onLog?: (message: string) => void;
 }): Promise<string[]> {
-  const sheetTable = await loadIdeasSheetTable(args.sheetName, args.userId);
+  const timeoutMs = parseBoundedPositiveInt(
+    process.env.AUTOMATION_IDEA_TIMEOUT_MS,
+    300_000,
+    30_000,
+    780_000
+  );
+  args.onLog?.(`[자동 아이디어] 시트 기존 데이터 로드 시작`);
+  const sheetTable = await withAutomationTimeout(
+    loadIdeasSheetTable(args.sheetName, args.userId),
+    {
+      label: "auto_idea/load_sheet",
+      timeoutMs
+    }
+  );
+  args.onLog?.(
+    `[자동 아이디어] 시트 기존 데이터 로드 완료 (${sheetTable.sheetName}, ${sheetTable.rows.length}행)`
+  );
   const existingKeywords = sheetTable.rows
     .map((row) => findRowValue(row, ["keyword"]))
     .filter(Boolean);
@@ -537,21 +635,90 @@ async function generateIdeasForAutomation(args: {
   const existingNarrations = sheetTable.rows
     .map((row) => findRowValue(row, ["narration"]))
     .filter(Boolean);
-  const items = await generateIdeas({
-    topic: args.topic,
-    count: args.count,
-    existingKeywords,
-    existingSubjects,
-    existingNarrations,
-    language: args.language,
-    userId: args.userId
-  });
-  const result = await appendIdeaRowsToSheet({
-    sheetName: args.sheetName,
-    idBase: args.idBase || args.topic,
-    items,
-    userId: args.userId
-  });
+  const contextLimit = parseBoundedPositiveInt(
+    process.env.AUTOMATION_IDEA_CONTEXT_ROW_LIMIT,
+    80,
+    20,
+    300
+  );
+  const generationExistingKeywords = limitRecentValues(existingKeywords, contextLimit);
+  const generationExistingSubjects = limitRecentValues(existingSubjects, contextLimit);
+  const generationExistingNarrations = limitRecentValues(existingNarrations, contextLimit);
+  if (
+    existingKeywords.length > generationExistingKeywords.length ||
+    existingSubjects.length > generationExistingSubjects.length ||
+    existingNarrations.length > generationExistingNarrations.length
+  ) {
+    args.onLog?.(
+      `[자동 아이디어] 생성 컨텍스트 축소 적용 (최근 ${contextLimit}행 기준, 저장 전 전체 시트 중복 검사는 유지)`
+    );
+  }
+  const provider = await resolveProviderForTask("text", args.userId);
+  const model = await resolveModelForTask(provider, "text", args.userId);
+  const retryLimit = parseBoundedPositiveInt(
+    process.env.AUTOMATION_IDEA_RETRY_COUNT,
+    5,
+    1,
+    20
+  );
+  let items: Awaited<ReturnType<typeof generateIdeas>> | undefined;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= retryLimit; attempt += 1) {
+    args.onLog?.(
+      `[자동 아이디어] AI 아이디어 요청 시작 (${provider}:${model}, 배치 ${attempt}/${retryLimit})`
+    );
+    try {
+      items = await withAutomationTimeout(
+        generateIdeas({
+          topic: args.topic,
+          count: args.count,
+          existingKeywords: generationExistingKeywords,
+          existingSubjects: generationExistingSubjects,
+          existingNarrations: generationExistingNarrations,
+          language: args.language,
+          userId: args.userId
+        }),
+        {
+          label: `auto_idea/generate/${provider}:${model}/batch-${attempt}`,
+          timeoutMs
+        }
+      );
+      break;
+    } catch (error) {
+      lastError = error;
+      const debug = formatIdeaGenerationDebug(error);
+      if (debug) {
+        args.onLog?.(`[자동 아이디어] 생성 실패 상세 (${attempt}/${retryLimit}): ${debug}`);
+      }
+      if (!isRetryableIdeaGenerationError(error) || attempt >= retryLimit) {
+        throw error;
+      }
+      args.onLog?.(`[자동 아이디어] 재시도 준비 (${attempt + 1}/${retryLimit})`);
+      await sleep(800);
+    }
+  }
+  if (!items) {
+    throw lastError instanceof Error ? lastError : new Error("자동 아이디어 생성에 실패했습니다.");
+  }
+  args.onLog?.(`[자동 아이디어] AI 아이디어 응답 완료 (${items.length}개)`);
+  args.onLog?.(`[자동 아이디어] 시트 저장 시작`);
+  const result = await withAutomationTimeout(
+    appendIdeaRowsToSheet({
+      sheetName: args.sheetName,
+      idBase: args.idBase || args.topic,
+      items,
+      userId: args.userId
+    }),
+    {
+      label: "auto_idea/append_sheet",
+      timeoutMs
+    }
+  );
+  if (result.skipped.length > 0) {
+    args.onLog?.(
+      `[자동 아이디어] 시트 저장 중 ${result.skipped.length}개 중복/유사 항목 제외`
+    );
+  }
   return result.insertedIds;
 }
 
@@ -927,6 +1094,63 @@ function requestStopInternal(userId: string | undefined, reason: StopReason, err
   });
 }
 
+async function reconcileCompletedUploadStateFromLogs(userId?: string): Promise<void> {
+  const state = getStateRef(userId);
+  if (!isRunningLikePhase(state.phase)) {
+    return;
+  }
+  const completedUploadLog = [...state.logs]
+    .reverse()
+    .find((entry) => /YouTube 업로드 완료:|업로드 완료:/.test(entry.message));
+  if (!completedUploadLog) {
+    return;
+  }
+
+  state.phase = "completed";
+  state.finishedAt = completedUploadLog.at || new Date().toISOString();
+  state.stopRequested = false;
+  state.currentRowId = undefined;
+  state.currentRowTitle = undefined;
+  state.uploaded = Math.max(state.uploaded, 1);
+  state.processed = Math.max(state.processed, state.uploaded, 1);
+  state.remaining = Math.max(0, state.remaining - 1);
+  await persistStateNow(userId);
+}
+
+export async function markAutomationYoutubeUploadComplete(args: {
+  userId?: string;
+  rowId?: string;
+  youtubeUrl?: string;
+}): Promise<void> {
+  await hydrateStateFromStore(args.userId);
+  const state = getStateRef(args.userId);
+  const matchedCurrentRow = Boolean(args.rowId && state.currentRowId === args.rowId);
+  const hasNoActiveRow = !state.currentRowId;
+
+  state.uploaded = Math.max(state.uploaded + 1, 1);
+  state.processed = Math.max(state.processed, state.uploaded, 1);
+  state.remaining = Math.max(0, state.remaining - 1);
+  if (matchedCurrentRow || hasNoActiveRow) {
+    state.currentRowId = undefined;
+    state.currentRowTitle = undefined;
+  }
+
+  if (isRunningLikePhase(state.phase) && (matchedCurrentRow || hasNoActiveRow)) {
+    state.phase = "completed";
+    state.finishedAt = new Date().toISOString();
+    state.stopRequested = false;
+    pushLog(
+      args.userId,
+      "info",
+      args.youtubeUrl
+        ? `YouTube 백그라운드 업로드 완료 상태 반영: ${args.youtubeUrl}`
+        : "YouTube 백그라운드 업로드 완료 상태를 자동화에 반영했습니다."
+    );
+  }
+
+  await persistStateNow(args.userId);
+}
+
 async function processOneRow(args: {
   userId?: string;
   row: SheetReadyRow;
@@ -1210,7 +1434,8 @@ async function runAutomationLoop(args: {
         topic,
         language,
         idBase: args.autoIdeaIdBase,
-        count: generationCount
+        count: generationCount,
+        onLog: (message) => pushLog(args.userId, "info", message)
       });
       autoIdeaRunLimit = insertedIds.length;
       insertedIds.forEach((id) => prioritizedRowIds.add(id));
@@ -1238,6 +1463,7 @@ async function runAutomationLoop(args: {
         logServer("info", "run:completed-no-ready-rows", { userId: args.userId || "" });
         pushLog(args.userId, "info", "준비 상태 row가 없어 자동화를 종료합니다.");
         requestStopInternal(args.userId, "completed");
+        await persistStateNow(args.userId);
         return;
       }
       if (effectiveMaxItems && processedThisRun >= effectiveMaxItems) {
@@ -1247,6 +1473,7 @@ async function runAutomationLoop(args: {
         });
         pushLog(args.userId, "info", `maxItems(${effectiveMaxItems})에 도달하여 자동화를 종료합니다.`);
         requestStopInternal(args.userId, "completed");
+        await persistStateNow(args.userId);
         return;
       }
 
@@ -1323,8 +1550,22 @@ async function runAutomationLoop(args: {
         }
       }
       processedThisRun += 1;
+      state.remaining = Math.max(0, state.remaining - 1);
+      await persistStateNow(args.userId);
       if (result.fatal) {
         requestStopInternal(args.userId, "failed", state.lastError || "Fatal automation error");
+        await persistStateNow(args.userId);
+        return;
+      }
+      if (effectiveMaxItems && processedThisRun >= effectiveMaxItems) {
+        logServer("info", "run:completed-max-items-after-row", {
+          userId: args.userId || "",
+          maxItems: effectiveMaxItems,
+          processedThisRun
+        });
+        pushLog(args.userId, "info", `처리 개수 ${processedThisRun}/${effectiveMaxItems} 완료로 자동화를 종료합니다.`);
+        requestStopInternal(args.userId, "completed");
+        await persistStateNow(args.userId);
         return;
       }
     }
@@ -1345,6 +1586,7 @@ async function runAutomationLoop(args: {
 
 export async function getAutomationState(userId?: string): Promise<AutomationRunState> {
   await hydrateStateFromStore(userId);
+  await reconcileCompletedUploadStateFromLogs(userId);
   return snapshotState(userId);
 }
 
@@ -1448,8 +1690,32 @@ export async function startAutomationRun(
     autoIdeaTopic: args.autoIdeaTopic?.trim() || undefined,
     autoIdeaLanguage: normalizeAutoIdeaLanguage(args.autoIdeaLanguage),
     autoIdeaIdBase: args.autoIdeaIdBase?.trim() || undefined
-  }).finally(() => {
+  }).finally(async () => {
     delete getPromiseStore()[key];
+    const current = getStateRef(userId);
+    if (
+      current.runId === runId &&
+      isRunningLikePhase(current.phase) &&
+      !current.currentRowId &&
+      (current.processed > 0 || current.uploaded > 0 || current.failed > 0)
+    ) {
+      current.phase = current.lastError ? "failed" : "completed";
+      current.finishedAt = new Date().toISOString();
+      current.stopRequested = false;
+      pushLog(
+        userId,
+        current.lastError ? "error" : "info",
+        current.lastError
+          ? "자동화 실행 컨텍스트가 종료되어 실패 상태로 정리했습니다."
+          : "자동화 실행 컨텍스트가 종료되어 완료 상태로 정리했습니다."
+      );
+      await persistStateNow(userId).catch((error) => {
+        console.error("[automation-runner] failed to persist finalizer state", {
+          userId: userId || "",
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
   });
 
   return snapshotState(userId);

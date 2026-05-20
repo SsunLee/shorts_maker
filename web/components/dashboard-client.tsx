@@ -641,6 +641,34 @@ export function DashboardClient(): React.JSX.Element {
     }
   }
 
+  async function runScheduleNow(): Promise<void> {
+    setScheduleBusy(true);
+    setScheduleError(undefined);
+    try {
+      if (scheduleDraftDirty) {
+        throw new Error("저장되지 않은 스케줄 변경 사항이 있습니다. 먼저 [스케줄 저장]을 눌러 주세요.");
+      }
+      const response = await fetch("/api/automation/schedule/run", {
+        method: "POST"
+      });
+      const data = await readJsonResponse<AutomationScheduleResponse>(response);
+      if (!response.ok) {
+        throw new Error(data.error || `Failed to run schedule (HTTP ${response.status}).`);
+      }
+      if (!data.schedule?.config?.enabled) {
+        throw new Error("스케줄이 비활성화 상태입니다. 먼저 스케줄을 활성화하고 저장해 주세요.");
+      }
+      setSchedule(data.schedule);
+      hydrateScheduleForm(data.schedule);
+      await refreshAutomation();
+      await refresh();
+    } catch (runError) {
+      setScheduleError(runError instanceof Error ? runError.message : "Unknown error");
+    } finally {
+      setScheduleBusy(false);
+    }
+  }
+
   async function startAutomation(): Promise<void> {
     setAutomationBusy(true);
     setAutomationError(undefined);
@@ -715,22 +743,32 @@ export function DashboardClient(): React.JSX.Element {
   }
 
   async function regenerate(row: VideoRow): Promise<void> {
-    await fetch("/api/generate-video", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: row.id,
-        title: row.title,
-        topic: row.topic,
-        narration: row.narration,
-        imageStyle: row.imageStyle || "Cinematic photo-real",
-        voice: row.voice || "alloy",
-        useSfx: row.useSfx ?? true,
-        videoLengthSec: row.videoLengthSec || 30,
-        tags: row.tags
-      })
-    });
-    await refresh();
+    setAutomationError(undefined);
+    try {
+      const response = await fetch("/api/generate-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: row.id,
+          title: row.title,
+          topic: row.topic,
+          narration: row.narration,
+          imageStyle: row.imageStyle || "Cinematic photo-real",
+          voice: row.voice || "alloy",
+          useSfx: row.useSfx ?? true,
+          videoLengthSec: row.videoLengthSec || 30,
+          tags: row.tags
+        })
+      });
+      const data = await readJsonResponse<{ error?: string }>(response);
+      if (!response.ok) {
+        throw new Error(data.error || `Regenerate failed (HTTP ${response.status}).`);
+      }
+      await Promise.all([refresh(), refreshAutomation()]);
+    } catch (error) {
+      setAutomationError(error instanceof Error ? error.message : "Regenerate failed.");
+      await Promise.allSettled([refresh(), refreshAutomation()]);
+    }
   }
 
   async function upload(
@@ -999,7 +1037,7 @@ export function DashboardClient(): React.JSX.Element {
           <p className="text-xs text-destructive">최근 오류: {automation.lastError}</p>
         ) : null}
         {recentAutomationLogs.length ? (
-          <div className="max-h-40 space-y-1 overflow-auto rounded-md border bg-muted/30 p-2 text-xs">
+          <div className="app-panel-scrollbar max-h-40 space-y-1 overflow-auto rounded-md border bg-muted/30 p-2 text-xs">
             {recentAutomationLogs.map((log) => (
               <p key={`${log.at}:${log.message}`} className={log.level === "error" ? "text-destructive" : ""}>
                 [{new Date(log.at).toLocaleTimeString()}] {log.message}
@@ -1673,10 +1711,22 @@ export function DashboardClient(): React.JSX.Element {
           <Button type="button" onClick={() => void saveSchedule()} disabled={scheduleBusy}>
             {scheduleBusy ? "저장 중..." : "스케줄 저장"}
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void runScheduleNow()}
+            disabled={scheduleBusy}
+          >
+            지금 실행(테스트)
+          </Button>
           <Button type="button" variant="outline" onClick={() => void disableSchedule()} disabled={scheduleBusy}>
             스케줄 비활성화
           </Button>
         </div>
+        <p className="text-xs text-muted-foreground">
+          일일 실행 시각이 현재 KST 시각보다 이미 지났다면 다음 실행은 다음 날짜로 예약됩니다.
+          시간 테스트는 저장 후 [지금 실행(테스트)]로 동일 설정을 즉시 실행하세요.
+        </p>
         {scheduleDraftDirty ? (
           <p className="text-xs text-amber-500">저장되지 않은 스케줄 변경 사항이 있습니다.</p>
         ) : null}

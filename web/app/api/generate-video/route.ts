@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { enqueueGeneration } from "@/lib/generation-worker";
+import { enqueueGeneration, waitForGeneration } from "@/lib/generation-worker";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
+export const maxDuration = 800;
 
 const requestSchema = z.object({
   id: z.string().min(1).optional(),
@@ -30,6 +31,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const body = await request.json();
     const payload = requestSchema.parse(body);
     const id = await enqueueGeneration(payload, userId);
+    if (process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)) {
+      after(async () => {
+        await waitForGeneration(id);
+      });
+    }
     return NextResponse.json({ id });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid request";
