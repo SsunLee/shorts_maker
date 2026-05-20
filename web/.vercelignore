@@ -1,5 +1,6 @@
 .next
 .next-*
+.local
 node_modules
 data
 public/generated

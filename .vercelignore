@@ -3,6 +3,7 @@ node_modules
 .next-*
 web/.next
 web/.next-*
+web/.local
 web/node_modules
 video-engine/.venv
 video-engine/outputs
