@@ -35,8 +35,8 @@ export async function resolveApiKeys(
 ): Promise<{ openaiKey?: string; geminiKey?: string }> {
   const settings = await getSettings(userId);
   return {
-    openaiKey: process.env.OPENAI_API_KEY || settings.openaiApiKey,
-    geminiKey: process.env.GEMINI_API_KEY || settings.geminiApiKey
+    openaiKey: settings.openaiApiKey || process.env.OPENAI_API_KEY,
+    geminiKey: settings.geminiApiKey || process.env.GEMINI_API_KEY
   };
 }
 
@@ -72,8 +72,8 @@ function mixedTaskProvider(settings: AppSettings, task: AiTask): AiProvider | un
 export async function resolveProviderForTask(task: AiTask, userId?: string): Promise<AiProvider> {
   const settings = await getSettings(userId);
   const keys = {
-    openaiKey: process.env.OPENAI_API_KEY || settings.openaiApiKey,
-    geminiKey: process.env.GEMINI_API_KEY || settings.geminiApiKey
+    openaiKey: settings.openaiApiKey || process.env.OPENAI_API_KEY,
+    geminiKey: settings.geminiApiKey || process.env.GEMINI_API_KEY
   };
   const mode = resolveMode(settings);
 

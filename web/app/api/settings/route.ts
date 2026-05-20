@@ -8,6 +8,8 @@ export const runtime = "nodejs";
 const schema = z.object({
   openaiApiKey: z.string().optional(),
   geminiApiKey: z.string().optional(),
+  openDartApiKey: z.string().optional(),
+  krxApiKey: z.string().optional(),
   aiMode: z.enum(["auto", "openai", "gemini", "mixed"]).optional(),
   aiTextProvider: z.enum(["openai", "gemini"]).optional(),
   aiImageProvider: z.enum(["openai", "gemini"]).optional(),

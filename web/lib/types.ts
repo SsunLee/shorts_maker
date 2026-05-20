@@ -51,6 +51,8 @@ export interface VideoRow {
 export interface AppSettings {
   openaiApiKey?: string;
   geminiApiKey?: string;
+  openDartApiKey?: string;
+  krxApiKey?: string;
   aiMode?: "auto" | "openai" | "gemini" | "mixed";
   aiTextProvider?: "openai" | "gemini";
   aiImageProvider?: "openai" | "gemini";

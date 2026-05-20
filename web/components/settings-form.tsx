@@ -16,6 +16,8 @@ import { AppTheme, applyTheme, getStoredTheme, setStoredTheme, THEME_CHANGED_EVE
 const emptySettings: AppSettings = {
   openaiApiKey: "",
   geminiApiKey: "",
+  openDartApiKey: "",
+  krxApiKey: "",
   aiMode: "auto",
   aiTextProvider: "gemini",
   aiImageProvider: "gemini",
@@ -996,6 +998,32 @@ export function SettingsForm(): React.JSX.Element {
               type="password"
               value={settings.geminiApiKey}
               onChange={(e) => update("geminiApiKey", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="openDartApiKey"
+              label="OpenDART API Key"
+              help="금감원 OpenDART에서 발급한 인증키입니다. 블로그 종목 큐의 실제 공시/재무 데이터 연동에 사용합니다."
+            />
+            <Input
+              id="openDartApiKey"
+              type="password"
+              value={settings.openDartApiKey || ""}
+              onChange={(e) => update("openDartApiKey", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="krxApiKey"
+              label="KRX API Key"
+              help="KRX OpenAPI 인증키입니다. 있으면 블로그 종목 큐 가져오기에서 공식 일별매매정보를 우선 사용해 시가총액 기준 순위를 계산합니다."
+            />
+            <Input
+              id="krxApiKey"
+              type="password"
+              value={settings.krxApiKey || ""}
+              onChange={(e) => update("krxApiKey", e.target.value)}
             />
           </div>
 

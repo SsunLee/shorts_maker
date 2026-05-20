@@ -109,6 +109,8 @@ function readSettingsFromEnv(): AppSettings {
   return {
     openaiApiKey: process.env.OPENAI_API_KEY || undefined,
     geminiApiKey: process.env.GEMINI_API_KEY || undefined,
+    openDartApiKey: process.env.OPENDART_API_KEY || process.env.OPEN_DART_API_KEY || undefined,
+    krxApiKey: process.env.KRX_API_KEY || process.env.KRX_AUTH_KEY || undefined,
     aiMode:
       process.env.AI_PROVIDER === "openai" ||
       process.env.AI_PROVIDER === "gemini" ||

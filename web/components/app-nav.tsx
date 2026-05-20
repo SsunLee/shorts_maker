@@ -6,18 +6,10 @@ import { usePathname } from "next/navigation";
 import {
   ChevronDown,
   ChevronRight,
-  Clapperboard,
-  Film,
-  Home,
-  Images,
-  Instagram,
-  LayoutTemplate,
-  Lightbulb,
+  FileText,
   LogOut,
   Moon,
-  Newspaper,
   MoreHorizontal,
-  MessageCircle,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
@@ -55,30 +47,99 @@ type NavSection = {
 
 type MobileTabId = "youtube" | "instagram" | "settings" | "more";
 
+function BrandMenuIcon({
+  className,
+  src
+}: {
+  className?: string;
+  src: string;
+}): React.JSX.Element {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn("relative inline-flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden", className)}
+    >
+      <Image src={src} alt="" fill sizes="20px" className="object-contain" />
+    </span>
+  );
+}
+
+function YouTubeMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/youtube-brand.png" />;
+}
+
+function InstagramMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/instagram-brand.png" />;
+}
+
+function TemplateMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/template.png" />;
+}
+
+function IdeaMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/idea.png" />;
+}
+
+function DashboardMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/dashboard.png" />;
+}
+
+function VideoCameraMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/video-camera.png" />;
+}
+
+function NewsMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/news.png" />;
+}
+
+function DmMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/dm.png" />;
+}
+
+function FeedMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/feed.png" />;
+}
+
+function ReelsMenuIcon({ className }: { className?: string }): React.JSX.Element {
+  return <BrandMenuIcon className={className} src="/icons/menu/reels.png" />;
+}
+
 const NAV_SECTIONS: NavSection[] = [
   {
     id: "youtube",
     label: "유튜브",
-    icon: Film,
+    icon: YouTubeMenuIcon,
     links: [
-      { href: "/templates", label: "템플릿", icon: LayoutTemplate },
-      { href: "/ideas", label: "아이디어", icon: Lightbulb },
-      { href: "/dashboard", label: "Dashboard", icon: Home },
-      { href: "/create", label: "영상 생성 (단건)", icon: Clapperboard }
+      { href: "/templates", label: "템플릿", icon: TemplateMenuIcon },
+      { href: "/ideas", label: "아이디어", icon: IdeaMenuIcon },
+      { href: "/dashboard", label: "Dashboard", icon: DashboardMenuIcon },
+      { href: "/create", label: "영상 생성 (단건)", icon: VideoCameraMenuIcon }
     ]
   },
   {
     id: "instagram",
     label: "인스타그램",
-    icon: Instagram,
+    icon: InstagramMenuIcon,
     links: [
-      { href: "/instagram/templates", label: "템플릿", icon: LayoutTemplate },
-      { href: "/instagram/ideas", label: "아이디어", icon: Lightbulb },
-      { href: "/instagram/news", label: "뉴스 정보 가져오기", icon: Newspaper, matchPrefixes: ["/instagram/news"] },
-      { href: "/instagram/dm", label: "DM 자동 전송", icon: MessageCircle, matchPrefixes: ["/instagram/dm"] },
-      { href: "/instagram/feed", label: "피드", icon: Images },
-      { href: "/instagram/reels", label: "릴스", icon: Clapperboard },
-      { href: "/instagram/dashboard", label: "Dashboard", icon: Home, matchPrefixes: ["/instagram/dashboard"] }
+      { href: "/instagram/templates", label: "템플릿", icon: TemplateMenuIcon },
+      { href: "/instagram/ideas", label: "아이디어", icon: IdeaMenuIcon },
+      { href: "/instagram/news", label: "뉴스 정보 가져오기", icon: NewsMenuIcon, matchPrefixes: ["/instagram/news"] },
+      { href: "/instagram/dm", label: "DM 자동 전송", icon: DmMenuIcon, matchPrefixes: ["/instagram/dm"] },
+      { href: "/instagram/feed", label: "피드", icon: FeedMenuIcon },
+      { href: "/instagram/reels", label: "릴스", icon: ReelsMenuIcon },
+      { href: "/instagram/dashboard", label: "Dashboard", icon: DashboardMenuIcon, matchPrefixes: ["/instagram/dashboard"] }
+    ]
+  },
+  {
+    id: "blog",
+    label: "블로그",
+    icon: FileText,
+    links: [
+      { href: "/blog/dashboard", label: "Dashboard", icon: DashboardMenuIcon, matchPrefixes: ["/blog/dashboard"] },
+      { href: "/blog/ideas", label: "아이디어", icon: IdeaMenuIcon, matchPrefixes: ["/blog/ideas"] },
+      { href: "/blog/stocks", label: "종목 큐", icon: FileText, matchPrefixes: ["/blog/stocks"] },
+      { href: "/blog/templates", label: "템플릿", icon: TemplateMenuIcon, matchPrefixes: ["/blog/templates"] },
+      { href: "/blog/write", label: "글작성", icon: FileText, matchPrefixes: ["/blog/write"] }
     ]
   }
 ];
@@ -244,6 +305,9 @@ export function AppNav(): React.JSX.Element {
     if (pathname.startsWith("/settings") || pathname.startsWith("/admin")) {
       return "settings";
     }
+    if (pathname.startsWith("/blog")) {
+      return "more";
+    }
     return "youtube";
   }, [pathname]);
 
@@ -319,8 +383,8 @@ export function AppNav(): React.JSX.Element {
     label: string;
     icon: React.ComponentType<{ className?: string }>;
   }> = [
-    { id: "youtube", label: "유튜브", icon: Film },
-    { id: "instagram", label: "인스타그램", icon: Instagram },
+    { id: "youtube", label: "유튜브", icon: YouTubeMenuIcon },
+    { id: "instagram", label: "인스타그램", icon: InstagramMenuIcon },
     { id: "settings", label: "설정", icon: Settings },
     { id: "more", label: "더보기", icon: MoreHorizontal }
   ];
@@ -356,7 +420,7 @@ export function AppNav(): React.JSX.Element {
     return (
       <>
         {mobilePanelOpen ? (
-          <div className="fixed inset-x-0 bottom-[74px] z-40 max-h-[58vh] overflow-y-auto border-t border-border/70 bg-card/95 px-4 pb-4 pt-3 backdrop-blur-sm">
+          <div className="app-panel-scrollbar fixed inset-x-0 bottom-[74px] z-40 max-h-[58vh] overflow-y-auto border-t border-border/70 bg-card/95 px-4 pb-4 pt-3 backdrop-blur-sm">
             <div className="mb-2 flex items-center justify-between gap-2">
               <p className="text-sm font-semibold">{mobilePanelTitle}</p>
               <Button
@@ -448,6 +512,7 @@ export function AppNav(): React.JSX.Element {
             {mobileTabItems.map((item) => {
               const Icon = item.icon;
               const active = mobileTab === item.id;
+              const iconClass = item.id === "youtube" || item.id === "instagram" ? "mb-1 h-5 w-5" : "mb-1 h-4 w-4";
               return (
                 <button
                   key={item.id}
@@ -458,7 +523,7 @@ export function AppNav(): React.JSX.Element {
                   )}
                   onClick={() => handleMobileTabSelect(item.id)}
                 >
-                  <Icon className="mb-1 h-4 w-4" />
+                  <Icon className={iconClass} />
                   <span>{item.label}</span>
                 </button>
               );
@@ -520,10 +585,11 @@ export function AppNav(): React.JSX.Element {
         </div>
       ) : null}
 
-      <nav className="flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
+      <nav className="app-sidebar-scrollbar flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
         {filteredSections.map((section) => {
           const isExpanded = expandedSections[section.id] ?? true;
           const sectionActive = section.links.some((item) => isLinkActive(item));
+          const sectionIconClass = section.id === "youtube" || section.id === "instagram" ? "h-5 w-5" : "h-4 w-4";
           return (
           <div key={section.id} className="space-y-1">
             {collapsedEffective ? (
@@ -534,7 +600,7 @@ export function AppNav(): React.JSX.Element {
                 )}
                 title={section.label}
               >
-                <section.icon className="h-4 w-4" />
+                <section.icon className={sectionIconClass} />
               </div>
             ) : (
               <button
@@ -551,7 +617,7 @@ export function AppNav(): React.JSX.Element {
               >
                 <span className="inline-flex items-center gap-2">
                   <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-background/80">
-                    <section.icon className="h-4 w-4" />
+                    <section.icon className={sectionIconClass} />
                   </span>
                   <span>{section.label}</span>
                   <span className="rounded-full border border-border/70 bg-background/80 px-2 py-0.5 text-[11px] leading-none text-muted-foreground">
