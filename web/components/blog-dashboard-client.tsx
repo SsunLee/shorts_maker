@@ -65,6 +65,7 @@ type StockBatchStatusFilter = "all" | BlogStockQueueStatus;
 
 const BLOG_TISTORY_PENDING_BATCH_KEY = "shorts-maker:blog-tistory-pending-batch:v1";
 const BLOG_TISTORY_FINALIZED_STATUS_KEY = "shorts-maker:blog-tistory-finalized-status:v1";
+const STOCK_BATCH_MAX_COUNT = 100;
 const STOCK_BATCH_RETRY_DELAYS_MS = [2500, 6000, 12000];
 const STOCK_BATCH_STATUS_LABELS: Record<BlogStockQueueStatus, string> = {
   done: "완료",
@@ -162,6 +163,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function parseBoundedInteger(value: string, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
 }
 
 function stringifyBlogIdeaError(payload: GeneratedBlogIdeaResponse, httpStatus: number, fallback: string): string {
@@ -302,6 +311,8 @@ export function BlogDashboardClient(): React.JSX.Element {
   const [automationStatus, setAutomationStatus] = useState<TistoryAutomationStatus>({ state: "idle", message: "실행 이력이 없습니다." });
   const [stockBatchBusy, setStockBatchBusy] = useState(false);
   const [stockBatchCount, setStockBatchCount] = useState("1");
+  const [stockBatchChunkDelaySec, setStockBatchChunkDelaySec] = useState("45");
+  const [stockBatchChunkSize, setStockBatchChunkSize] = useState("3");
   const [stockBatchMessage, setStockBatchMessage] = useState("");
   const [stockBatchMarketFilter, setStockBatchMarketFilter] = useState<StockBatchMarketFilter>("all");
   const [stockBatchExcludePreferred, setStockBatchExcludePreferred] = useState(true);
@@ -405,9 +416,9 @@ export function BlogDashboardClient(): React.JSX.Element {
   const stockBatchTargets = useMemo(() => {
     const selected = stockBatchSelectableStocks.filter((item) => stockBatchSelectedIds.includes(item.id));
     if (selected.length > 0) {
-      return selected;
+      return selected.slice(0, STOCK_BATCH_MAX_COUNT);
     }
-    const limit = Math.max(1, Math.min(20, Number.parseInt(stockBatchCount, 10) || 1));
+    const limit = parseBoundedInteger(stockBatchCount, 1, 1, STOCK_BATCH_MAX_COUNT);
     return stockBatchSelectableStocks.slice(0, limit);
   }, [stockBatchSelectableStocks, stockBatchCount, stockBatchSelectedIds]);
 
@@ -673,7 +684,7 @@ export function BlogDashboardClient(): React.JSX.Element {
   }
 
   function selectStockBatchTopCount(): void {
-    const limit = Math.max(1, Math.min(20, Number.parseInt(stockBatchCount, 10) || 1));
+    const limit = parseBoundedInteger(stockBatchCount, 1, 1, STOCK_BATCH_MAX_COUNT);
     setStockBatchSelectedIds(stockBatchSelectableStocks.slice(0, limit).map((item) => item.id));
   }
 
@@ -684,6 +695,18 @@ export function BlogDashboardClient(): React.JSX.Element {
       return;
     }
     setStockBatchBusy(true);
+    const chunkSize = parseBoundedInteger(stockBatchChunkSize, 3, 1, 10);
+    const chunkDelayMs = parseBoundedInteger(stockBatchChunkDelaySec, 45, 0, 600) * 1000;
+    const totalChunks = Math.max(1, Math.ceil(targets.length / chunkSize));
+    const pauseAfterChunkIfNeeded = async (processedCount: number, chunkIndex: number): Promise<void> => {
+      if (processedCount >= targets.length || processedCount % chunkSize !== 0 || chunkDelayMs <= 0) {
+        return;
+      }
+      setStockBatchMessage(
+        `[${processedCount}/${targets.length}] 묶음 ${chunkIndex}/${totalChunks} 완료 · 과부하 방지를 위해 ${Math.round(chunkDelayMs / 1000)}초 대기 후 계속합니다.`
+      );
+      await sleep(chunkDelayMs);
+    };
     let nextIdeas = [...ideas];
     let nextQueue = [...queue];
     let latestCreatedIdea: BlogIdea | undefined;
@@ -692,12 +715,15 @@ export function BlogDashboardClient(): React.JSX.Element {
     try {
       for (let index = 0; index < targets.length; index += 1) {
         const target = targets[index];
+        const chunkIndex = Math.floor(index / chunkSize) + 1;
         let payload: GeneratedBlogIdeaResponse | undefined;
         let lastErrorMessage = "";
 
         for (let attempt = 0; attempt <= STOCK_BATCH_RETRY_DELAYS_MS.length; attempt += 1) {
           const attemptLabel = STOCK_BATCH_RETRY_DELAYS_MS.length > 0 ? ` · 시도 ${attempt + 1}/${STOCK_BATCH_RETRY_DELAYS_MS.length + 1}` : "";
-          setStockBatchMessage(`[${index + 1}/${targets.length}] ${stockLabel(target)} 초안 생성 중입니다${attemptLabel}.`);
+          setStockBatchMessage(
+            `[${index + 1}/${targets.length} · 묶음 ${chunkIndex}/${totalChunks}] ${stockLabel(target)} 초안 생성 중입니다${attemptLabel}.`
+          );
           const response = await fetch("/api/blog/ideas/generate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -735,6 +761,7 @@ export function BlogDashboardClient(): React.JSX.Element {
         if (!payload) {
           failures.push(`${target.name}: ${lastErrorMessage || "초안 생성 실패"}`);
           setStockBatchMessage(`[${index + 1}/${targets.length}] ${stockLabel(target)} 생성 실패 후 다음 종목으로 넘어갑니다.`);
+          await pauseAfterChunkIfNeeded(index + 1, chunkIndex);
           continue;
         }
 
@@ -761,6 +788,7 @@ export function BlogDashboardClient(): React.JSX.Element {
         if (!idea.markdown) {
           failures.push(`${target.name}: 초안 본문이 비어 있습니다.`);
           setStockBatchMessage(`[${index + 1}/${targets.length}] ${stockLabel(target)} 본문이 비어 있어 다음 종목으로 넘어갑니다.`);
+          await pauseAfterChunkIfNeeded(index + 1, chunkIndex);
           continue;
         }
         idea.imagePrompt = buildRepresentativeImagePrompt(idea);
@@ -774,6 +802,7 @@ export function BlogDashboardClient(): React.JSX.Element {
         persistQueue(nextQueue);
         latestCreatedIdea = idea;
         succeededIds.add(target.id);
+        await pauseAfterChunkIfNeeded(index + 1, chunkIndex);
       }
 
       if (latestCreatedIdea) {
@@ -885,23 +914,46 @@ export function BlogDashboardClient(): React.JSX.Element {
           </Button>
         </div>
 
-        <div className="grid gap-3 lg:grid-cols-[160px_minmax(0,1fr)_190px]">
+        <div className="grid gap-3 xl:grid-cols-[140px_minmax(0,1fr)_120px_140px_200px]">
           <label className="space-y-1.5 text-sm font-medium">
             <span>순차 처리 개수</span>
             <Input
               type="number"
               min={1}
-              max={20}
+              max={STOCK_BATCH_MAX_COUNT}
               value={stockBatchCount}
               onChange={(event) => setStockBatchCount(event.target.value)}
+              disabled={stockBatchBusy}
             />
           </label>
           <label className="space-y-1.5 text-sm font-medium">
             <span>글 톤</span>
-            <Input value={stockBatchTone} onChange={(event) => setStockBatchTone(event.target.value)} />
+            <Input value={stockBatchTone} onChange={(event) => setStockBatchTone(event.target.value)} disabled={stockBatchBusy} />
+          </label>
+          <label className="space-y-1.5 text-sm font-medium">
+            <span>분할 크기</span>
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              value={stockBatchChunkSize}
+              onChange={(event) => setStockBatchChunkSize(event.target.value)}
+              disabled={stockBatchBusy}
+            />
+          </label>
+          <label className="space-y-1.5 text-sm font-medium">
+            <span>묶음 대기(초)</span>
+            <Input
+              type="number"
+              min={0}
+              max={600}
+              value={stockBatchChunkDelaySec}
+              onChange={(event) => setStockBatchChunkDelaySec(event.target.value)}
+              disabled={stockBatchBusy}
+            />
           </label>
           <div className="flex items-end gap-2">
-            <Button type="button" variant="outline" className="flex-1" onClick={selectStockBatchTopCount} disabled={stockBatchSelectableStocks.length === 0}>
+            <Button type="button" variant="outline" className="flex-1" onClick={selectStockBatchTopCount} disabled={stockBatchBusy || stockBatchSelectableStocks.length === 0}>
               상위 선택
             </Button>
             <Button type="button" className="flex-1" onClick={() => void generateStockBatchIdeas()} disabled={stockBatchBusy || stockBatchTargets.length === 0}>
@@ -910,6 +962,10 @@ export function BlogDashboardClient(): React.JSX.Element {
             </Button>
           </div>
         </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          AI 요청은 항상 1건씩 순차 실행됩니다. 현재 설정은 {parseBoundedInteger(stockBatchChunkSize, 3, 1, 10)}개 처리 후{" "}
+          {parseBoundedInteger(stockBatchChunkDelaySec, 45, 0, 600)}초 쉬고 다음 묶음으로 넘어갑니다.
+        </p>
 
         <div className="mt-3 grid gap-3 lg:grid-cols-[150px_170px_minmax(180px,1fr)_120px_120px_140px_110px]">
           <label className="space-y-1.5 text-sm font-medium">
@@ -1042,6 +1098,7 @@ export function BlogDashboardClient(): React.JSX.Element {
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
           <p className="text-muted-foreground">
             이번 실행 대상 {stockBatchTargets.length}개 · 필터 결과 {stockBatchVisibleStocks.length}개 · 생성 가능 {stockBatchSelectableStocks.length}개
+            {stockBatchSelectedIds.length > STOCK_BATCH_MAX_COUNT ? ` · 안전 상한 ${STOCK_BATCH_MAX_COUNT}개 적용` : ""}
             {stockBatchVisibleStocks.length > 50 ? " · 화면 표시 50개" : ""}
           </p>
           {stockBatchMessage ? <p className="text-primary">{stockBatchMessage}</p> : null}
