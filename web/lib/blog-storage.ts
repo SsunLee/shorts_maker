@@ -80,6 +80,12 @@ export type BlogIdea = {
   updatedAt: string;
 };
 
+export type BlogIdeaStorageWriteResult = {
+  compacted: boolean;
+  ok: boolean;
+  pruned: boolean;
+};
+
 export const DEFAULT_BLOG_TEMPLATES: BlogTemplate[] = [
   {
     id: "default-news",
@@ -130,6 +136,55 @@ export function stripLegacyBlogTemplateNotice(value: string): string {
   return String(value || "")
     .replace(/^\s*이것은 템플릿 모드입니다\.\s*/u, "")
     .replace(/^\n+/, "");
+}
+
+function compactFinishedBlogIdea(idea: BlogIdea): BlogIdea {
+  if (idea.status !== "done" && idea.status !== "skipped") {
+    return idea;
+  }
+  return {
+    ...idea,
+    imagePrompt: idea.imagePrompt ? idea.imagePrompt.slice(0, 800) : idea.imagePrompt,
+    markdown: "",
+    summary: idea.summary ? idea.summary.slice(0, 500) : idea.summary
+  };
+}
+
+function tryWriteLocalStorage(key: string, value: string): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function writeBlogIdeasToStorage(items: BlogIdea[]): BlogIdeaStorageWriteResult {
+  if (tryWriteLocalStorage(BLOG_IDEAS_STORAGE_KEY, JSON.stringify(items))) {
+    return { compacted: false, ok: true, pruned: false };
+  }
+
+  const compacted = items.map(compactFinishedBlogIdea);
+  if (tryWriteLocalStorage(BLOG_IDEAS_STORAGE_KEY, JSON.stringify(compacted))) {
+    return { compacted: true, ok: true, pruned: false };
+  }
+
+  let archivedCount = 0;
+  const pruned = compacted.filter((idea) => {
+    if (idea.status !== "done" && idea.status !== "skipped") {
+      return true;
+    }
+    archivedCount += 1;
+    return archivedCount <= 80;
+  });
+  if (tryWriteLocalStorage(BLOG_IDEAS_STORAGE_KEY, JSON.stringify(pruned))) {
+    return { compacted: true, ok: true, pruned: true };
+  }
+
+  return { compacted: true, ok: false, pruned: true };
 }
 
 export function isPreferredStockName(value: string | undefined): boolean {

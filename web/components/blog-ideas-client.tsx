@@ -20,6 +20,7 @@ import {
   createBlogId,
   materializeBlogTemplateText,
   stripLegacyBlogTemplateNotice,
+  writeBlogIdeasToStorage,
   type BlogIdea,
   type BlogIdeaKind,
   type BlogStockQueueItem,
@@ -82,6 +83,15 @@ function readArray<T>(key: string, fallback: T[] = []): T[] {
 
 function writeArray<T>(key: string, items: T[]): void {
   window.localStorage.setItem(key, JSON.stringify(items));
+}
+
+function tryWriteLocalStorage(key: string, value: string): boolean {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readTemplates(): BlogTemplate[] {
@@ -229,7 +239,12 @@ export function BlogIdeasClient(): React.JSX.Element {
 
   function persistIdeas(nextIdeas: BlogIdea[]): void {
     setIdeas(nextIdeas);
-    writeArray(BLOG_IDEAS_STORAGE_KEY, nextIdeas);
+    const result = writeBlogIdeasToStorage(nextIdeas);
+    if (!result.ok) {
+      setStatus("브라우저 저장 공간이 부족해 아이디어 저장에 실패했습니다. 완료된 글을 삭제하거나 브라우저 저장소를 정리해 주세요.");
+    } else if (result.pruned) {
+      setStatus("브라우저 저장 공간 확보를 위해 완료/제외된 오래된 아이디어 본문 일부를 정리했습니다.");
+    }
   }
 
   function persistQueue(nextQueue: BlogStockQueueItem[]): void {
@@ -317,7 +332,7 @@ export function BlogIdeasClient(): React.JSX.Element {
 
   function sendToWrite(idea: BlogIdea): void {
     const draft = buildDraftFromIdea(idea);
-    window.localStorage.setItem(BLOG_WRITE_DRAFT_KEY, JSON.stringify(draft));
+    tryWriteLocalStorage(BLOG_WRITE_DRAFT_KEY, JSON.stringify(draft));
     const now = new Date().toISOString();
     persistIdeas(
       ideas.map((item) => (item.id === idea.id ? { ...item, status: "sent_to_write", updatedAt: now } : item))

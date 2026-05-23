@@ -19,6 +19,7 @@ import {
   isPreferredStockQueueItem,
   materializeBlogTemplateText,
   stripLegacyBlogTemplateNotice,
+  writeBlogIdeasToStorage,
   type BlogIdea,
   type BlogStockMarket,
   type BlogStockQueueItem,
@@ -88,29 +89,54 @@ function writeArray<T>(key: string, items: T[]): void {
   window.localStorage.setItem(key, JSON.stringify(items));
 }
 
-function readPendingTistoryBatch(): PendingTistoryBatch | undefined {
+function tryWriteLocalStorage(key: string, value: string): boolean {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(BLOG_TISTORY_PENDING_BATCH_KEY) || "{}") as Partial<PendingTistoryBatch>;
-    const mode = String(parsed.mode || "");
-    return Array.isArray(parsed.ids) && parsed.ids.length > 0 && isTistoryMode(mode)
-      ? {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readPendingTistoryBatch(): PendingTistoryBatch | undefined {
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    try {
+      const parsed = JSON.parse(storage.getItem(BLOG_TISTORY_PENDING_BATCH_KEY) || "{}") as Partial<PendingTistoryBatch>;
+      const mode = String(parsed.mode || "");
+      if (Array.isArray(parsed.ids) && parsed.ids.length > 0 && isTistoryMode(mode)) {
+        return {
           expectedCount: Math.max(1, Number(parsed.expectedCount) || parsed.ids.length),
           ids: parsed.ids.map(String),
           mode,
           startedAt: String(parsed.startedAt || "")
-        }
-      : undefined;
-  } catch {
-    return undefined;
+        };
+      }
+    } catch {
+      // Try the next storage area.
+    }
   }
+  return undefined;
 }
 
-function writePendingTistoryBatch(batch: PendingTistoryBatch): void {
-  window.localStorage.setItem(BLOG_TISTORY_PENDING_BATCH_KEY, JSON.stringify(batch));
+function writePendingTistoryBatch(batch: PendingTistoryBatch): boolean {
+  const value = JSON.stringify(batch);
+  try {
+    window.localStorage.setItem(BLOG_TISTORY_PENDING_BATCH_KEY, value);
+    window.sessionStorage.removeItem(BLOG_TISTORY_PENDING_BATCH_KEY);
+    return true;
+  } catch {
+    try {
+      window.sessionStorage.setItem(BLOG_TISTORY_PENDING_BATCH_KEY, value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 function clearPendingTistoryBatch(): void {
   window.localStorage.removeItem(BLOG_TISTORY_PENDING_BATCH_KEY);
+  window.sessionStorage.removeItem(BLOG_TISTORY_PENDING_BATCH_KEY);
 }
 
 function getTistorySuccessFingerprint(status: TistoryAutomationStatus): string {
@@ -506,8 +532,8 @@ export function BlogDashboardClient(): React.JSX.Element {
 
     setAutomationBusy(true);
     setTistoryBatchMessage(`${posts.length}건 티스토리 자동화를 시작합니다.`);
-    window.localStorage.setItem(BLOG_TISTORY_WRITE_URL_KEY, tistoryUrl.trim());
-    window.localStorage.setItem(BLOG_TISTORY_AUTOMATION_MODE_KEY, tistoryMode);
+    tryWriteLocalStorage(BLOG_TISTORY_WRITE_URL_KEY, tistoryUrl.trim());
+    tryWriteLocalStorage(BLOG_TISTORY_AUTOMATION_MODE_KEY, tistoryMode);
     try {
       const response = await fetch("/api/blog/tistory/automation/start", {
         method: "POST",
@@ -525,7 +551,7 @@ export function BlogDashboardClient(): React.JSX.Element {
       }
       const now = new Date().toISOString();
       const selectedIds = new Set(tistoryBatchIdeas.map((idea) => idea.id));
-      writePendingTistoryBatch({
+      const pendingStored = writePendingTistoryBatch({
         expectedCount: tistoryBatchIdeas.length,
         ids: Array.from(selectedIds),
         mode: tistoryMode,
@@ -538,11 +564,15 @@ export function BlogDashboardClient(): React.JSX.Element {
       );
       if (tistoryBatchIdeas[0]) {
         const firstDraft = buildDraftFromIdea(tistoryBatchIdeas[0], templates);
-        window.localStorage.setItem(BLOG_WRITE_DRAFT_KEY, JSON.stringify(firstDraft));
+        tryWriteLocalStorage(BLOG_WRITE_DRAFT_KEY, JSON.stringify(firstDraft));
         setDraft(firstDraft);
       }
       setTistoryBatchSelectedIds([]);
-      setTistoryBatchMessage(`${posts.length}건 연속 자동화를 요청했습니다. 발행 후 글 관리 화면에서 글쓰기 버튼으로 다음 글을 이어갑니다.`);
+      setTistoryBatchMessage(
+        pendingStored
+          ? `${posts.length}건 연속 자동화를 요청했습니다. 발행 후 글 관리 화면에서 글쓰기 버튼으로 다음 글을 이어갑니다.`
+          : `${posts.length}건 연속 자동화를 요청했습니다. 다만 브라우저 저장 공간이 부족해 완료 추적 정보는 이번 탭에서만 제한적으로 처리될 수 있습니다.`
+      );
       setAutomationStatus(payload.status || { state: "running", message: "티스토리 연속 자동화를 시작했습니다." });
     } catch (error) {
       setTistoryBatchMessage(error instanceof Error ? error.message : "티스토리 연속 자동화 시작에 실패했습니다.");
@@ -554,12 +584,23 @@ export function BlogDashboardClient(): React.JSX.Element {
 
   function persistIdeas(nextIdeas: BlogIdea[]): void {
     setIdeas(nextIdeas);
-    writeArray(BLOG_IDEAS_STORAGE_KEY, nextIdeas);
+    const result = writeBlogIdeasToStorage(nextIdeas);
+    if (!result.ok) {
+      setTistoryBatchMessage("브라우저 저장 공간이 부족해 아이디어 목록 저장에 실패했습니다. 완료된 글을 삭제하거나 브라우저 저장소를 정리해 주세요.");
+      return;
+    }
+    if (result.pruned) {
+      setTistoryBatchMessage("브라우저 저장 공간 확보를 위해 완료/제외된 오래된 아이디어 본문 일부를 정리했습니다.");
+    }
   }
 
   function persistQueue(nextQueue: BlogStockQueueItem[]): void {
     setQueue(nextQueue);
-    writeArray(BLOG_STOCK_QUEUE_STORAGE_KEY, nextQueue);
+    try {
+      writeArray(BLOG_STOCK_QUEUE_STORAGE_KEY, nextQueue);
+    } catch {
+      setTistoryBatchMessage("브라우저 저장 공간이 부족해 종목 큐 상태 저장에 실패했습니다. 화면에는 반영됐지만 새로고침 시 일부 상태가 되돌아갈 수 있습니다.");
+    }
   }
 
   function finalizeCompletedTistoryBatch(status: TistoryAutomationStatus): void {
@@ -575,7 +616,7 @@ export function BlogDashboardClient(): React.JSX.Element {
 
     if (pending && pending.mode !== "publish") {
       clearPendingTistoryBatch();
-      window.localStorage.setItem(BLOG_TISTORY_FINALIZED_STATUS_KEY, fingerprint);
+      tryWriteLocalStorage(BLOG_TISTORY_FINALIZED_STATUS_KEY, fingerprint);
       return;
     }
 
@@ -620,7 +661,7 @@ export function BlogDashboardClient(): React.JSX.Element {
     persistQueue(nextQueue);
     setTistoryBatchSelectedIds((current) => current.filter((id) => !targetSet.has(id)));
     clearPendingTistoryBatch();
-    window.localStorage.setItem(BLOG_TISTORY_FINALIZED_STATUS_KEY, fingerprint);
+    tryWriteLocalStorage(BLOG_TISTORY_FINALIZED_STATUS_KEY, fingerprint);
     setTistoryBatchMessage(`${completedIdeas.length}건을 업로드 완료로 처리했습니다. 완료된 글은 연속 업로드 대상에서 제외됩니다.`);
   }
 
