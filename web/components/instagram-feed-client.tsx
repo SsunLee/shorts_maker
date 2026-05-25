@@ -29,6 +29,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { renderInstagramPageToPngDataUrl, renderInstagramPageToVideoBlob } from "@/lib/instagram-page-renderer";
+import {
+  buildSentenceReadingPages,
+  buildSentenceReadingUploadInfo,
+  normalizeSentenceReadingCardSet
+} from "@/lib/instagram-sentence-reading";
+import {
+  resolveInstagramPreferredSheetName,
+  resolveInstagramSettingsSheetName,
+  saveInstagramLastSheetName
+} from "@/lib/instagram-sheet-name-storage";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
 import {
   INSTAGRAM_FEED_DRAFT_KEY,
@@ -92,6 +102,13 @@ type SheetRowsResponse = {
   }>;
   count?: number;
   readyOnly?: boolean;
+  sheetName?: string;
+  error?: string;
+};
+
+type DeleteSheetRowsResponse = {
+  deleted?: number;
+  missing?: string[];
   sheetName?: string;
   error?: string;
 };
@@ -177,6 +194,61 @@ type FeedLogEntry = {
 };
 
 const INSTAGRAM_MEDIA_PROXY_PATH = "/api/instagram/media-proxy";
+
+function SkeletonBlock({ className }: { className?: string }): React.JSX.Element {
+  return <div className={`animate-pulse rounded-md bg-muted ${className || ""}`} />;
+}
+
+function FeedSourceSkeleton(): React.JSX.Element {
+  return (
+    <div className="space-y-2" aria-busy="true">
+      <SkeletonBlock className="h-3 w-24" />
+      <SkeletonBlock className="h-10 w-full" />
+      <SkeletonBlock className="h-3 w-44" />
+    </div>
+  );
+}
+
+function FeedTemplateSkeleton(): React.JSX.Element {
+  return (
+    <div className="flex flex-wrap gap-2 rounded-lg border p-2" aria-busy="true">
+      <SkeletonBlock className="h-8 w-24" />
+      <SkeletonBlock className="h-8 w-28" />
+      <SkeletonBlock className="h-8 w-20" />
+    </div>
+  );
+}
+
+function FeedLogSkeleton(): React.JSX.Element {
+  return (
+    <div className="rounded-lg border bg-background p-3" aria-busy="true">
+      <SkeletonBlock className="h-3 w-72 max-w-full" />
+      <SkeletonBlock className="mt-2 h-3 w-56 max-w-full" />
+    </div>
+  );
+}
+
+function FeedSheetTableSkeleton(): React.JSX.Element {
+  return (
+    <div className="space-y-3" aria-busy="true">
+      <div className="grid gap-2 rounded-lg border p-3 md:grid-cols-[180px,1fr,auto]">
+        <SkeletonBlock className="h-10 w-full" />
+        <SkeletonBlock className="h-10 w-full" />
+        <SkeletonBlock className="h-10 w-24" />
+      </div>
+      <div className="overflow-hidden rounded-lg border">
+        <div className="grid min-w-[760px] grid-cols-[48px_repeat(5,minmax(120px,1fr))] gap-px bg-border">
+          {Array.from({ length: 24 }, (_, index) => (
+            <SkeletonBlock
+              key={`ig-feed-skeleton-cell-${index}`}
+              className={`h-10 rounded-none ${index < 6 ? "bg-muted" : "bg-background"}`}
+            />
+          ))}
+      </div>
+    </div>
+    </div>
+  );
+}
 
 function isRenderableMediaUrl(url: string): boolean {
   const raw = String(url || "").trim().toLowerCase();
@@ -306,6 +378,26 @@ function clamp(value: number, min: number, max: number, fallback: number): numbe
     return fallback;
   }
   return Math.max(min, Math.min(max, numeric));
+}
+
+function normalizeBgmVolume(value: unknown): number {
+  return clamp(Number(value), 0, 1, 0.18);
+}
+
+function resolveFeedBgm(
+  item: InstagramGeneratedFeedItem | undefined,
+  template: InstagramTemplate | undefined
+): { enabled: boolean; url: string; volume: number } {
+  const itemUrl = String(item?.bgmUrl || "").trim();
+  const templateUrl = String(template?.bgmUrl || "").trim();
+  const url = itemUrl || templateUrl;
+  const itemEnabled = typeof item?.bgmEnabled === "boolean" ? item.bgmEnabled : undefined;
+  const templateEnabled = typeof template?.bgmEnabled === "boolean" ? template.bgmEnabled : undefined;
+  return {
+    enabled: Boolean((itemEnabled ?? templateEnabled ?? Boolean(url)) && url),
+    url,
+    volume: normalizeBgmVolume(item?.bgmVolume ?? template?.bgmVolume)
+  };
 }
 
 function normalizeHex(value: string | undefined, fallback: string): string {
@@ -627,6 +719,62 @@ function getPayloadValueByField(payload: Record<string, string>, field: string):
   return matchedKey ? String(payload[matchedKey] || "").trim() : "";
 }
 
+const SENTENCE_READING_PAYLOAD_FIELDS = [
+  "audioScript",
+  "audio_script",
+  "japaneseOnlyBlocks",
+  "japanese_only_blocks",
+  "rubyFrontLines",
+  "rubyBackLines",
+  "bilingualFront",
+  "bilingualBack",
+  "kanjiGlossary"
+];
+
+function isSentenceReadingPayload(payload: Record<string, string> | undefined): boolean {
+  if (!payload) return false;
+  return SENTENCE_READING_PAYLOAD_FIELDS.some((field) => Boolean(getPayloadValueByField(payload, field)));
+}
+
+function isSentenceReadingFeedItem(
+  item: InstagramGeneratedFeedItem | undefined,
+  sampleData: Record<string, string>,
+  template?: InstagramTemplate
+): boolean {
+  if (!item) return false;
+  if (item.templateMode === "sentence_reading" || template?.mode === "sentence_reading") {
+    return true;
+  }
+  if (isSentenceReadingPayload(sampleData) || isSentenceReadingPayload(item.sampleData || {})) {
+    return true;
+  }
+  if (/문장\s*읽기|sentence[_\s-]?reading/i.test(item.templateName)) {
+    return true;
+  }
+  return item.pages.some((page) => {
+    if (/일본어만|루비|뜻\s*앞부분|뜻\s*뒷부분|한자\s*표현/i.test(page.name)) {
+      return true;
+    }
+    return page.elements.some((element) => {
+      if (element.type !== "text") return false;
+      const text = String(element.text || "");
+      const bindingKey = String(element.bindingKey || "");
+      return /<ruby\b|<\/rt>|\[[^\]\|]+\|[^\]]+\]/i.test(text) || /^sentence_/i.test(bindingKey);
+    });
+  });
+}
+
+function shouldPreferSentenceReadingTemplate(args: {
+  rows?: FeedSheetRow[];
+  sheetName?: string;
+}): boolean {
+  const sheetName = String(args.sheetName || "").trim().toLowerCase();
+  if (/(insta[_-]?speak|sentence|reading|문장)/.test(sheetName)) {
+    return true;
+  }
+  return (args.rows || []).some((row) => isSentenceReadingPayload(row.raw || {}));
+}
+
 function buildTemplateCaptionFromPayload(args: {
   template: InstagramTemplate;
   payload: Record<string, string>;
@@ -651,14 +799,32 @@ function buildTemplateCaptionFromPayload(args: {
   return sanitizeCaptionText([baseCaption, hashtagLine].filter(Boolean).join("\n"));
 }
 
+function buildFeedCaptionFromTemplate(args: {
+  template: InstagramTemplate;
+  payload: Record<string, string>;
+  fallbackSubject: string;
+  hashtags: string[];
+}): string {
+  if (args.template.mode === "sentence_reading" || isSentenceReadingPayload(args.payload)) {
+    return sanitizeCaptionText(
+      buildSentenceReadingUploadInfo(normalizeSentenceReadingCardSet(args.payload)).caption
+    );
+  }
+  return buildTemplateCaptionFromPayload(args);
+}
+
 function normalizeFeedItemTopic(item: InstagramGeneratedFeedItem): string {
   const sample = item.sampleData || {};
   return String(sample.type || sample.jlpt || item.keyword || item.subject || "").trim();
 }
 
 function normalizeFeedItem(item: InstagramGeneratedFeedItem): InstagramGeneratedFeedItem {
+  const bgmUrl = String(item.bgmUrl || "").trim();
   return {
     ...item,
+    bgmEnabled: Boolean((typeof item.bgmEnabled === "boolean" ? item.bgmEnabled : Boolean(bgmUrl)) && bgmUrl),
+    bgmUrl,
+    bgmVolume: normalizeBgmVolume(item.bgmVolume),
     caption: sanitizeCaptionText(String(item.caption || "")),
     keyword: normalizeFeedItemTopic(item),
     hashtags: normalizeHashtags(item.hashtags)
@@ -1219,15 +1385,24 @@ function toFeedPreviewPage(page: InstagramFeedPage): InstagramFeedPage {
 
 function buildSampleDataFromFeedItem(
   item: InstagramGeneratedFeedItem,
-  rows: SheetRowsResponse["rows"]
+  rows: SheetRowsResponse["rows"],
+  tableRows: Record<string, string>[] = []
 ): Record<string, string> {
   const matchedRow = rows?.find((row) => String(row.id) === String(item.rowId));
+  const matchedTableRow = tableRows.find((row) => getSheetTableRowId(row) === String(item.rowId));
   const snapshot = item.sampleData || {};
   const normalizedTopic = String(
-    matchedRow?.raw?.type || matchedRow?.raw?.jlpt || item.keyword || snapshot.keyword || ""
+    (matchedTableRow ? getColumnValue(matchedTableRow, "type") : "") ||
+      (matchedTableRow ? getColumnValue(matchedTableRow, "jlpt") : "") ||
+      matchedRow?.raw?.type ||
+      matchedRow?.raw?.jlpt ||
+      item.keyword ||
+      snapshot.keyword ||
+      ""
   ).trim();
   return {
     ...snapshot,
+    ...(matchedTableRow || {}),
     ...(matchedRow?.raw || {}),
     id: String(matchedRow?.id || item.rowId || ""),
     status: String(matchedRow?.status || "준비"),
@@ -1247,9 +1422,14 @@ export function InstagramFeedClient(): React.JSX.Element {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [selectedSheetRowIds, setSelectedSheetRowIds] = useState<string[]>([]);
   const [maxRows, setMaxRows] = useState("3");
-  const [loadingContext, setLoadingContext] = useState(false);
+  const [loadingContext, setLoadingContext] = useState(true);
+  const [loadingTemplates, setLoadingTemplates] = useState(true);
+  const [loadingSheetRows, setLoadingSheetRows] = useState(true);
+  const [loadingSheetTable, setLoadingSheetTable] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [deletingSheetRows, setDeletingSheetRows] = useState(false);
   const [sourceSheetName, setSourceSheetName] = useState("");
+  const [loadedSourceSheetName, setLoadedSourceSheetName] = useState("");
   const [selectedItemId, setSelectedItemId] = useState<string>();
   const [orderedPageIdsByItem, setOrderedPageIdsByItem] = useState<Record<string, string[]>>({});
   const [caption, setCaption] = useState("");
@@ -1521,9 +1701,14 @@ export function InstagramFeedClient(): React.JSX.Element {
     return [...ordered, ...missing];
   }, [orderedPageIdsByItem, selectedItem]);
   const selectedSampleData = useMemo(
-    () => (selectedItem ? buildSampleDataFromFeedItem(selectedItem, sheetRows) : {}),
-    [selectedItem, sheetRows]
+    () => (selectedItem ? buildSampleDataFromFeedItem(selectedItem, sheetRows, sheetTableRows) : {}),
+    [selectedItem, sheetRows, sheetTableRows]
   );
+  const selectedSentenceReadingUploadInfo = useMemo(() => {
+    if (!selectedItem) return undefined;
+    if (!isSentenceReadingFeedItem(selectedItem, selectedSampleData, selectedTemplate)) return undefined;
+    return buildSentenceReadingUploadInfo(normalizeSentenceReadingCardSet(selectedSampleData));
+  }, [selectedItem, selectedSampleData, selectedTemplate?.mode]);
   const selectedMediaDialogPage = useMemo(
     () => orderedPages.find((page) => page.id === mediaDialogPageId),
     [orderedPages, mediaDialogPageId]
@@ -1623,7 +1808,7 @@ export function InstagramFeedClient(): React.JSX.Element {
       const matchedTemplate = templates.find((template) => template.id === selectedItem.templateId);
       const canvasWidth = normalizeCanvasWidth(Number(matchedTemplate?.canvasWidth || 1080));
       const canvasHeight = normalizeCanvasHeight(Number(matchedTemplate?.canvasHeight || 1350));
-      const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows);
+      const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows, sheetTableRows);
       await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
       const next: Record<string, string> = {};
       for (const page of orderedPages) {
@@ -1756,41 +1941,68 @@ export function InstagramFeedClient(): React.JSX.Element {
     setSuccess(undefined);
   }
 
-  async function loadBuildContext(): Promise<void> {
+  async function loadBuildContext(overrideSheetName?: string, options?: { resetToSettings?: boolean }): Promise<void> {
     setLoadingContext(true);
+    setLoadingTemplates(true);
+    setLoadingSheetRows(true);
+    setLoadingSheetTable(true);
     try {
       const settingsRes = await fetch("/api/settings", { cache: "no-store" });
       const settings = (await settingsRes.json()) as AppSettings;
-      const instagramSheetName = String(settings.gsheetInstagramSheetName || "").trim();
+      const instagramSheetName = resolveInstagramSettingsSheetName(settings);
+      const requestedSheetName =
+        options?.resetToSettings
+          ? instagramSheetName
+          : typeof overrideSheetName === "string"
+            ? overrideSheetName.trim()
+            : sourceSheetName.trim();
+      const effectiveSheetName = options?.resetToSettings
+        ? instagramSheetName
+        : requestedSheetName || resolveInstagramPreferredSheetName(instagramSheetName, sourceSheetName);
       setSpreadsheetId(String(settings.gsheetSpreadsheetId || ""));
 
-      const [templateRes, rowRes] = await Promise.all([
-        fetch("/api/instagram/templates", { cache: "no-store" }),
-        fetch(
-          instagramSheetName
-            ? `/api/instagram/sheet-rows?sheetName=${encodeURIComponent(instagramSheetName)}`
-            : "/api/instagram/sheet-rows",
-          { cache: "no-store" }
-        )
-      ]);
+      const templateRequest = fetch("/api/instagram/templates", { cache: "no-store" });
+      const rowRequest = fetch(
+        effectiveSheetName
+          ? `/api/instagram/sheet-rows?sheetName=${encodeURIComponent(effectiveSheetName)}`
+          : "/api/instagram/sheet-rows",
+        { cache: "no-store" }
+      );
 
+      const templateRes = await templateRequest;
       const templateData = (await templateRes.json()) as TemplateResponse;
-      const rowData = (await rowRes.json()) as SheetRowsResponse;
       const templateList = templateData.templates || [];
       setTemplates(templateList);
+      setLoadingTemplates(false);
+
+      const rowRes = await rowRequest;
+      const rowData = (await rowRes.json()) as SheetRowsResponse;
+      const loadedSheetName = String(rowData.sheetName || effectiveSheetName || "").trim();
       setSheetRows(rowData.rows || []);
-      setSourceSheetName(String(rowData.sheetName || instagramSheetName || "").trim());
-      setSelectedTemplateIds((prev) =>
-        prev.length > 0
-          ? prev.filter((id) => templateList.some((item) => item.id === id))
-          : templateList.slice(0, 1).map((item) => item.id)
-      );
+      setSourceSheetName(loadedSheetName);
+      setLoadedSourceSheetName(loadedSheetName);
+      saveInstagramLastSheetName(loadedSheetName);
+      setSelectedSheetRowIds([]);
+      setLoadingSheetRows(false);
+      const preferSentenceReadingTemplate = shouldPreferSentenceReadingTemplate({
+        rows: rowData.rows || [],
+        sheetName: loadedSheetName || effectiveSheetName
+      });
+      const firstSentenceReadingTemplate = templateList.find((item) => item.mode === "sentence_reading");
+      setSelectedTemplateIds((prev) => {
+        const validPrev = prev.filter((id) => templateList.some((item) => item.id === id));
+        if (preferSentenceReadingTemplate && firstSentenceReadingTemplate) {
+          const hasSentenceReading = validPrev.some((id) => id === firstSentenceReadingTemplate.id);
+          return hasSentenceReading ? validPrev : [firstSentenceReadingTemplate.id];
+        }
+        return validPrev.length > 0 ? validPrev : templateList.slice(0, 1).map((item) => item.id);
+      });
 
       try {
         const search = new URLSearchParams();
         search.set("mode", "instagram");
-        if (instagramSheetName) {
-          search.set("sheetName", instagramSheetName);
+        if (effectiveSheetName) {
+          search.set("sheetName", effectiveSheetName);
         }
         const tableRes = await fetch(`/api/ideas/sheet?${search.toString()}`, { cache: "no-store" });
         const tableData = (await tableRes.json()) as SheetTableResponse;
@@ -1798,13 +2010,21 @@ export function InstagramFeedClient(): React.JSX.Element {
           setSheetHeaders(tableData.headers || []);
           setSheetTableRows(tableData.rows || []);
           if (!rowData.sheetName) {
-            setSourceSheetName(String(tableData.sheetName || instagramSheetName || "").trim());
+            const tableSheetName = String(tableData.sheetName || effectiveSheetName || "").trim();
+            setSourceSheetName(tableSheetName);
+            setLoadedSourceSheetName(tableSheetName);
+            saveInstagramLastSheetName(tableSheetName);
           }
         }
       } catch {
         // keep feed context available even if table view fails
+      } finally {
+        setLoadingSheetTable(false);
       }
     } catch (contextError) {
+      setLoadingTemplates(false);
+      setLoadingSheetRows(false);
+      setLoadingSheetTable(false);
       setError(contextError instanceof Error ? contextError.message : "컨테이너 생성 준비를 불러오지 못했습니다.");
     } finally {
       setLoadingContext(false);
@@ -1847,6 +2067,47 @@ export function InstagramFeedClient(): React.JSX.Element {
     });
   }
 
+  async function deleteSelectedSheetRows(): Promise<void> {
+    const rowIds = selectedSheetRowIds.map((id) => String(id || "").trim()).filter(Boolean);
+    if (rowIds.length === 0 || deletingSheetRows) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `선택한 row ${rowIds.length}개를 Google Sheet에서 삭제할까요?\n삭제 후에는 시트에서 되돌릴 수 없습니다.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingSheetRows(true);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const response = await fetch("/api/instagram/sheet-rows", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sheetName: sourceSheetName.trim() || undefined,
+          rowIds
+        })
+      });
+      const data = (await response.json().catch(() => ({}))) as DeleteSheetRowsResponse;
+      if (!response.ok) {
+        throw new Error(data.error || "선택 row 삭제에 실패했습니다.");
+      }
+      setSelectedSheetRowIds([]);
+      setSuccess(
+        `선택 row ${data.deleted || 0}개를 '${data.sheetName || sourceSheetName || "시트"}'에서 삭제했습니다.` +
+          (data.missing?.length ? ` 찾지 못한 row: ${data.missing.join(", ")}` : "")
+      );
+      await loadBuildContext(sourceSheetName);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "선택 row 삭제에 실패했습니다.");
+    } finally {
+      setDeletingSheetRows(false);
+    }
+  }
+
   function saveFeedItems(nextItems: InstagramGeneratedFeedItem[]): void {
     const normalizedItems = nextItems.map(normalizeFeedItem);
     setItems(normalizedItems);
@@ -1864,6 +2125,12 @@ export function InstagramFeedClient(): React.JSX.Element {
     }
     if (!sheetRows || sheetRows.length === 0) {
       setError("시트 row가 없습니다. 먼저 인스타 아이디어 생성 후 다시 시도해 주세요.");
+      return;
+    }
+    const requestedSheetName = sourceSheetName.trim();
+    const loadedSheetName = loadedSourceSheetName.trim();
+    if (requestedSheetName && loadedSheetName && requestedSheetName !== loadedSheetName) {
+      setError(`시트명이 '${requestedSheetName}'로 바뀌었습니다. 컨테이너 생성 전에 시트 불러오기를 먼저 눌러 주세요.`);
       return;
     }
 
@@ -1921,26 +2188,37 @@ export function InstagramFeedClient(): React.JSX.Element {
         const rowStartedAt = performance.now();
         const rowTopic = String(row.raw?.type || row.raw?.jlpt || row.subject || "").trim();
         pushFeedLog("info", `[${row.id}] row 처리 시작 · ${rowTopic || row.subject || "제목 없음"}`);
+        const tableRaw = tableRowById.get(row.id) || {};
         const payload: Record<string, string> = {
-          id: row.id,
-          status: row.status,
-          keyword: rowTopic,
-          subject: row.subject,
-          description: row.description,
-          narration: row.narration,
+          ...tableRaw,
           ...(row.raw || {})
         };
+        payload.id = row.id;
+        payload.status = row.status;
+        payload.keyword = rowTopic;
+        payload.subject = row.subject;
+        payload.description = row.description;
+        payload.narration = row.narration;
 
         for (const templateId of selectedTemplateIds) {
           const template = templateMap.get(templateId);
           if (!template) continue;
           const templateStartedAt = performance.now();
+          const payloadIsSentenceReading = isSentenceReadingPayload(payload);
+          const useSentenceReadingPages = template.mode === "sentence_reading" || payloadIsSentenceReading;
+          const sentenceCardSet = useSentenceReadingPages ? normalizeSentenceReadingCardSet(payload) : undefined;
+          const templateSourcePages = sentenceCardSet ? buildSentenceReadingPages(sentenceCardSet) : template.pages;
+          const effectiveTemplateMode = useSentenceReadingPages ? "sentence_reading" : template.mode;
+          const templateLogName =
+            useSentenceReadingPages && template.mode !== "sentence_reading"
+              ? `${template.templateName} (문장 읽기 자동)`
+              : template.templateName;
           pushFeedLog(
             "info",
-            `[${row.id}/${template.templateName}] 템플릿 적용 시작 · 페이지 ${template.pages.length}개`
+            `[${row.id}/${templateLogName}] 템플릿 적용 시작 · 페이지 ${templateSourcePages.length}개`
           );
           const pages: InstagramFeedPage[] = [];
-          for (const page of template.pages) {
+          for (const page of templateSourcePages) {
             const pageStartedAt = performance.now();
             const nextElements = [];
             const aiImageLayerCount = page.elements.filter(
@@ -1948,7 +2226,7 @@ export function InstagramFeedClient(): React.JSX.Element {
             ).length;
             pushFeedLog(
               "info",
-              `[${row.id}/${template.templateName}/${page.name}] 페이지 구성 시작 · AI 이미지 ${aiImageLayerCount}개`
+              `[${row.id}/${templateLogName}/${page.name}] 페이지 구성 시작 · AI 이미지 ${aiImageLayerCount}개`
             );
             for (const element of page.elements) {
               if (element.type === "text") {
@@ -1979,7 +2257,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                       const promptStartedAt = performance.now();
                       pushFeedLog(
                         "info",
-                        `[${row.id}/${template.templateName}/${page.name}] 변수 프롬프트 생성 시작 · ${variableKey}`
+                        `[${row.id}/${templateLogName}/${page.name}] 변수 프롬프트 생성 시작 · ${variableKey}`
                       );
                       const promptResponse = await fetch("/api/instagram/generate-image-prompt", {
                         method: "POST",
@@ -2016,7 +2294,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                       }
                       pushFeedLog(
                         "info",
-                        `[${row.id}/${template.templateName}/${page.name}] 변수 프롬프트 생성 완료 · ${variableKey}="${variableValue.slice(0, 40)}" · ${formatElapsed(promptStartedAt)}`
+                        `[${row.id}/${templateLogName}/${page.name}] 변수 프롬프트 생성 완료 · ${variableKey}="${variableValue.slice(0, 40)}" · ${formatElapsed(promptStartedAt)}`
                       );
                     } catch (promptError) {
                       const message = promptError instanceof Error ? promptError.message : "생성 실패";
@@ -2031,11 +2309,11 @@ export function InstagramFeedClient(): React.JSX.Element {
                         orientation: resolveAiImageOrientation(nextImageElement.aiImageOrientation)
                       });
                       imageGenerationErrors.push(
-                        `[${row.id}/${template.templateName}/${page.name}] 변수명 프롬프트 실패(${variableKey}): ${message}`
+                        `[${row.id}/${templateLogName}/${page.name}] 변수명 프롬프트 실패(${variableKey}): ${message}`
                       );
                       pushFeedLog(
                         "error",
-                        `[${row.id}/${template.templateName}/${page.name}] 변수 프롬프트 실패 · ${variableKey} · 현재 row fallback 사용 · ${message}`
+                        `[${row.id}/${templateLogName}/${page.name}] 변수 프롬프트 실패 · ${variableKey} · 현재 row fallback 사용 · ${message}`
                       );
                     }
                   } else {
@@ -2050,7 +2328,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                     });
                     pushFeedLog(
                       "warn",
-                      `[${row.id}/${template.templateName}/${page.name}] 변수값 없음 · ${variableKey} · 현재 row fallback 사용 · 사용 가능: ${Object.keys(payload).slice(0, 12).join(", ")}`
+                      `[${row.id}/${templateLogName}/${page.name}] 변수값 없음 · ${variableKey} · 현재 row fallback 사용 · 사용 가능: ${Object.keys(payload).slice(0, 12).join(", ")}`
                     );
                   }
                 } else if (nextImageElement.aiGenerateEnabled) {
@@ -2065,7 +2343,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                   });
                   pushFeedLog(
                     "warn",
-                    `[${row.id}/${template.templateName}/${page.name}] 변수명 없음 · 저장된 프롬프트 대신 현재 row fallback 사용`
+                    `[${row.id}/${templateLogName}/${page.name}] 변수명 없음 · 저장된 프롬프트 대신 현재 row fallback 사용`
                   );
                 }
                 if (nextImageElement.aiGenerateEnabled && collapseWhitespace(nextImageElement.aiPrompt)) {
@@ -2075,7 +2353,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                     const imageAspectRatio = orientation === "horizontal" ? "16:9" : "9:16";
                     pushFeedLog(
                       "info",
-                      `[${row.id}/${template.templateName}/${page.name}] AI 이미지 생성 시작 · ${String(nextImageElement.aiModel || "auto")} · ${imageAspectRatio}`
+                      `[${row.id}/${templateLogName}/${page.name}] AI 이미지 생성 시작 · ${String(nextImageElement.aiModel || "auto")} · ${imageAspectRatio}`
                     );
                     const response = await fetch("/api/instagram/generate-image", {
                       method: "POST",
@@ -2095,7 +2373,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                       nextImageElement.mediaType = "image";
                       pushFeedLog(
                         "info",
-                        `[${row.id}/${template.templateName}/${page.name}] AI 이미지 생성 완료 · ${formatElapsed(imageStartedAt)}`
+                        `[${row.id}/${templateLogName}/${page.name}] AI 이미지 생성 완료 · ${formatElapsed(imageStartedAt)}`
                       );
                     } else {
                       throw new Error(data.error || "AI 이미지 생성 실패");
@@ -2103,11 +2381,11 @@ export function InstagramFeedClient(): React.JSX.Element {
                   } catch (generateError) {
                     const message = generateError instanceof Error ? generateError.message : "AI 이미지 생성 실패";
                     imageGenerationErrors.push(
-                      `[${row.id}/${template.templateName}/${page.name}] ${message}`
+                      `[${row.id}/${templateLogName}/${page.name}] ${message}`
                     );
                     pushFeedLog(
                       "error",
-                      `[${row.id}/${template.templateName}/${page.name}] AI 이미지 생성 실패 · ${message}`
+                      `[${row.id}/${templateLogName}/${page.name}] AI 이미지 생성 실패 · ${message}`
                     );
                   }
                 }
@@ -2130,7 +2408,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                     const aspectRatio = orientation === "horizontal" ? "16:9" : "9:16";
                     pushFeedLog(
                       "info",
-                      `[${row.id}/${template.templateName}/${page.name}] AI 영상화 시작 · ${provider === "openai" ? "OpenAI Sora 2" : "Veo 3.1 Lite"} · ${estimatedDurationSec}s · 720p · 예상 $${estimatedCostUsd.toFixed(2)}`
+                      `[${row.id}/${templateLogName}/${page.name}] AI 영상화 시작 · ${provider === "openai" ? "OpenAI Sora 2" : "Veo 3.1 Lite"} · ${estimatedDurationSec}s · 720p · 예상 $${estimatedCostUsd.toFixed(2)}`
                     );
                     const response = await fetch("/api/instagram/generate-image-video", {
                       method: "POST",
@@ -2151,7 +2429,7 @@ export function InstagramFeedClient(): React.JSX.Element {
                       nextImageElement.mediaType = "video";
                       pushFeedLog(
                         "info",
-                        `[${row.id}/${template.templateName}/${page.name}] AI 영상화 완료 · ${formatElapsed(videoStartedAt)} · 비용예상 $${Number(data.estimatedCostUsd || estimatedCostUsd).toFixed(2)}`
+                        `[${row.id}/${templateLogName}/${page.name}] AI 영상화 완료 · ${formatElapsed(videoStartedAt)} · 비용예상 $${Number(data.estimatedCostUsd || estimatedCostUsd).toFixed(2)}`
                       );
                     } else {
                       throw new Error(data.error || "AI 영상화 실패");
@@ -2159,11 +2437,11 @@ export function InstagramFeedClient(): React.JSX.Element {
                   } catch (videoError) {
                     const message = videoError instanceof Error ? videoError.message : "AI 영상화 실패";
                     imageGenerationErrors.push(
-                      `[${row.id}/${template.templateName}/${page.name}] AI 영상화 실패: ${message}`
+                      `[${row.id}/${templateLogName}/${page.name}] AI 영상화 실패: ${message}`
                     );
                     pushFeedLog(
                       "error",
-                      `[${row.id}/${template.templateName}/${page.name}] AI 영상화 실패 · ${message}`
+                      `[${row.id}/${templateLogName}/${page.name}] AI 영상화 실패 · ${message}`
                     );
                   }
                 }
@@ -2180,11 +2458,11 @@ export function InstagramFeedClient(): React.JSX.Element {
             });
             pushFeedLog(
               "info",
-              `[${row.id}/${template.templateName}/${page.name}] 페이지 구성 완료 · ${formatElapsed(pageStartedAt)}`
+              `[${row.id}/${templateLogName}/${page.name}] 페이지 구성 완료 · ${formatElapsed(pageStartedAt)}`
             );
           }
           const feedHashtags = normalizeHashtags((template as { hashtags?: unknown }).hashtags);
-          const feedCaption = buildTemplateCaptionFromPayload({
+          const feedCaption = buildFeedCaptionFromTemplate({
             template,
             payload,
             fallbackSubject: row.subject,
@@ -2193,10 +2471,21 @@ export function InstagramFeedClient(): React.JSX.Element {
           generated.push({
             id: uid(),
             templateId: template.id,
-            templateName: template.templateName,
+            templateName: templateLogName,
             rowId: row.id,
             subject: row.subject,
             keyword: rowTopic,
+            bgmEnabled: Boolean(template.bgmEnabled && String(template.bgmUrl || "").trim()),
+            bgmUrl: String(template.bgmUrl || ""),
+            bgmVolume: normalizeBgmVolume(template.bgmVolume),
+            templateMode: effectiveTemplateMode,
+            canvasPreset: template.canvasPreset,
+            canvasWidth: template.canvasWidth,
+            canvasHeight: template.canvasHeight,
+            pageDurationSec: template.pageDurationSec,
+            customFonts: template.customFonts || [],
+            captionSourceFields: template.captionSourceFields || [],
+            hashtagSourceFields: template.hashtagSourceFields || [],
             caption: feedCaption,
             hashtags: feedHashtags,
             generatedAt: new Date().toISOString(),
@@ -2213,7 +2502,7 @@ export function InstagramFeedClient(): React.JSX.Element {
           }
           pushFeedLog(
             "info",
-            `[${row.id}/${template.templateName}] 컨테이너 생성 완료 · ${formatElapsed(templateStartedAt)}`
+            `[${row.id}/${templateLogName}] 컨테이너 생성 완료 · ${formatElapsed(templateStartedAt)}`
           );
         }
         pushFeedLog("info", `[${row.id}] row 처리 완료 · ${formatElapsed(rowStartedAt)}`);
@@ -2341,19 +2630,30 @@ export function InstagramFeedClient(): React.JSX.Element {
       id: uid(),
       elements: page.elements.map((element) => ({ ...element, id: uid() }))
     }));
+    const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows, sheetTableRows);
+    const selectedItemMeta = selectedItem as InstagramGeneratedFeedItem & Partial<InstagramTemplate>;
+    const draftMode =
+      selectedItemMeta.templateMode ||
+      (isSentenceReadingPayload(sampleData) ? "sentence_reading" : selectedTemplate?.mode || "news");
     const draftTemplate: InstagramTemplate = {
-      id: uid(),
+      id: selectedItem.templateId || selectedTemplate?.id || uid(),
       templateName: `${selectedItem.templateName} (피드 편집본)`,
-      mode: selectedTemplate?.mode || "news",
+      mode: draftMode,
       sourceTitle: selectedItem.subject,
       sourceTopic: selectedItem.keyword,
-      canvasPreset: selectedTemplate?.canvasPreset,
-      canvasWidth,
-      canvasHeight,
-      pageDurationSec: Math.max(1, Number(selectedTemplate?.pageDurationSec || 4)),
+      bgmEnabled: Boolean(selectedItem.bgmEnabled ?? selectedTemplate?.bgmEnabled),
+      bgmUrl: String(selectedItem.bgmUrl || selectedTemplate?.bgmUrl || ""),
+      bgmVolume: normalizeBgmVolume(selectedItem.bgmVolume ?? selectedTemplate?.bgmVolume),
+      hashtags: selectedItem.hashtags || selectedTemplate?.hashtags || [],
+      hashtagSourceFields: selectedItemMeta.hashtagSourceFields || selectedTemplate?.hashtagSourceFields || [],
+      captionSourceFields: selectedItemMeta.captionSourceFields || selectedTemplate?.captionSourceFields || [],
+      canvasPreset: selectedItemMeta.canvasPreset || selectedTemplate?.canvasPreset,
+      canvasWidth: normalizeCanvasWidth(Number(selectedItemMeta.canvasWidth || canvasWidth)),
+      canvasHeight: normalizeCanvasHeight(Number(selectedItemMeta.canvasHeight || canvasHeight)),
+      pageDurationSec: Math.max(1, Number(selectedItemMeta.pageDurationSec || selectedTemplate?.pageDurationSec || 4)),
       pageCount: clonedPages.length,
       pages: clonedPages,
-      customFonts: selectedTemplate?.customFonts || [],
+      customFonts: selectedItemMeta.customFonts || selectedTemplate?.customFonts || [],
       updatedAt: nowIso
     };
     const draftPayload: InstagramTemplateEditDraft = {
@@ -2361,8 +2661,11 @@ export function InstagramFeedClient(): React.JSX.Element {
       source: "instagram-feed",
       focusPageId: clonedPages[0]?.id,
       template: draftTemplate,
-      sampleData: buildSampleDataFromFeedItem(selectedItem, sheetRows),
-      sourceFeedItem: selectedItem
+      sampleData,
+      sourceFeedItem: {
+        ...selectedItem,
+        sampleData
+      }
     };
 
     if (typeof window !== "undefined") {
@@ -2554,17 +2857,19 @@ export function InstagramFeedClient(): React.JSX.Element {
 
     const renderSampleData = sampleDataOverride || selectedSampleData;
     const uploadBrowserRenderedVideo = options?.uploadBrowserRenderedVideo !== false;
+    const matchedTemplate = templates.find((template) => template.id === selectedItem.templateId);
+    const bgm = resolveFeedBgm(selectedItem, matchedTemplate);
     const fingerprint = JSON.stringify({
       base: buildPageRenderFingerprint(page, index),
       renderSampleData,
-      uploadBrowserRenderedVideo
+      uploadBrowserRenderedVideo,
+      bgm
     });
     const cached = renderedVideoCache[page.id];
     if (!forceRerender && cached?.fingerprint === fingerprint) {
       return cached.asset;
     }
 
-    const matchedTemplate = templates.find((template) => template.id === selectedItem.templateId);
     const canvasWidth = normalizeCanvasWidth(Number(matchedTemplate?.canvasWidth || 1080));
     const canvasHeight = normalizeCanvasHeight(Number(matchedTemplate?.canvasHeight || 1350));
     const pageName = sanitizeDownloadName(page.name || `page-${index + 1}`);
@@ -2592,6 +2897,9 @@ export function InstagramFeedClient(): React.JSX.Element {
           useAudio,
           audioUrl: attachedAudioUrl || undefined,
           audioPrompt: resolvedAudioPrompt || undefined,
+          bgmEnabled: bgm.enabled,
+          bgmUrl: bgm.enabled ? bgm.url : undefined,
+          bgmVolume: bgm.volume,
           ttsProvider:
             page.audioProvider === "openai" || page.audioProvider === "gemini" ? page.audioProvider : "auto",
           sampleData: renderSampleData,
@@ -2680,6 +2988,28 @@ export function InstagramFeedClient(): React.JSX.Element {
         }
         outputUrl = String(composeData.outputUrl || "");
         audioUrl = sourceVideoUrl;
+        if (bgm.enabled) {
+          setUploadStageMessage(`${page.name} BGM 합성 중...`);
+          const bgmMuxResponse = await fetch("/api/instagram/mux-page-video", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              templateName: selectedItem.templateName,
+              pageName: page.name,
+              videoUrl: outputUrl,
+              audioUrl: bgm.url,
+              durationSec: safeDurationSec,
+              mixWithVideoAudio: true,
+              audioVolume: bgm.volume,
+              videoAudioVolume: 1
+            })
+          });
+          const bgmMuxData = (await bgmMuxResponse.json()) as MuxPageVideoResponse;
+          if (!bgmMuxResponse.ok || !bgmMuxData.outputUrl) {
+            throw new Error(bgmMuxData.error || `${page.name} BGM 합성에 실패했습니다.`);
+          }
+          outputUrl = String(bgmMuxData.outputUrl || "");
+        }
         const asset: RenderedFeedAsset = {
           pageId: page.id,
           pageName,
@@ -2731,6 +3061,8 @@ export function InstagramFeedClient(): React.JSX.Element {
           pageName: page.name,
           videoUrl: visualVideoUrl,
           audioUrl,
+          bgmUrl: bgm.enabled ? bgm.url : undefined,
+          bgmVolume: bgm.volume,
           durationSec: safeDurationSec
         })
       });
@@ -2826,7 +3158,7 @@ export function InstagramFeedClient(): React.JSX.Element {
     const canvasWidth = normalizeCanvasWidth(Number(matchedTemplate?.canvasWidth || 1080));
     const canvasHeight = normalizeCanvasHeight(Number(matchedTemplate?.canvasHeight || 1350));
 
-    const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows);
+    const sampleData = buildSampleDataFromFeedItem(selectedItem, sheetRows, sheetTableRows);
     await ensureInstagramCustomFontsLoaded(matchedTemplate?.customFonts || []);
 
     const renderedAssets: RenderedFeedAsset[] = [];
@@ -3087,49 +3419,78 @@ export function InstagramFeedClient(): React.JSX.Element {
             </p>
           </div>
           <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
-            <Button type="button" variant="outline" onClick={() => void loadBuildContext()} disabled={loadingContext}>
+            <Button type="button" variant="outline" onClick={() => void loadBuildContext(undefined, { resetToSettings: true })} disabled={loadingContext}>
               {loadingContext ? "로딩 중..." : "소스 새로고침"}
-            </Button>
-            <Button type="button" onClick={() => void generateContainersInFeed()} disabled={loadingContext || generating}>
-              {generating ? "생성 중..." : "컨테이너 생성"}
             </Button>
           </div>
         </div>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="space-y-2 md:col-span-2">
+            <Label>소스 시트명</Label>
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <Input
+                value={sourceSheetName}
+                onChange={(event) => {
+                  setSourceSheetName(event.target.value);
+                  saveInstagramLastSheetName(event.target.value);
+                }}
+                placeholder="예: insta_post, sentence_reading"
+              />
+              <Button type="button" variant="outline" onClick={() => void loadBuildContext(sourceSheetName)} disabled={loadingContext}>
+                {loadingContext ? "불러오는 중..." : "시트 불러오기"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              비우면 Settings의 인스타그램 기본 시트를 사용합니다. 탭명을 바꾼 뒤 시트 불러오기를 눌러 주세요.
+            </p>
+            {loadedSourceSheetName ? (
+              <p className="text-xs text-emerald-500">현재 불러온 시트: {loadedSourceSheetName}</p>
+            ) : null}
+          </div>
           <div className="space-y-2">
             <Label>처리할 row 수</Label>
-            <Select value={maxRows} onValueChange={setMaxRows}>
-              <SelectTrigger className="bg-card dark:bg-zinc-900">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Array.from({ length: 10 }, (_, index) => String(index + 1)).map((value) => (
-                  <SelectItem key={`feed-max-rows-${value}`} value={value}>
-                    {value}개
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              소스 시트: {sourceSheetName || "settings의 기본 시트"} · 준비 row {sheetRows?.length || 0}개
-            </p>
+            {loadingSheetRows ? (
+              <FeedSourceSkeleton />
+            ) : (
+              <>
+                <Select value={maxRows} onValueChange={setMaxRows}>
+                  <SelectTrigger className="bg-card dark:bg-zinc-900">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Array.from({ length: 10 }, (_, index) => String(index + 1)).map((value) => (
+                      <SelectItem key={`feed-max-rows-${value}`} value={value}>
+                        {value}개
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  소스 시트: {sourceSheetName || "settings의 기본 시트"} · 준비 row {sheetRows?.length || 0}개
+                </p>
+              </>
+            )}
           </div>
           <div className="space-y-2">
             <Label>템플릿 선택(복수)</Label>
-            <div className="flex flex-wrap gap-2 rounded-lg border p-2">
-              {templates.map((template) => (
-                <Button
-                  key={template.id}
-                  type="button"
-                  size="sm"
-                  variant={selectedTemplateIds.includes(template.id) ? "default" : "outline"}
-                  onClick={() => toggleTemplate(template.id)}
-                >
-                  {template.templateName}
-                </Button>
-              ))}
-              {templates.length === 0 ? <p className="text-xs text-muted-foreground">템플릿이 없습니다.</p> : null}
-            </div>
+            {loadingTemplates ? (
+              <FeedTemplateSkeleton />
+            ) : (
+              <div className="flex flex-wrap gap-2 rounded-lg border p-2">
+                {templates.map((template) => (
+                  <Button
+                    key={template.id}
+                    type="button"
+                    size="sm"
+                    variant={selectedTemplateIds.includes(template.id) ? "default" : "outline"}
+                    onClick={() => toggleTemplate(template.id)}
+                  >
+                    {template.templateName}
+                  </Button>
+                ))}
+                {templates.length === 0 ? <p className="text-xs text-muted-foreground">템플릿이 없습니다.</p> : null}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -3152,7 +3513,9 @@ export function InstagramFeedClient(): React.JSX.Element {
             </Button>
           </div>
         </div>
-        {feedLogs.length > 0 ? (
+        {loadingContext && feedLogs.length === 0 ? (
+          <FeedLogSkeleton />
+        ) : feedLogs.length > 0 ? (
           <div className="app-panel-scrollbar max-h-56 overflow-auto rounded-lg border bg-background p-2 font-mono text-xs">
             {feedLogs.slice().reverse().map((log) => {
               const tone =
@@ -3201,7 +3564,9 @@ export function InstagramFeedClient(): React.JSX.Element {
             </a>
           </Button>
         </div>
-        {sheetHeaders.length === 0 ? (
+        {loadingSheetTable ? (
+          <FeedSheetTableSkeleton />
+        ) : sheetHeaders.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             시트 헤더를 불러오지 못했습니다. 시트 연결 정보와 탭명을 확인해 주세요.
           </p>
@@ -3289,13 +3654,32 @@ export function InstagramFeedClient(): React.JSX.Element {
               {selectedSheetRowIds.length > 0 ? ` · 선택 row: ${selectedSheetRowIds.length}` : ""}
             </p>
             {selectedSheetRowIds.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+              <div className="flex flex-col gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100 sm:flex-row sm:items-center sm:justify-between">
                 <span>체크된 row {selectedSheetRowIds.length}개가 컨테이너 생성 대상입니다.</span>
-                <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => setSelectedSheetRowIds([])}>
-                  선택 해제
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" size="sm" className="h-8" onClick={() => void generateContainersInFeed()} disabled={loadingContext || generating}>
+                    {generating ? "생성 중..." : "선택 row로 컨테이너 생성"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="h-8"
+                    onClick={() => void deleteSelectedSheetRows()}
+                    disabled={loadingContext || generating || deletingSheetRows}
+                  >
+                    {deletingSheetRows ? "삭제 중..." : "선택 row 삭제"}
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => setSelectedSheetRowIds([])}>
+                    선택 해제
+                  </Button>
+                </div>
               </div>
-            ) : null}
+            ) : (
+              <p className="rounded-md border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                피드로 만들 row를 체크하면 이 위치에 컨테이너 생성 버튼이 표시됩니다.
+              </p>
+            )}
             <div className="app-table-scrollbar max-h-[56vh] overflow-auto rounded-lg border">
               <table className="min-w-full text-sm">
                 <thead className="sticky top-0 bg-muted/50">
@@ -3314,8 +3698,8 @@ export function InstagramFeedClient(): React.JSX.Element {
                         onChange={(event) => setVisibleSheetRowSelection(event.target.checked)}
                       />
                     </th>
-                    {sheetHeaders.map((header) => (
-                      <th key={`ig-feed-head-${header}`} className="px-3 py-2 text-left font-medium">
+                    {sheetHeaders.map((header, headerIndex) => (
+                      <th key={`ig-feed-head-${headerIndex}-${header}`} className="px-3 py-2 text-left font-medium">
                         {header}
                       </th>
                     ))}
@@ -3343,9 +3727,9 @@ export function InstagramFeedClient(): React.JSX.Element {
                               onChange={() => toggleSheetRowSelection(rowId)}
                             />
                           </td>
-                          {sheetHeaders.map((header) => (
+                          {sheetHeaders.map((header, headerIndex) => (
                             <td
-                              key={`ig-feed-cell-${rowIndex}-${header}`}
+                              key={`ig-feed-cell-${rowIndex}-${headerIndex}-${header}`}
                               className={`px-3 py-2 ${wrapSheetCells ? "whitespace-pre-wrap break-words" : "whitespace-nowrap"}`}
                             >
                               {row[header] || ""}
@@ -3390,10 +3774,10 @@ export function InstagramFeedClient(): React.JSX.Element {
             </div>
           </aside>
 
-          <div className="order-1 space-y-4 lg:order-2">
+          <div className="order-1 flex flex-col gap-4 lg:order-2">
             {selectedItem ? (
               <>
-                <div className="rounded-xl border bg-card p-3">
+                <div className="order-2 rounded-xl border bg-card p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <p className="text-xs text-muted-foreground">{selectedItem.templateName}</p>
@@ -3493,6 +3877,52 @@ export function InstagramFeedClient(): React.JSX.Element {
                       onChange={(event) => setCaption(sanitizeCaptionText(event.target.value))}
                       placeholder="업로드 캡션 입력"
                     />
+                    {selectedSentenceReadingUploadInfo ? (
+                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-foreground">문장 읽기 업로드 문구</p>
+                            <p className="mt-1 text-muted-foreground">
+                              카드 상단 제목, 인스타 제목, 설명, 해시태그를 row 데이터 기준으로 다시 생성했습니다.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setCaption(sanitizeCaptionText(selectedSentenceReadingUploadInfo.caption))}
+                            >
+                              캡션에 적용
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void navigator.clipboard.writeText(selectedSentenceReadingUploadInfo.caption)}
+                            >
+                              문구 복사
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <div className="rounded-md border bg-background/70 p-2">
+                            <p className="text-[11px] text-muted-foreground">카드 상단 제목</p>
+                            <p className="mt-1 whitespace-pre-wrap font-medium">{selectedSentenceReadingUploadInfo.cardTitle}</p>
+                          </div>
+                          <div className="rounded-md border bg-background/70 p-2">
+                            <p className="text-[11px] text-muted-foreground">인스타 제목</p>
+                            <p className="mt-1 whitespace-pre-wrap font-medium">{selectedSentenceReadingUploadInfo.instagramTitle}</p>
+                          </div>
+                        </div>
+                        <Textarea
+                          readOnly
+                          rows={8}
+                          value={selectedSentenceReadingUploadInfo.caption}
+                          className="mt-2 text-xs"
+                        />
+                      </div>
+                    ) : null}
                     <div className="rounded-lg border bg-muted/20 p-2">
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                         <Label className="text-xs">저장 해시태그 템플릿</Label>
@@ -3847,12 +4277,33 @@ export function InstagramFeedClient(): React.JSX.Element {
                   </DialogContent>
                 </Dialog>
 
-                <div className="rounded-xl border bg-card p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold">컨테이너 순서 편집 (n8n 스타일 흐름)</p>
-                    <p className="text-xs text-muted-foreground">
-                      드래그 또는 ↑↓ 버튼으로 순서를 정한 뒤 업로드
-                    </p>
+                <div className="order-1 rounded-xl border bg-card p-3">
+                  <div className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold">컨테이너 미리보기 및 순서 편집</p>
+                      <p className="text-xs text-muted-foreground">
+                        생성된 컨테이너를 확인한 뒤 상세 편집 또는 페이지 순서 조정으로 이어갑니다.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={openDetailedTemplateEditor}
+                        disabled={orderedPages.length === 0}
+                      >
+                        템플릿 상세 편집
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openMediaWorkspaceEditor({ preferMissing: true })}
+                        disabled={orderedPages.length === 0}
+                      >
+                        이미지 편집기
+                      </Button>
+                    </div>
                   </div>
                   <div className="mb-3 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground">
                     이미지 UX 가이드: 각 페이지 카드의 `이미지 추가/변경` 버튼에서 AI 생성 또는 URL 입력으로 바로 반영할 수 있습니다.

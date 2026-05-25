@@ -589,8 +589,8 @@ export function IdeasClient(): React.JSX.Element {
                         aria-label="생성 미리보기 전체 선택"
                       />
                     </th>
-                    {effectiveHeaders.map((header) => (
-                      <th key={`preview-head-${header}`} className="px-3 py-2 text-left font-medium">
+                    {effectiveHeaders.map((header, headerIndex) => (
+                      <th key={`preview-head-${headerIndex}-${header}`} className="px-3 py-2 text-left font-medium">
                         {header}
                       </th>
                     ))}
@@ -772,8 +772,8 @@ export function IdeasClient(): React.JSX.Element {
               <table className="min-w-full text-sm">
                 <thead className="sticky top-0 bg-muted/50">
                   <tr>
-                    {sheetHeaders.map((header) => (
-                      <th key={`sheet-head-${header}`} className="px-3 py-2 text-left font-medium">
+                    {sheetHeaders.map((header, headerIndex) => (
+                      <th key={`sheet-head-${headerIndex}-${header}`} className="px-3 py-2 text-left font-medium">
                         {header}
                       </th>
                     ))}
@@ -789,9 +789,9 @@ export function IdeasClient(): React.JSX.Element {
                   ) : (
                     filteredSheetRows.map((row, rowIndex) => (
                       <tr key={`sheet-row-${rowIndex}`} className="border-t align-top">
-                        {sheetHeaders.map((header) => (
+                        {sheetHeaders.map((header, headerIndex) => (
                           <td
-                            key={`sheet-cell-${rowIndex}-${header}`}
+                            key={`sheet-cell-${rowIndex}-${headerIndex}-${header}`}
                             className={`px-3 py-2 ${wrapSheetCells ? "whitespace-pre-wrap break-words" : "whitespace-nowrap"}`}
                           >
                             {row[header] || ""}

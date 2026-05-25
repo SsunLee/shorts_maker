@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import JSZip from "jszip";
 import {
   AlignCenter,
   AlignLeft,
@@ -21,6 +22,7 @@ import {
   Layers,
   Minus,
   Move,
+  Music,
   Paintbrush,
   Plus,
   Redo2,
@@ -42,6 +44,19 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { renderInstagramPageToPngDataUrl } from "@/lib/instagram-page-renderer";
+import {
+  buildSentenceReadingPages as buildSentenceReadingPagesShared,
+  buildSentenceReadingUploadInfo,
+  normalizeSentenceReadingCardTitle,
+  normalizeSentenceReadingCardSet as normalizeSentenceReadingCardSetShared,
+  repairMalformedRubyHtml
+} from "@/lib/instagram-sentence-reading";
+import {
+  readInstagramLastSheetName,
+  resolveInstagramPreferredSheetName,
+  resolveInstagramSettingsSheetName,
+  saveInstagramLastSheetName
+} from "@/lib/instagram-sheet-name-storage";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
 import {
   INSTAGRAM_FEED_DRAFT_KEY,
@@ -85,6 +100,28 @@ type TemplateMediaUploadUrlResponse = {
   uploadUrl?: string;
   postUrl?: string;
   fields?: Record<string, string>;
+  publicUrl?: string;
+  error?: string;
+};
+
+type PixabaySoundEffectResult = {
+  id: string;
+  title: string;
+  user?: string;
+  tags?: string;
+  duration?: number;
+  pageUrl?: string;
+  audioUrl: string;
+};
+
+type PixabaySoundEffectSearchResponse = {
+  ok?: boolean;
+  results?: PixabaySoundEffectResult[];
+  error?: string;
+};
+
+type PixabaySoundEffectImportResponse = {
+  ok?: boolean;
   publicUrl?: string;
   error?: string;
 };
@@ -218,6 +255,8 @@ type TextStyleSnapshot = Pick<
   | "fontSize"
   | "lineHeight"
   | "letterSpacing"
+  | "rubyGap"
+  | "textOffsetY"
   | "textAlign"
   | "autoWrap"
   | "bold"
@@ -438,6 +477,12 @@ const CUSTOM_FONT_ACCEPT = ".ttf,.otf,.ttc,.woff,.woff2";
 const MIN_TEXT_FONT_SIZE = 8;
 const MAX_TEXT_FONT_SIZE = 144;
 const TEXT_FONT_SIZE_STEP = 2;
+const DEFAULT_RUBY_GAP = 6;
+const MIN_TEXT_OFFSET_Y = -120;
+const MAX_TEXT_OFFSET_Y = 120;
+const SENTENCE_READING_PAGE_FONT_STEP = 2;
+const SENTENCE_READING_PAGE_FONT_MIN_DELTA = -12;
+const SENTENCE_READING_PAGE_FONT_MAX_DELTA = 12;
 const INSTAGRAM_AI_IMAGE_STYLE_PRESETS = [
   "Cinematic photo-real",
   "Ultra photoreal photographer",
@@ -468,6 +513,12 @@ const CANVAS_PRESETS: Array<{ id: string; label: string; width: number; height: 
 ];
 
 const FONT_OPTIONS = [
+  "문장 읽기 명조",
+  "Nanum Pen Script",
+  "Gaegu",
+  "Kyobo Handwriting 2019",
+  "Segoe Print",
+  "Brush Script MT",
   "Noto Sans KR",
   "Noto Sans JP",
   "Noto Sans",
@@ -797,6 +848,35 @@ function buildKnownFontAliases(fontFamily: string): string[] {
 
 function buildFontFamilyStack(fontFamily: string): string {
   const primary = normalizeStoredFontFamily(fontFamily).replace(/"/g, '\\"');
+  if (normalizeFontName(primary).toLowerCase() === "문장 읽기 명조") {
+    return [
+      "Yu Mincho",
+      "Hiragino Mincho ProN",
+      "Hiragino Mincho Pro",
+      "Noto Serif CJK JP",
+      "Noto Serif JP",
+      "Noto Serif KR",
+      "Nanum Myeongjo",
+      "AppleMyungjo",
+      "Batang",
+      "serif"
+    ]
+      .map((family) => (family === "serif" ? family : `"${family}"`))
+      .join(", ");
+  }
+  if (normalizeFontName(primary).toLowerCase() === "nanum pen script") {
+    return [
+      "Nanum Pen Script",
+      "Gaegu",
+      "Kyobo Handwriting 2019",
+      "Segoe Print",
+      "Brush Script MT",
+      "Apple Chancery",
+      "cursive"
+    ]
+      .map((family) => (family === "cursive" ? family : `"${family}"`))
+      .join(", ");
+  }
   const fallbackFamilies = [
     "Noto Sans KR",
     "Malgun Gothic",
@@ -996,6 +1076,14 @@ function normalizeTextFontSize(value: number, fallback: number): number {
   return clamp(Math.round(Number(value)), MIN_TEXT_FONT_SIZE, MAX_TEXT_FONT_SIZE, fallback);
 }
 
+function normalizeRubyGap(value: unknown, fallback = DEFAULT_RUBY_GAP): number {
+  return clamp(Number(value), 0, 32, fallback);
+}
+
+function normalizeTextOffsetY(value: unknown, fallback = 0): number {
+  return clamp(Number(value), MIN_TEXT_OFFSET_Y, MAX_TEXT_OFFSET_Y, fallback);
+}
+
 function buildTextFontSizeOptions(currentValue: number): number[] {
   const normalizedCurrent = normalizeTextFontSize(currentValue, MIN_TEXT_FONT_SIZE);
   const values = new Set<number>();
@@ -1006,6 +1094,88 @@ function buildTextFontSizeOptions(currentValue: number): number[] {
   return Array.from(values).sort((a, b) => a - b);
 }
 
+function isSentenceReadingBodyTextLayer(layer: InstagramPageElement): layer is InstagramTextElement {
+  if (layer.type !== "text") {
+    return false;
+  }
+  const bindingKey = String(layer.bindingKey || "").trim();
+  if (["sentence_title", "sentence_page_number", "sentence_signature"].includes(bindingKey)) {
+    return false;
+  }
+  const text = String(layer.text || "").trim();
+  if (!text || text === "쑨에듀" || text === "오늘의 한자 표현" || /^\d{1,2}$/.test(text)) {
+    return false;
+  }
+  if (/^오늘의\s*일본어\s*일기/.test(text)) {
+    return false;
+  }
+  if (bindingKey === "sentence_content") {
+    return true;
+  }
+  if (/[\u3040-\u30ff\u3400-\u9fff]/.test(text) || /<ruby\b/i.test(text)) {
+    return true;
+  }
+  return true;
+}
+
+function relayoutSentenceReadingBodyTextLayers(
+  elements: InstagramPageElement[],
+  pageName: string,
+  canvasHeight: number
+): InstagramPageElement[] {
+  const bodyLayers = elements
+    .filter(isSentenceReadingBodyTextLayer)
+    .sort((a, b) => a.y - b.y || a.zIndex - b.zIndex);
+  if (bodyLayers.length <= 1) {
+    return elements;
+  }
+
+  const safeCanvasHeight = Math.max(1, Number(canvasHeight) || DEFAULT_CANVAS_HEIGHT);
+  const isFirstCard = /일본어만|japanese\s*only/i.test(String(pageName || ""));
+  const contentTop = isFirstCard ? 280 : 180;
+  const contentBottom = isFirstCard ? 170 : 110;
+  const availableHeight = Math.max(120, safeCanvasHeight - contentTop - contentBottom);
+  const heightsById = new Map(
+    bodyLayers.map((layer) => [
+      layer.id,
+      Math.max(24, (clamp(Number(layer.height), MIN_LAYER_SIZE_PERCENT, 100, layer.height) / 100) * safeCanvasHeight)
+    ])
+  );
+  const totalLayerHeight = bodyLayers.reduce((sum, layer) => sum + (heightsById.get(layer.id) || 0), 0);
+  const gapCount = Math.max(0, bodyLayers.length - 1);
+  let gap = 0;
+  if (gapCount > 0) {
+    const naturalGap = (availableHeight - totalLayerHeight) / gapCount;
+    gap = clamp(naturalGap, 10, isFirstCard ? 52 : 72, naturalGap);
+    if (totalLayerHeight + gap * gapCount > availableHeight) {
+      gap = 10;
+    }
+  }
+
+  const stackHeight = totalLayerHeight + gap * gapCount;
+  let cursor = contentTop + Math.max(0, (availableHeight - stackHeight) / 2);
+  const nextYById = new Map<string, number>();
+  bodyLayers.forEach((layer) => {
+    const heightPx = heightsById.get(layer.id) || 24;
+    const nextCenterYPx = cursor + heightPx / 2;
+    nextYById.set(
+      layer.id,
+      clamp((nextCenterYPx / safeCanvasHeight) * 100, MIN_LAYER_SIZE_PERCENT / 2, 100 - MIN_LAYER_SIZE_PERCENT / 2, layer.y)
+    );
+    cursor += heightPx + gap;
+  });
+
+  return elements.map((layer) => {
+    if (!isSentenceReadingBodyTextLayer(layer)) {
+      return layer;
+    }
+    return {
+      ...layer,
+      y: nextYById.get(layer.id) ?? layer.y
+    };
+  });
+}
+
 function buildTextStyleSnapshot(layer: InstagramTextElement): TextStyleSnapshot {
   return {
     color: layer.color,
@@ -1013,6 +1183,8 @@ function buildTextStyleSnapshot(layer: InstagramTextElement): TextStyleSnapshot 
     fontSize: layer.fontSize,
     lineHeight: layer.lineHeight,
     letterSpacing: layer.letterSpacing,
+    rubyGap: normalizeRubyGap(layer.rubyGap),
+    textOffsetY: normalizeTextOffsetY(layer.textOffsetY),
     textAlign: layer.textAlign,
     autoWrap: layer.autoWrap,
     bold: layer.bold,
@@ -1183,6 +1355,49 @@ function readBindingRowValue(values: Record<string, string>, field: string): str
   return matchedKey ? String(values[matchedKey] ?? "").trim() : "";
 }
 
+function normalizeBindingFieldKey(value: string): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
+const SENTENCE_READING_ROW_FIELD_KEYS = new Set(
+  [
+    "audioScript",
+    "audio_script",
+    "japaneseOnlyBlocks",
+    "japanese_only_blocks",
+    "rubyFrontLines",
+    "ruby_front_lines",
+    "rubyBackLines",
+    "ruby_back_lines",
+    "rubyLines",
+    "ruby_lines",
+    "bilingualFront",
+    "bilingual_front",
+    "bilingualBack",
+    "bilingual_back",
+    "bilingualLines",
+    "bilingual_lines",
+    "kanjiGlossary",
+    "kanji_glossary",
+    "grammarPatterns",
+    "grammar_patterns",
+    "postTitle",
+    "post_title",
+    "shortTitle",
+    "short_title"
+  ].map(normalizeBindingFieldKey)
+);
+
+function hasSentenceReadingRowData(values: Record<string, string>): boolean {
+  return Object.entries(values || {}).some(([key, value]) => {
+    if (!String(value ?? "").trim()) return false;
+    return SENTENCE_READING_ROW_FIELD_KEYS.has(normalizeBindingFieldKey(key));
+  });
+}
+
 function isNewsGeneratedSampleValue(field: string, value: string): boolean {
   const normalizedField = String(field || "").trim();
   const normalizedValue = String(value || "").trim();
@@ -1261,7 +1476,10 @@ function createBindingRowOptions(rows: Array<Record<string, string>>): BindingRo
 }
 
 function resolveTemplateMode(mode: unknown): InstagramTemplateMode {
-  return mode === "news" ? "news" : "general";
+  if (mode === "news" || mode === "sentence_reading") {
+    return mode;
+  }
+  return "general";
 }
 
 function resolveAiImageOrientation(value: unknown): InstagramAiImageOrientation {
@@ -1529,6 +1747,9 @@ function buildTemplatePayload(source: InstagramTemplate, templateId: string): In
   payload.canvasPreset = resolveCanvasPresetId(payload.canvasWidth, payload.canvasHeight);
   payload.pageCount = payload.pages.length;
   payload.pageDurationSec = clamp(Number(payload.pageDurationSec), 1, 60, 4);
+  payload.bgmUrl = String(payload.bgmUrl || "");
+  payload.bgmEnabled = Boolean(payload.bgmEnabled && payload.bgmUrl.trim());
+  payload.bgmVolume = clamp(Number(payload.bgmVolume), 0, 1, 0.18);
   payload.customFonts = normalizeCustomTemplateFonts(payload.customFonts);
   payload.updatedAt = new Date().toISOString();
   payload.pages = payload.pages.map((page) => ({
@@ -1540,6 +1761,24 @@ function buildTemplatePayload(source: InstagramTemplate, templateId: string): In
 
 async function replaceTemplateDataUrlMedia(template: InstagramTemplate): Promise<InstagramTemplate> {
   const next = deepCloneTemplate(template);
+  const bgmSource = String(next.bgmUrl || "").trim();
+  if (bgmSource.startsWith("data:audio/")) {
+    const response = await fetch(bgmSource);
+    const blob = await response.blob();
+    const extension =
+      blob.type.includes("mpeg") || blob.type.includes("mp3")
+        ? "mp3"
+        : blob.type.includes("wav")
+          ? "wav"
+          : blob.type.includes("ogg")
+            ? "ogg"
+            : blob.type.includes("aac")
+              ? "aac"
+              : "m4a";
+    next.bgmUrl = await uploadTemplateMediaFile(
+      new File([blob], `template-bgm.${extension}`, { type: blob.type || "audio/mpeg" })
+    );
+  }
   for (const page of next.pages) {
     for (const element of page.elements) {
       if (element.type !== "image" && element.type !== "video") {
@@ -1872,6 +2111,15 @@ async function uploadTemplateMediaFile(file: File, onProgress?: (percent: number
   }
 }
 
+function isSupportedAudioFile(file: File): boolean {
+  const normalizedType = String(file.type || "").toLowerCase();
+  const normalizedName = String(file.name || "").toLowerCase();
+  return (
+    normalizedType.startsWith("audio/") ||
+    /\.(mp3|m4a|aac|wav|ogg|oga|flac)$/i.test(normalizedName)
+  );
+}
+
 function createTextLayer(mode: "variable" | "plain" = "variable"): InstagramTextElement {
   return {
     id: uid(),
@@ -1892,6 +2140,8 @@ function createTextLayer(mode: "variable" | "plain" = "variable"): InstagramText
     fontSize: 56,
     lineHeight: 1.2,
     letterSpacing: 0,
+    rubyGap: DEFAULT_RUBY_GAP,
+    textOffsetY: 0,
     textAlign: "center",
     bold: true,
     italic: false,
@@ -2069,6 +2319,9 @@ function createTemplate(): InstagramTemplate {
     mode: "general",
     sourceTitle: "{{subject}}",
     sourceTopic: "{{description}}",
+    bgmEnabled: false,
+    bgmUrl: "",
+    bgmVolume: 0.18,
     hashtags: ["#shorts", "#instagram", "#콘텐츠"],
     hashtagSourceFields: ["subject", "keyword", "type"],
     captionSourceFields: ["Caption", "Subject"],
@@ -2081,6 +2334,724 @@ function createTemplate(): InstagramTemplate {
     customFonts: [],
     updatedAt: new Date().toISOString()
   };
+}
+
+type SentenceReadingRubyLine = {
+  html: string;
+  plain: string;
+};
+
+type SentenceReadingBilingualLine = {
+  jaHtml: string;
+  jaPlain: string;
+  ko: string;
+};
+
+type SentenceReadingKanjiItem = {
+  reading: string;
+  word: string;
+  meaning: string;
+};
+
+type SentenceReadingCardSet = {
+  audioScript: string;
+  bilingualBack: SentenceReadingBilingualLine[];
+  bilingualFront: SentenceReadingBilingualLine[];
+  hashtags: string;
+  japaneseOnlyBlocks: string[];
+  jlptLevel: string;
+  kanjiGlossary: SentenceReadingKanjiItem[];
+  postTitle: string;
+  rubyBackLines: SentenceReadingRubyLine[];
+  rubyFrontLines: SentenceReadingRubyLine[];
+  title: string;
+};
+
+const SENTENCE_READING_SERIF_FONT = "문장 읽기 명조";
+const SENTENCE_READING_SAFE_WIDTH = 76;
+
+const SENTENCE_READING_SAMPLE: SentenceReadingCardSet = {
+  title: "오늘의 일본어 일기 | 한국 워홀 일상",
+  postTitle: "JLPT N5~N4 일본어 일기｜한국 워홀 일상",
+  jlptLevel: "N5~N4",
+  audioScript:
+    "今日はアルバイトが早く終わったので、\n帰りにコンビニでキンパを買いました。\n\n韓国でのワーホリ生活にも、\n少しずつ慣れてきて、\n前より不安が少なくなりました。\n\n夜は部屋でラテを飲みながら、\n家族にメッセージを送りました。\n\n大変な日もありますが、\n今の毎日を大切にしたいです。",
+  japaneseOnlyBlocks: [
+    "今日はアルバイトが早く終わったので、\n帰りにコンビニでキンパを買いました。",
+    "韓国でのワーホリ生活にも、\n少しずつ慣れてきて、\n前より不安が少なくなりました。",
+    "夜は部屋でラテを飲みながら、\n家族にメッセージを送りました。",
+    "大変な日もありますが、\n今の毎日を大切にしたいです。"
+  ],
+  rubyFrontLines: [
+    {
+      plain: "今日はアルバイトが早く終わったので、",
+      html: "<ruby>今日<rt>きょう</rt></ruby>はアルバイトが<ruby>早<rt>はや</rt></ruby>く<ruby>終<rt>お</rt></ruby>わったので、"
+    },
+    {
+      plain: "帰りにコンビニでキンパを買いました。",
+      html: "<ruby>帰<rt>かえ</rt></ruby>りにコンビニでキンパを<ruby>買<rt>か</rt></ruby>いました。"
+    },
+    {
+      plain: "韓国でのワーホリ生活にも、",
+      html: "<ruby>韓国<rt>かんこく</rt></ruby>でのワーホリ<ruby>生活<rt>せいかつ</rt></ruby>にも、"
+    },
+    {
+      plain: "少しずつ慣れてきて、",
+      html: "<ruby>少<rt>すこ</rt></ruby>しずつ<ruby>慣<rt>な</rt></ruby>れてきて、"
+    },
+    {
+      plain: "前より不安が少なくなりました。",
+      html: "<ruby>前<rt>まえ</rt></ruby>より<ruby>不安<rt>ふあん</rt></ruby>が<ruby>少<rt>すく</rt></ruby>なくなりました。"
+    }
+  ],
+  rubyBackLines: [
+    {
+      plain: "夜は部屋でラテを飲みながら、",
+      html: "<ruby>夜<rt>よる</rt></ruby>は<ruby>部屋<rt>へや</rt></ruby>でラテを<ruby>飲<rt>の</rt></ruby>みながら、"
+    },
+    {
+      plain: "家族にメッセージを送りました。",
+      html: "<ruby>家族<rt>かぞく</rt></ruby>にメッセージを<ruby>送<rt>おく</rt></ruby>りました。"
+    },
+    {
+      plain: "大変な日もありますが、",
+      html: "<ruby>大変<rt>たいへん</rt></ruby>な<ruby>日<rt>ひ</rt></ruby>もありますが、"
+    },
+    {
+      plain: "今の毎日を大切にしたいです。",
+      html: "<ruby>今<rt>いま</rt></ruby>の<ruby>毎日<rt>まいにち</rt></ruby>を<ruby>大切<rt>たいせつ</rt></ruby>にしたいです。"
+    }
+  ],
+  bilingualFront: [
+    {
+      jaPlain: "今日はアルバイトが早く終わったので、",
+      jaHtml: "<ruby>今日<rt>きょう</rt></ruby>はアルバイトが<ruby>早<rt>はや</rt></ruby>く<ruby>終<rt>お</rt></ruby>わったので、",
+      ko: "오늘은 아르바이트가 일찍 끝났기 때문에"
+    },
+    {
+      jaPlain: "帰りにコンビニでキンパを買いました。",
+      jaHtml: "<ruby>帰<rt>かえ</rt></ruby>りにコンビニでキンパを<ruby>買<rt>か</rt></ruby>いました。",
+      ko: "돌아오는 길에 편의점에서 김밥을 샀습니다."
+    },
+    {
+      jaPlain: "韓国でのワーホリ生活にも、",
+      jaHtml: "<ruby>韓国<rt>かんこく</rt></ruby>でのワーホリ<ruby>生活<rt>せいかつ</rt></ruby>にも、",
+      ko: "한국에서의 워홀 생활에도"
+    },
+    {
+      jaPlain: "少しずつ慣れてきて、",
+      jaHtml: "<ruby>少<rt>すこ</rt></ruby>しずつ<ruby>慣<rt>な</rt></ruby>れてきて、",
+      ko: "조금씩 익숙해져서"
+    },
+    {
+      jaPlain: "前より不安が少なくなりました。",
+      jaHtml: "<ruby>前<rt>まえ</rt></ruby>より<ruby>不安<rt>ふあん</rt></ruby>が<ruby>少<rt>すく</rt></ruby>なくなりました。",
+      ko: "전보다 불안이 줄어들었습니다."
+    }
+  ],
+  bilingualBack: [
+    {
+      jaPlain: "夜は部屋でラテを飲みながら、",
+      jaHtml: "<ruby>夜<rt>よる</rt></ruby>は<ruby>部屋<rt>へや</rt></ruby>でラテを<ruby>飲<rt>の</rt></ruby>みながら、",
+      ko: "밤에는 방에서 라떼를 마시면서"
+    },
+    {
+      jaPlain: "家族にメッセージを送りました。",
+      jaHtml: "<ruby>家族<rt>かぞく</rt></ruby>にメッセージを<ruby>送<rt>おく</rt></ruby>りました。",
+      ko: "가족에게 메시지를 보냈습니다."
+    },
+    {
+      jaPlain: "大変な日もありますが、",
+      jaHtml: "<ruby>大変<rt>たいへん</rt></ruby>な<ruby>日<rt>ひ</rt></ruby>もありますが、",
+      ko: "힘든 날도 있지만"
+    },
+    {
+      jaPlain: "今の毎日を大切にしたいです。",
+      jaHtml: "<ruby>今<rt>いま</rt></ruby>の<ruby>毎日<rt>まいにち</rt></ruby>を<ruby>大切<rt>たいせつ</rt></ruby>にしたいです。",
+      ko: "지금의 매일을 소중히 하고 싶습니다."
+    }
+  ],
+  kanjiGlossary: [
+    { reading: "きょう", word: "今日", meaning: "오늘" },
+    { reading: "はやく", word: "早く", meaning: "일찍, 빨리" },
+    { reading: "おわった", word: "終わった", meaning: "끝났다" },
+    { reading: "かえり", word: "帰り", meaning: "돌아오는 길" },
+    { reading: "かいました", word: "買いました", meaning: "샀습니다" },
+    { reading: "かんこく", word: "韓国", meaning: "한국" },
+    { reading: "せいかつ", word: "生活", meaning: "생활" },
+    { reading: "すこし", word: "少し", meaning: "조금" },
+    { reading: "なれて", word: "慣れて", meaning: "익숙해져서" },
+    { reading: "まえ", word: "前", meaning: "전" },
+    { reading: "ふあん", word: "不安", meaning: "불안" },
+    { reading: "すくなく", word: "少なく", meaning: "적게, 줄어" },
+    { reading: "よる", word: "夜", meaning: "밤" },
+    { reading: "へや", word: "部屋", meaning: "방" },
+    { reading: "のみながら", word: "飲みながら", meaning: "마시면서" },
+    { reading: "かぞく", word: "家族", meaning: "가족" },
+    { reading: "おくりました", word: "送りました", meaning: "보냈습니다" },
+    { reading: "たいへん", word: "大変", meaning: "힘듦, 큰일" },
+    { reading: "ひ", word: "日", meaning: "날" },
+    { reading: "いま", word: "今", meaning: "지금" },
+    { reading: "まいにち", word: "毎日", meaning: "매일" },
+    { reading: "たいせつ", word: "大切", meaning: "소중함" }
+  ],
+  hashtags:
+    "#일본어공부 #일본어읽기 #일본어일기 #JLPTN5 #JLPTN4 #일본어회화 #기초일본어 #초급일본어 #쑨에듀\n#日本語 #日本語学習 #日本語日記 #やさしい日本語 #JLPT #毎日日本語"
+};
+
+function safeJsonParse<T>(value: string, fallback: T): T {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function sentencePaperSvgDataUrl(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" viewBox="0 0 1080 1350">
+  <defs>
+    <radialGradient id="lightA" cx="20%" cy="10%" r="45%"><stop offset="0%" stop-color="#ffffff" stop-opacity=".78"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+    <radialGradient id="lightB" cx="80%" cy="70%" r="42%"><stop offset="0%" stop-color="#ffffff" stop-opacity=".45"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+    <pattern id="gridA" width="13" height="13" patternUnits="userSpaceOnUse"><path d="M0 0H13M0 0V13" stroke="#3c3228" stroke-opacity=".035" stroke-width="1"/></pattern>
+    <pattern id="gridB" width="17" height="17" patternUnits="userSpaceOnUse"><path d="M0 0H17M0 0V17" stroke="#3c3228" stroke-opacity=".025" stroke-width="1"/></pattern>
+    <pattern id="fiberA" width="9" height="64" patternUnits="userSpaceOnUse" patternTransform="rotate(100)"><path d="M0 0V64" stroke="#5f5546" stroke-opacity=".05" stroke-width="1"/></pattern>
+    <pattern id="fiberB" width="11" height="64" patternUnits="userSpaceOnUse" patternTransform="rotate(10)"><path d="M0 0V64" stroke="#ffffff" stroke-opacity=".22" stroke-width="1"/></pattern>
+  </defs>
+  <rect width="1080" height="1350" fill="#f8f6f0"/>
+  <rect width="1080" height="1350" fill="url(#lightA)"/>
+  <rect width="1080" height="1350" fill="url(#lightB)"/>
+  <rect width="1080" height="1350" fill="url(#gridA)"/>
+  <rect width="1080" height="1350" fill="url(#gridB)"/>
+  <rect width="1080" height="1350" fill="url(#fiberA)" opacity=".28"/>
+  <rect width="1080" height="1350" fill="url(#fiberB)" opacity=".28"/>
+</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function splitDiaryParagraphs(value: string): string[] {
+  return String(value || "")
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function splitFrontBack<T>(items: T[]): { front: T[]; back: T[] } {
+  const middle = Math.ceil(items.length / 2);
+  return {
+    front: items.slice(0, middle),
+    back: items.slice(middle)
+  };
+}
+
+function readSentenceField(sampleData: Record<string, string>, keys: string[]): string {
+  for (const key of keys) {
+    const value = resolveSampleValueByKey(sampleData, key);
+    if (String(value || "").trim()) {
+      return String(value || "").trim();
+    }
+  }
+  return "";
+}
+
+function normalizeSentenceReadingCardSet(sampleData: Record<string, string>): SentenceReadingCardSet {
+  const audioScript =
+    readSentenceField(sampleData, ["audioScript", "audio_script", "diaryBody", "diary_body", "japaneseDiary", "japanese_diary", "body"]) ||
+    SENTENCE_READING_SAMPLE.audioScript;
+  const japaneseOnlyBlocks = safeJsonParse<string[]>(
+    readSentenceField(sampleData, ["japaneseOnlyBlocks", "japanese_only_blocks"]),
+    []
+  );
+  const rubyFrontLines = safeJsonParse<SentenceReadingRubyLine[]>(
+    readSentenceField(sampleData, ["rubyFrontLines", "ruby_front_lines"]),
+    []
+  );
+  const rubyBackLines = safeJsonParse<SentenceReadingRubyLine[]>(
+    readSentenceField(sampleData, ["rubyBackLines", "ruby_back_lines"]),
+    []
+  );
+  const rubyLines = safeJsonParse<SentenceReadingRubyLine[]>(
+    readSentenceField(sampleData, ["rubyLines", "ruby_lines"]),
+    []
+  );
+  const splitRubyLines = splitFrontBack(rubyLines);
+  const bilingualFront = safeJsonParse<SentenceReadingBilingualLine[]>(
+    readSentenceField(sampleData, ["bilingualFront", "bilingual_front"]),
+    []
+  );
+  const bilingualBack = safeJsonParse<SentenceReadingBilingualLine[]>(
+    readSentenceField(sampleData, ["bilingualBack", "bilingual_back"]),
+    []
+  );
+  const bilingualLines = safeJsonParse<SentenceReadingBilingualLine[]>(
+    readSentenceField(sampleData, ["bilingualLines", "bilingual_lines"]),
+    []
+  );
+  const splitBilingualLines = splitFrontBack(bilingualLines);
+  const kanjiGlossary = safeJsonParse<SentenceReadingKanjiItem[]>(
+    readSentenceField(sampleData, ["kanjiGlossary", "kanji_glossary"]),
+    []
+  );
+  const title =
+    readSentenceField(sampleData, ["title", "shortTitle", "short_title", "Subject", "subject", "topic"]) ||
+    SENTENCE_READING_SAMPLE.title;
+  return {
+    title,
+    postTitle: readSentenceField(sampleData, ["postTitle", "post_title", "Caption", "caption"]) || title,
+    jlptLevel: readSentenceField(sampleData, ["jlptLevel", "jlpt_level", "jlpt"]) || SENTENCE_READING_SAMPLE.jlptLevel,
+    audioScript,
+    japaneseOnlyBlocks: japaneseOnlyBlocks.length > 0 ? japaneseOnlyBlocks : splitDiaryParagraphs(audioScript),
+    rubyFrontLines:
+      rubyFrontLines.length > 0 ? rubyFrontLines : splitRubyLines.front.length > 0 ? splitRubyLines.front : SENTENCE_READING_SAMPLE.rubyFrontLines,
+    rubyBackLines:
+      rubyBackLines.length > 0 ? rubyBackLines : splitRubyLines.back.length > 0 ? splitRubyLines.back : SENTENCE_READING_SAMPLE.rubyBackLines,
+    bilingualFront:
+      bilingualFront.length > 0 ? bilingualFront : splitBilingualLines.front.length > 0 ? splitBilingualLines.front : SENTENCE_READING_SAMPLE.bilingualFront,
+    bilingualBack:
+      bilingualBack.length > 0 ? bilingualBack : splitBilingualLines.back.length > 0 ? splitBilingualLines.back : SENTENCE_READING_SAMPLE.bilingualBack,
+    kanjiGlossary: kanjiGlossary.length > 0 ? kanjiGlossary : SENTENCE_READING_SAMPLE.kanjiGlossary,
+    hashtags: readSentenceField(sampleData, ["hashtags", "hashTags", "tags"]) || SENTENCE_READING_SAMPLE.hashtags
+  };
+}
+
+function makeSentenceLayerText(args: {
+  text: string;
+  x?: number;
+  y: number;
+  width?: number;
+  height: number;
+  fontSize: number;
+  lineHeight?: number;
+  zIndex: number;
+  color?: string;
+  align?: "left" | "center" | "right";
+  bold?: boolean;
+  fontFamily?: string;
+  rotation?: number;
+  bindingKey?: string;
+}): InstagramTextElement {
+  return {
+    ...createTextLayer("plain"),
+    bindingKey: args.bindingKey || "sentence_content",
+    text: args.text,
+    x: args.x ?? 50,
+    y: args.y,
+    width: args.width ?? SENTENCE_READING_SAFE_WIDTH,
+    height: args.height,
+    zIndex: args.zIndex,
+    color: args.color || "#1F1F1F",
+    fontFamily: args.fontFamily || SENTENCE_READING_SERIF_FONT,
+    fontSize: args.fontSize,
+    lineHeight: args.lineHeight ?? 1.8,
+    rotation: args.rotation ?? 0,
+    letterSpacing: 0.6,
+    textAlign: args.align || "center",
+    bold: Boolean(args.bold),
+    backgroundColor: "#FFFFFF",
+    backgroundOpacity: 0,
+    padding: 0,
+    autoWrap: true
+  };
+}
+
+function pctX(px: number): number {
+  return (px / DEFAULT_CANVAS_WIDTH) * 100;
+}
+
+function pctY(px: number): number {
+  return (px / DEFAULT_CANVAS_HEIGHT) * 100;
+}
+
+function sentenceTextLayerFromPx(args: {
+  text: string;
+  centerX?: number;
+  centerY: number;
+  width: number;
+  height: number;
+  fontSize: number;
+  lineHeight?: number;
+  zIndex: number;
+  color?: string;
+  align?: "left" | "center" | "right";
+  bold?: boolean;
+  fontFamily?: string;
+  rotation?: number;
+  bindingKey?: string;
+}): InstagramTextElement {
+  return makeSentenceLayerText({
+    text: args.text,
+    x: pctX(args.centerX ?? DEFAULT_CANVAS_WIDTH / 2),
+    y: pctY(args.centerY),
+    width: pctX(args.width),
+    height: pctY(args.height),
+    fontSize: args.fontSize,
+    lineHeight: args.lineHeight,
+    zIndex: args.zIndex,
+    color: args.color,
+    align: args.align,
+    bold: args.bold,
+    fontFamily: args.fontFamily,
+    rotation: args.rotation,
+    bindingKey: args.bindingKey
+  });
+}
+
+function makeSentenceShape(args: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  zIndex: number;
+  fillColor?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  cornerRadius?: number;
+  rotation?: number;
+  shape?: InstagramShapeType;
+}): InstagramShapeElement {
+  return {
+    ...createShapeLayer(args.shape || "roundedRectangle"),
+    x: args.x,
+    y: args.y,
+    width: args.width,
+    height: args.height,
+    zIndex: args.zIndex,
+    fillColor: args.fillColor || "#F8F6F0",
+    fillOpacity: 1,
+    strokeColor: args.strokeColor || "#DED8CA",
+    strokeWidth: args.strokeWidth ?? 2,
+    rotation: args.rotation ?? 0,
+    cornerRadius: args.cornerRadius ?? 22
+  };
+}
+
+function sentenceBrandSvgDataUrl(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" fill="none">
+    <path d="M75 19c9 2 15 11 13 21-2 12-12 20-24 18-10-2-17-11-16-21 2-12 12-21 27-18Z" stroke="#111" stroke-width="4" stroke-linecap="round"/>
+    <path d="M63 35h.1M78 38h.1M69 48c4 2 8 1 11-2" stroke="#111" stroke-width="4" stroke-linecap="round"/>
+    <path d="M50 58c-7 8-9 19-5 32M88 58c8 11 10 22 7 34" stroke="#111" stroke-width="5" stroke-linecap="round"/>
+    <path d="M24 55l36 20v42L25 96 24 55Z" fill="#f0f6ec" stroke="#5f7d62" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M60 75l36-16v40l-36 18V75Z" fill="#edf5e9" stroke="#5f7d62" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M42 92c8 4 18 6 28 2" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function makeSentenceBrandLayer(zIndex: number): InstagramImageElement {
+  return {
+    ...createImageLayer(),
+    imageUrl: sentenceBrandSvgDataUrl(),
+    x: pctX(DEFAULT_CANVAS_WIDTH - 88 - 64),
+    y: pctY(DEFAULT_CANVAS_HEIGHT - 100 - 66),
+    width: pctX(128),
+    height: pctY(132),
+    fit: "contain",
+    borderRadius: 0,
+    zIndex
+  };
+}
+
+function makeSentenceSignatureLayer(zIndex: number): InstagramTextElement {
+  return {
+    ...sentenceTextLayerFromPx({
+      text: "쑨에듀",
+      centerX: DEFAULT_CANVAS_WIDTH - 77 - 75,
+      centerY: DEFAULT_CANVAS_HEIGHT - 74 - 16,
+      width: 150,
+      height: 42,
+      fontSize: 30,
+      lineHeight: 1,
+      zIndex,
+      color: "#2C362A",
+      bindingKey: "sentence_signature"
+    }),
+    fontFamily: "Nanum Pen Script",
+    rotation: -7,
+    opacity: 0.86,
+    letterSpacing: 0.6,
+    shadowEnabled: true,
+    shadowColor: "#FFFFFF",
+    shadowBlur: 0,
+    shadowX: 0,
+    shadowY: 1
+  };
+}
+
+function buildSentenceBaseElements(cardSet: SentenceReadingCardSet, pageNumber: number, titleTop = pctY(74 + 24)): InstagramPageElement[] {
+  return [
+    makeSentenceLayerText({
+      text: cardSet.title,
+      y: titleTop,
+      width: 68,
+      height: 8,
+      fontSize: 34,
+      lineHeight: 1.35,
+      zIndex: 2,
+      color: "#333333",
+      bold: true,
+      bindingKey: "sentence_title"
+    }),
+    makeSentenceShape({
+      x: pctX(DEFAULT_CANVAS_WIDTH - 72 - 36),
+      y: pctY(54 + 36),
+      width: pctX(72),
+      height: pctY(72),
+      zIndex: 3,
+      shape: "circle",
+      fillColor: "#FFFFFF",
+      strokeColor: "#6A5F52",
+      strokeWidth: 2,
+      rotation: -7
+    }),
+    makeSentenceLayerText({
+      text: String(pageNumber).padStart(2, "0"),
+      x: pctX(DEFAULT_CANVAS_WIDTH - 72 - 36),
+      y: pctY(54 + 36),
+      width: pctX(62),
+      height: pctY(50),
+      fontSize: 40,
+      lineHeight: 1,
+      zIndex: 4,
+      color: "#5A5348",
+      bold: true,
+      fontFamily: "Brush Script MT",
+      rotation: -7,
+      bindingKey: "sentence_page_number"
+    }),
+    makeSentenceBrandLayer(20),
+    makeSentenceSignatureLayer(21)
+  ];
+}
+
+function createSentencePage(name: string, elements: InstagramPageElement[]): InstagramFeedPage {
+  return {
+    ...createPage(0),
+    id: uid(),
+    name,
+    backgroundColor: "#F8F6F0",
+    backgroundImageUrl: sentencePaperSvgDataUrl(),
+    backgroundFit: "cover",
+    durationSec: 4,
+    audioEnabled: false,
+    audioPrompt: "",
+    elements
+  };
+}
+
+function chunkItems<T>(items: T[], size: number): T[][] {
+  const output: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    output.push(items.slice(index, index + size));
+  }
+  return output;
+}
+
+function buildKanjiText(items: SentenceReadingKanjiItem[]): string {
+  return items.map((item) => `${item.reading}\n${item.word}\n${item.meaning}`).filter(Boolean).join("\n\n");
+}
+
+function lineCount(value: string): number {
+  return Math.max(1, String(value || "").split("\n").length);
+}
+
+function buildJapaneseOnlyTextLayers(blocks: string[]): InstagramTextElement[] {
+  const contentTop = 280;
+  const contentBottom = 170;
+  const contentHeight = DEFAULT_CANVAS_HEIGHT - contentTop - contentBottom;
+  const gap = 52;
+  const blockHeights = blocks.map((block) => Math.max(1, lineCount(block)) * 41 * 1.52);
+  const totalHeight = blockHeights.reduce((sum, height) => sum + height, 0) + Math.max(0, blocks.length - 1) * gap;
+  let cursor = contentTop + Math.max(0, (contentHeight - totalHeight) / 2);
+  return blocks.map((block, index) => {
+    const height = blockHeights[index] || 72;
+    const layer = sentenceTextLayerFromPx({
+      text: block,
+      centerY: cursor + height / 2,
+      width: 856,
+      height: height + 16,
+      fontSize: 41,
+      lineHeight: 1.52,
+      zIndex: 5 + index
+    });
+    cursor += height + gap;
+    return layer;
+  });
+}
+
+function buildRubyLineLayers(lines: SentenceReadingRubyLine[], options: { back?: boolean }): InstagramTextElement[] {
+  const count = Math.max(1, lines.length);
+  const lineHeight = 84;
+  const gap = options.back ? 96 : 78;
+  const contentTop = 180;
+  const contentBottom = 110;
+  const contentHeight = DEFAULT_CANVAS_HEIGHT - contentTop - contentBottom;
+  const totalHeight = count * lineHeight + Math.max(0, count - 1) * gap;
+  let cursor = contentTop + Math.max(0, (contentHeight - totalHeight) / 2);
+  return lines.map((line, index) => {
+    const layer = sentenceTextLayerFromPx({
+      text: line.html || line.plain,
+      centerY: cursor + lineHeight / 2,
+      width: 820,
+      height: lineHeight + 20,
+      fontSize: 42,
+      lineHeight: 2,
+      zIndex: 5 + index
+    });
+    cursor += lineHeight + gap;
+    return layer;
+  });
+}
+
+function buildBilingualPairLayers(lines: SentenceReadingBilingualLine[], options: { back?: boolean }): InstagramTextElement[] {
+  const layers: InstagramTextElement[] = [];
+  const jpHeight = 64;
+  const koHeight = 40;
+  const innerGap = 8;
+  const pairGap = options.back ? 56 : 36;
+  const pairHeight = jpHeight + innerGap + koHeight;
+  const contentTop = 180;
+  const contentBottom = 110;
+  const contentHeight = DEFAULT_CANVAS_HEIGHT - contentTop - contentBottom;
+  const totalHeight = lines.length * pairHeight + Math.max(0, lines.length - 1) * pairGap;
+  let cursor = contentTop + Math.max(0, (contentHeight - totalHeight) / 2);
+  lines.forEach((line, index) => {
+    layers.push(
+      sentenceTextLayerFromPx({
+        text: line.jaHtml || line.jaPlain,
+        centerY: cursor + jpHeight / 2,
+        width: 820,
+        height: jpHeight + 18,
+        fontSize: 37,
+        lineHeight: 1.72,
+        zIndex: 5 + index * 2
+      })
+    );
+    layers.push(
+      sentenceTextLayerFromPx({
+        text: line.ko,
+        centerY: cursor + jpHeight + innerGap + koHeight / 2,
+        width: 820,
+        height: koHeight + 8,
+        fontSize: 29,
+        lineHeight: 1.35,
+        zIndex: 6 + index * 2,
+        color: "#333333"
+      })
+    );
+    cursor += pairHeight + pairGap;
+  });
+  return layers;
+}
+
+function buildSentenceReadingPages(cardSet: SentenceReadingCardSet): InstagramFeedPage[] {
+  const pages: InstagramFeedPage[] = [];
+  const firstBlocks = cardSet.japaneseOnlyBlocks.length > 0 ? cardSet.japaneseOnlyBlocks : splitDiaryParagraphs(cardSet.audioScript);
+  pages.push(
+    createSentencePage("01 일본어만 보기", [
+      ...buildSentenceBaseElements(cardSet, 1, pctY(90 + 24)),
+      ...buildJapaneseOnlyTextLayers(firstBlocks)
+    ])
+  );
+
+  pages.push(
+    createSentencePage("02 루비 앞부분", [
+      ...buildSentenceBaseElements(cardSet, 2),
+      ...buildRubyLineLayers(cardSet.rubyFrontLines, {})
+    ])
+  );
+  pages.push(
+    createSentencePage("03 루비 뒷부분", [
+      ...buildSentenceBaseElements(cardSet, 3),
+      ...buildRubyLineLayers(cardSet.rubyBackLines, { back: true })
+    ])
+  );
+  pages.push(
+    createSentencePage("04 뜻 앞부분", [
+      ...buildSentenceBaseElements(cardSet, 4),
+      ...buildBilingualPairLayers(cardSet.bilingualFront, {})
+    ])
+  );
+  pages.push(
+    createSentencePage("05 뜻 뒷부분", [
+      ...buildSentenceBaseElements(cardSet, 5),
+      ...buildBilingualPairLayers(cardSet.bilingualBack, { back: true })
+    ])
+  );
+
+  const kanjiChunks = chunkItems(cardSet.kanjiGlossary, 16);
+  kanjiChunks.forEach((chunk, index) => {
+    const pageNumber = 6 + index;
+    const half = Math.ceil(chunk.length / 2);
+    const leftItems = chunk.slice(0, half);
+    const rightItems = chunk.slice(half);
+    pages.push(
+      createSentencePage(`${String(pageNumber).padStart(2, "0")} 한자 표현`, [
+        ...buildSentenceBaseElements(cardSet, pageNumber),
+        makeSentenceLayerText({
+          text: "오늘의 한자 표현",
+          y: pctY(178),
+          height: 6,
+          fontSize: 38,
+          lineHeight: 1.2,
+          zIndex: 5,
+          bold: true
+        }),
+        makeSentenceLayerText({
+          text: buildKanjiText(leftItems),
+          y: pctY(724),
+          x: pctX(315),
+          width: pctX(320),
+          height: pctY(780),
+          fontSize: 28,
+          lineHeight: 1.08,
+          zIndex: 6
+        }),
+        makeSentenceLayerText({
+          text: buildKanjiText(rightItems),
+          y: pctY(724),
+          x: pctX(765),
+          width: pctX(320),
+          height: pctY(780),
+          fontSize: 28,
+          lineHeight: 1.08,
+          zIndex: 7
+        })
+      ])
+    );
+  });
+  return pages;
+}
+
+function buildSentenceInstagramDescription(cardSet: SentenceReadingCardSet): string {
+  return [
+    `${cardSet.postTitle}`,
+    "",
+    `JLPT ${cardSet.jlptLevel} 수준의 일본어 읽기 콘텐츠입니다.`,
+    "",
+    "먼저 일본어만 읽고, 그다음 루비와 뜻을 보면서 다시 읽어보세요.",
+    "",
+    cardSet.hashtags
+  ].join("\n");
+}
+
+function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  return fetch(dataUrl).then((response) => response.blob());
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function sentenceReadingPngFileName(page: InstagramFeedPage, index: number): string {
+  return `${String(index + 1).padStart(2, "0")}_${sanitizeDownloadName(page.name || `card-${index + 1}`)}.png`;
 }
 
 function normalizeTemplateHashtags(value: unknown): string[] {
@@ -2105,6 +3076,12 @@ function normalizeTemplateForEditor(template: InstagramTemplate): InstagramTempl
   normalized.canvasHeight = normalizedCanvasHeight;
   normalized.canvasPreset = resolveCanvasPresetId(normalizedCanvasWidth, normalizedCanvasHeight);
   normalized.pageDurationSec = clamp(Number(normalized.pageDurationSec), 1, 60, 4);
+  normalized.bgmUrl = String((normalized as { bgmUrl?: unknown }).bgmUrl || "");
+  normalized.bgmEnabled =
+    typeof (normalized as { bgmEnabled?: unknown }).bgmEnabled === "boolean"
+      ? Boolean((normalized as { bgmEnabled?: unknown }).bgmEnabled)
+      : Boolean(normalized.bgmUrl.trim());
+  normalized.bgmVolume = clamp(Number((normalized as { bgmVolume?: unknown }).bgmVolume), 0, 1, 0.18);
   normalized.hashtags = normalizeTemplateHashtags((normalized as { hashtags?: unknown }).hashtags);
   normalized.hashtagSourceFields = Array.isArray((normalized as { hashtagSourceFields?: unknown }).hashtagSourceFields)
     ? ((normalized as { hashtagSourceFields?: unknown }).hashtagSourceFields as unknown[])
@@ -2367,36 +3344,51 @@ type RubySegment =
   | { type: "plain"; text: string }
   | { type: "ruby"; base: string; ruby: string };
 
+function cleanRubyHtmlText(value: string): string {
+  return String(value || "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim();
+}
+
 function parseRubySegments(line: string): RubySegment[] {
+  const repairedLine = repairMalformedRubyHtml(line);
   const segments: RubySegment[] = [];
-  const regex = /\[([^\]\|]+)\|([^\]]+)\]/g;
+  const regex = /<ruby[^>]*>([\s\S]*?)<rt[^>]*>([\s\S]*?)<\/rt>\s*<\/ruby>|\[([^\]\|]+)\|([^\]]+)\]/gi;
   let lastIndex = 0;
   let matched = false;
-  let token: RegExpExecArray | null = regex.exec(line);
+  let token: RegExpExecArray | null = regex.exec(repairedLine);
   while (token) {
     matched = true;
     if (token.index > lastIndex) {
-      segments.push({ type: "plain", text: line.slice(lastIndex, token.index) });
+      segments.push({ type: "plain", text: repairedLine.slice(lastIndex, token.index) });
     }
     segments.push({
       type: "ruby",
-      base: String(token[1] || ""),
-      ruby: String(token[2] || "")
+      base: cleanRubyHtmlText(token[1] || token[3] || ""),
+      ruby: cleanRubyHtmlText(token[2] || token[4] || "")
     });
     lastIndex = token.index + token[0].length;
-    token = regex.exec(line);
+    token = regex.exec(repairedLine);
   }
-  if (lastIndex < line.length) {
-    segments.push({ type: "plain", text: line.slice(lastIndex) });
+  if (lastIndex < repairedLine.length) {
+    segments.push({ type: "plain", text: repairedLine.slice(lastIndex) });
   }
   if (!matched) {
-    return [{ type: "plain", text: line }];
+    return [{ type: "plain", text: repairedLine }];
   }
   return segments;
 }
 
 function lineHasRuby(segments: RubySegment[]): boolean {
   return segments.some((segment) => segment.type === "ruby");
+}
+
+function textHasRuby(value: string): boolean {
+  return /<ruby[\s>]|<\/rt>|\[[^\]\|]+\|[^\]]+\]/i.test(String(value || ""));
 }
 
 function measureRubyLineWidth(ctx: CanvasRenderingContext2D, segments: RubySegment[]): number {
@@ -2407,7 +3399,7 @@ function measureRubyLineWidth(ctx: CanvasRenderingContext2D, segments: RubySegme
   return width;
 }
 
-function renderRubyPreviewNodes(text: string): React.ReactNode {
+function renderRubyPreviewNodes(text: string, rubyGapCss = `${DEFAULT_RUBY_GAP}px`): React.ReactNode {
   const lines = String(text || "").split("\n");
   return lines.map((line, lineIndex) => {
     const segments = parseRubySegments(line);
@@ -2418,7 +3410,9 @@ function renderRubyPreviewNodes(text: string): React.ReactNode {
             return (
               <ruby key={`ruby-${lineIndex}-${segmentIndex}`} className="mx-[1px] ruby">
                 <span>{segment.base}</span>
-                <rt className="text-[0.45em] leading-none">{segment.ruby}</rt>
+                <rt className="text-[0.45em] leading-none" style={{ position: "relative", top: `-${rubyGapCss}` }}>
+                  {segment.ruby}
+                </rt>
               </ruby>
             );
           }
@@ -2675,6 +3669,8 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
                   fontSize: normalizeTextFontSize(Number(textSource.fontSize), 56),
                   lineHeight: clamp(Number(textSource.lineHeight), 0.8, 3, 1.2),
                   letterSpacing: clamp(Number(textSource.letterSpacing), -2, 20, 0),
+                  rubyGap: normalizeRubyGap(textSource.rubyGap),
+                  textOffsetY: normalizeTextOffsetY(textSource.textOffsetY),
                   textAlign:
                     textSource.textAlign === "left" || textSource.textAlign === "right"
                       ? textSource.textAlign
@@ -2726,6 +3722,12 @@ function toTemplateFromUnknown(input: unknown): InstagramTemplate | undefined {
     mode: resolveTemplateMode(source.mode),
     sourceTitle: String(source.sourceTitle || "{{subject}}"),
     sourceTopic: String(source.sourceTopic || "{{description}}"),
+    bgmEnabled:
+      typeof source.bgmEnabled === "boolean"
+        ? source.bgmEnabled
+        : Boolean(String(source.bgmUrl || "").trim()),
+    bgmUrl: String(source.bgmUrl || ""),
+    bgmVolume: clamp(Number(source.bgmVolume), 0, 1, 0.18),
     hashtags: normalizeTemplateHashtags((source as { hashtags?: unknown }).hashtags),
     hashtagSourceFields: Array.isArray((source as { hashtagSourceFields?: unknown }).hashtagSourceFields)
       ? ((source as { hashtagSourceFields?: unknown }).hashtagSourceFields as unknown[])
@@ -2812,6 +3814,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   });
   const [objectToolbarDrag, setObjectToolbarDrag] = useState<ObjectToolbarDragState | null>(null);
   const [objectToolbarWidth, setObjectToolbarWidth] = useState(760);
+  const [objectToolbarVisible, setObjectToolbarVisible] = useState(false);
   const [pendingImageLayerId, setPendingImageLayerId] = useState<string>();
   const [layerMediaUploadProgress, setLayerMediaUploadProgress] = useState<Record<string, LayerMediaUploadProgress>>({});
   const [aiImageGeneratingLayerId, setAiImageGeneratingLayerId] = useState<string>();
@@ -2820,11 +3823,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [aiVideoProgressTick, setAiVideoProgressTick] = useState(0);
   const [aiPromptGeneratingLayerId, setAiPromptGeneratingLayerId] = useState<string>();
   const [sheetName, setSheetName] = useState("");
+  const [settingsSheetName, setSettingsSheetName] = useState("");
   const [bindingSearch, setBindingSearch] = useState("");
   const [bindingFields, setBindingFields] = useState<string[]>(DEFAULT_BINDING_FIELDS);
   const [bindingRowOptions, setBindingRowOptions] = useState<BindingRowOption[]>([]);
   const [bindingSelectedRowKey, setBindingSelectedRowKey] = useState("");
   const [bindingLoading, setBindingLoading] = useState(false);
+  const [bindingApplyLoading, setBindingApplyLoading] = useState(false);
+  const [bindingApplyMessage, setBindingApplyMessage] = useState("");
   const [sampleData, setSampleData] = useState<Record<string, string>>({ ...DEFAULT_SAMPLE_DATA });
   const [feedEditSourceItem, setFeedEditSourceItem] = useState<InstagramGeneratedFeedItem>();
   const [newsCountry, setNewsCountry] = useState("KR");
@@ -2859,6 +3865,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [viewportWidth, setViewportWidth] = useState<number>(typeof window !== "undefined" ? window.innerWidth : 1280);
   const [editorFollowOffset, setEditorFollowOffset] = useState(0);
   const [pagePreviewVisible, setPagePreviewVisible] = useState<Record<string, boolean>>({});
+  const [sentencePageFontDeltas, setSentencePageFontDeltas] = useState<Record<string, number>>({});
   const [pageThumbnailUrls, setPageThumbnailUrls] = useState<Record<string, string>>({});
   const [showAdvancedPosition, setShowAdvancedPosition] = useState(false);
   const [importJson, setImportJson] = useState("");
@@ -2875,6 +3882,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [renderingOutputVideo, setRenderingOutputVideo] = useState(false);
   const [pageAudioUploading, setPageAudioUploading] = useState(false);
   const [pageAudioUploadProgress, setPageAudioUploadProgress] = useState<number>();
+  const [templateBgmUploading, setTemplateBgmUploading] = useState(false);
+  const [templateBgmUploadProgress, setTemplateBgmUploadProgress] = useState<number>();
+  const [pixabayQuery, setPixabayQuery] = useState("");
+  const [pixabayResults, setPixabayResults] = useState<PixabaySoundEffectResult[]>([]);
+  const [pixabaySearching, setPixabaySearching] = useState(false);
+  const [pixabayApplyingId, setPixabayApplyingId] = useState<string>();
+  const [pixabayError, setPixabayError] = useState<string>();
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string>();
   const [audioPreviewLoading, setAudioPreviewLoading] = useState(false);
   const [audioPreviewError, setAudioPreviewError] = useState<string>();
@@ -2885,6 +3899,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     output: true,
     json: false
   });
+  const [layerDragId, setLayerDragId] = useState<string>();
+  const [layerDragOverId, setLayerDragOverId] = useState<string>();
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const editorLayoutRef = useRef<HTMLDivElement | null>(null);
@@ -2897,6 +3913,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const pageBackgroundImageInputRef = useRef<HTMLInputElement | null>(null);
   const pageAudioInputRef = useRef<HTMLInputElement | null>(null);
+  const templateBgmInputRef = useRef<HTMLInputElement | null>(null);
   const layerImageInputRef = useRef<HTMLInputElement | null>(null);
   const customFontInputRef = useRef<HTMLInputElement | null>(null);
   const jsonFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2909,6 +3926,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const undoStackRef = useRef<InstagramTemplate[]>([]);
   const redoStackRef = useRef<InstagramTemplate[]>([]);
   const historyLimitRef = useRef(120);
+  const sentencePageBodyFontBaselineRef = useRef<Record<string, Record<string, number>>>({});
   const interactionMovedRef = useRef(false);
   const loadingFontAliasRef = useRef<Set<string>>(new Set());
   const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
@@ -2918,6 +3936,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const feedEditSourceRowKeyRef = useRef("");
   const feedEditSessionRef = useRef(false);
   const isNewsMode = resolveTemplateMode(editor.mode) === "news";
+  const isSentenceReadingMode = resolveTemplateMode(editor.mode) === "sentence_reading";
+  const sentenceReadingCardSet = useMemo(
+    () => normalizeSentenceReadingCardSetShared(sampleData),
+    [sampleData]
+  );
   const selectedNewsTopic = useMemo(
     () => NEWS_TOPIC_OPTIONS.find((item) => item.value === newsTopic) || NEWS_TOPIC_OPTIONS[0],
     [newsTopic]
@@ -3339,9 +4362,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         const response = await fetch("/api/settings", { cache: "no-store" });
         if (!response.ok) return;
         const settings = (await response.json()) as AppSettings;
-        const instagramSheetName = String(settings.gsheetInstagramSheetName || "").trim();
-        if (instagramSheetName) {
-          setSheetName((prev) => (prev.trim() ? prev : instagramSheetName));
+        const instagramSheetName = resolveInstagramSettingsSheetName(settings);
+        setSettingsSheetName(instagramSheetName);
+        const preferredSheetName = resolveInstagramPreferredSheetName(instagramSheetName);
+        if (preferredSheetName) {
+          setSheetName((prev) => (prev.trim() && !readInstagramLastSheetName() ? prev : preferredSheetName));
         }
         const voiceProvider = resolveTtsVoiceProvider({
           aiMode: settings.aiMode,
@@ -3645,7 +4670,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     const rubyLines = rawLines.map((line) => parseRubySegments(line));
     const hasRuby = rubyLines.some((line) => lineHasRuby(line));
     const lines = hasRuby ? rawLines : wrapTextForCanvas(ctx, text, maxTextWidth);
-    const rubyReserve = hasRuby ? Math.max(8, fontSize * 0.42) : 0;
+    const rubyReserve = hasRuby ? Math.max(8, fontSize * 0.42 + normalizeRubyGap(layer.rubyGap)) : 0;
     const lineHeightPx = Math.max(8, fontSize * clamp(layer.lineHeight, 0.8, 3, 1.2)) + rubyReserve;
     const requiredHeightPx = Math.max(8, lines.length * lineHeightPx + paddingPx * 2 + 2);
 
@@ -3661,6 +4686,168 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       ...layer,
       height: nextHeight
     };
+  }
+
+  function ensureSentencePageBodyFontBaseline(page: InstagramFeedPage): Record<string, number> {
+    const current = sentencePageBodyFontBaselineRef.current[page.id] || {};
+    const next = { ...current };
+    page.elements.forEach((element) => {
+      if (isSentenceReadingBodyTextLayer(element) && !Number.isFinite(next[element.id])) {
+        next[element.id] = normalizeTextFontSize(Number(element.fontSize), element.fontSize);
+      }
+    });
+    sentencePageBodyFontBaselineRef.current[page.id] = next;
+    return next;
+  }
+
+  function changeSentenceReadingPageBodyFont(pageId: string, direction: -1 | 1): void {
+    if (!isSentenceReadingMode) {
+      return;
+    }
+    const page = editorRef.current.pages.find((item) => item.id === pageId);
+    if (!page || !page.elements.some(isSentenceReadingBodyTextLayer)) {
+      setError("문장 읽기 본문 텍스트 레이어가 없습니다.");
+      return;
+    }
+
+    ensureSentencePageBodyFontBaseline(page);
+    const currentDelta = sentencePageFontDeltas[pageId] ?? 0;
+    const nextDelta = clamp(
+      currentDelta + direction * SENTENCE_READING_PAGE_FONT_STEP,
+      SENTENCE_READING_PAGE_FONT_MIN_DELTA,
+      SENTENCE_READING_PAGE_FONT_MAX_DELTA,
+      currentDelta
+    );
+    const effectiveStep = nextDelta - currentDelta;
+    if (effectiveStep === 0) {
+      return;
+    }
+
+    updatePageById(
+      pageId,
+      (targetPage) => {
+        const expandedElements = targetPage.elements.map((element) => {
+          if (!isSentenceReadingBodyTextLayer(element)) {
+            return element;
+          }
+          return autoExpandTextLayerIfNeeded({
+            ...element,
+            autoWrap: true,
+            fontSize: normalizeTextFontSize(Number(element.fontSize) + effectiveStep, element.fontSize)
+          });
+        });
+        return {
+          ...targetPage,
+          elements: relayoutSentenceReadingBodyTextLayers(expandedElements, targetPage.name, canvasHeight)
+        };
+      },
+      { keepSuccess: true }
+    );
+    setSentencePageFontDeltas((current) => ({ ...current, [pageId]: nextDelta }));
+    setSuccess(`본문 폰트 크기를 ${nextDelta > 0 ? `+${nextDelta}` : nextDelta}px로 조정했습니다.`);
+  }
+
+  function resetSentenceReadingPageBodyFont(pageId: string): void {
+    if (!isSentenceReadingMode) {
+      return;
+    }
+    const page = editorRef.current.pages.find((item) => item.id === pageId);
+    if (!page || !page.elements.some(isSentenceReadingBodyTextLayer)) {
+      setError("문장 읽기 본문 텍스트 레이어가 없습니다.");
+      return;
+    }
+    const baseline = ensureSentencePageBodyFontBaseline(page);
+    updatePageById(
+      pageId,
+      (targetPage) => {
+        const expandedElements = targetPage.elements.map((element) => {
+          if (!isSentenceReadingBodyTextLayer(element)) {
+            return element;
+          }
+          return autoExpandTextLayerIfNeeded({
+            ...element,
+            autoWrap: true,
+            fontSize: normalizeTextFontSize(baseline[element.id] ?? element.fontSize, element.fontSize)
+          });
+        });
+        return {
+          ...targetPage,
+          elements: relayoutSentenceReadingBodyTextLayers(expandedElements, targetPage.name, canvasHeight)
+        };
+      },
+      { keepSuccess: true }
+    );
+    setSentencePageFontDeltas((current) => ({ ...current, [pageId]: 0 }));
+    setSuccess("본문 폰트 크기를 초기화했습니다.");
+  }
+
+  function updateSelectedTextLayersFontSize(nextFontSize: number): void {
+    const selectedTextIds = new Set(selectedLayers.filter((layer) => layer.type === "text").map((layer) => layer.id));
+    if (selectedTextIds.size === 0 && selectedLayer?.type === "text") {
+      selectedTextIds.add(selectedLayer.id);
+    }
+    if (selectedTextIds.size === 0) {
+      setError("폰트 크기를 조정할 텍스트 레이어를 선택하세요.");
+      return;
+    }
+    updateSelectedPage((page) => ({
+      ...page,
+      elements: page.elements.map((layer) => {
+        if (layer.type !== "text" || !selectedTextIds.has(layer.id)) {
+          return layer;
+        }
+        return autoExpandTextLayerIfNeeded({
+          ...layer,
+          fontSize: normalizeTextFontSize(nextFontSize, layer.fontSize)
+        });
+      })
+    }));
+  }
+
+  function updateSelectedTextLayersRubyGap(nextRubyGap: number): void {
+    const selectedTextIds = new Set(selectedLayers.filter((layer) => layer.type === "text").map((layer) => layer.id));
+    if (selectedTextIds.size === 0 && selectedLayer?.type === "text") {
+      selectedTextIds.add(selectedLayer.id);
+    }
+    if (selectedTextIds.size === 0) {
+      setError("루비 간격을 조정할 텍스트 레이어를 선택하세요.");
+      return;
+    }
+    updateSelectedPage((page) => ({
+      ...page,
+      elements: page.elements.map((layer) => {
+        if (layer.type !== "text" || !selectedTextIds.has(layer.id)) {
+          return layer;
+        }
+        return autoExpandTextLayerIfNeeded({
+          ...layer,
+          rubyGap: normalizeRubyGap(nextRubyGap, normalizeRubyGap(layer.rubyGap))
+        });
+      })
+    }));
+  }
+
+  function updateSelectedTextLayersOffsetY(nextOffsetY: number): void {
+    const selectedTextIds = new Set(selectedLayers.filter((layer) => layer.type === "text").map((layer) => layer.id));
+    if (selectedTextIds.size === 0 && selectedLayer?.type === "text") {
+      selectedTextIds.add(selectedLayer.id);
+    }
+    if (selectedTextIds.size === 0) {
+      setError("상자 안 위치를 조정할 텍스트 레이어를 선택하세요.");
+      return;
+    }
+    updateSelectedPage((page) => ({
+      ...page,
+      elements: page.elements.map((layer) => {
+        if (layer.type !== "text" || !selectedTextIds.has(layer.id)) {
+          return layer;
+        }
+        return {
+          ...layer,
+          textOffsetY: normalizeTextOffsetY(nextOffsetY, normalizeTextOffsetY(layer.textOffsetY))
+        };
+      })
+    }));
   }
 
   function clearHistory(): void {
@@ -3847,6 +5034,40 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     };
   }
 
+  function reorderLayersByVisibleOrder(page: InstagramFeedPage, visibleLayerIds: string[]): InstagramFeedPage {
+    const layerById = new Map(page.elements.map((item) => [item.id, item]));
+    const orderedBackToFront = [...visibleLayerIds]
+      .reverse()
+      .map((layerId) => layerById.get(layerId))
+      .filter((item): item is InstagramPageElement => Boolean(item));
+    if (orderedBackToFront.length !== page.elements.length) {
+      return page;
+    }
+    return {
+      ...page,
+      elements: orderedBackToFront.map((item, idx) => ({ ...item, zIndex: idx }))
+    };
+  }
+
+  function moveLayerInList(sourceLayerId: string, targetLayerId: string): void {
+    if (!sourceLayerId || !targetLayerId || sourceLayerId === targetLayerId) {
+      return;
+    }
+    const visibleOrder = [...sortedLayers].sort((a, b) => b.zIndex - a.zIndex).map((item) => item.id);
+    const sourceIndex = visibleOrder.indexOf(sourceLayerId);
+    const targetIndex = visibleOrder.indexOf(targetLayerId);
+    if (sourceIndex < 0 || targetIndex < 0) {
+      return;
+    }
+    const nextOrder = [...visibleOrder];
+    const [moved] = nextOrder.splice(sourceIndex, 1);
+    nextOrder.splice(targetIndex, 0, moved);
+    updateSelectedPage((page) => reorderLayersByVisibleOrder(page, nextOrder));
+    setSelectedElementId(sourceLayerId);
+    setSelectedElementIds([sourceLayerId]);
+    setSuccess("레이어 순서를 변경했습니다.");
+  }
+
   function getLayerForPointer(pageId: string, layerId: string): InstagramPageElement | undefined {
     return editor.pages.find((page) => page.id === pageId)?.elements.find((item) => item.id === layerId);
   }
@@ -3862,6 +5083,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     const layer = getLayerForPointer(pageId, layerId);
     const canvasElement = targetCanvas || canvasRef.current;
     if (!layer || !canvasElement) return;
+    setObjectToolbarVisible(true);
     const rect = canvasElement.getBoundingClientRect();
     const isModifierPressed = event.shiftKey || event.ctrlKey || event.metaKey;
 
@@ -3929,6 +5151,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
   function beginSelectionBox(event: React.PointerEvent<HTMLDivElement>): void {
     if (!canvasRef.current || !selectedPage) return;
+    setObjectToolbarVisible(false);
     const rect = canvasRef.current.getBoundingClientRect();
     const additive = event.shiftKey || event.ctrlKey || event.metaKey;
     setSelectionBox({
@@ -4341,13 +5564,18 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   useEffect(() => {
     setOutputPreviewUrl(undefined);
     setOutputVideoUrl(undefined);
+    setObjectToolbarVisible(false);
   }, [selectedPageId]);
 
   useEffect(() => {
     if (!selectedPage) return;
-    if (!selectedElementId) return;
+    if (!selectedElementId) {
+      setObjectToolbarVisible(false);
+      return;
+    }
     if (!selectedPage.elements.some((item) => item.id === selectedElementId)) {
       setSelectedElementId(undefined);
+      setObjectToolbarVisible(false);
     }
   }, [selectedPage, selectedElementId]);
 
@@ -4560,6 +5788,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setSelectedElementId(targetPage?.elements[0]?.id);
       if (parsed.sampleData && Object.keys(parsed.sampleData).length > 0) {
         setSampleData(parsed.sampleData);
+        setBindingFields((prev) => mergeBindingFieldsWithDefaults([...prev, ...Object.keys(parsed.sampleData || {})]));
       }
       if (resolveTemplateMode(draftTemplate.mode) === "news") {
         setBindingFields((prev) => mergeNewsBindingFields(prev));
@@ -5148,6 +6377,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }));
     setSelectedElementIds([]);
     setSelectedElementId(undefined);
+    setObjectToolbarVisible(false);
     setSuccess(targets.length > 1 ? `레이어 ${targets.length}개를 삭제했습니다.` : "레이어를 삭제했습니다.");
   }
 
@@ -5158,6 +6388,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   function clearSelection(): void {
     setSelectedElementIds([]);
     setSelectedElementId(undefined);
+    setObjectToolbarVisible(false);
   }
 
   function openLayerImagePicker(layerId: string): void {
@@ -5165,6 +6396,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setPendingImageLayerId(layerId);
     setSelectedElementId(layerId);
     setSelectedElementIds([layerId]);
+    setObjectToolbarVisible(true);
     layerImageInputRef.current.click();
   }
 
@@ -5762,11 +6994,22 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       }));
       const feedItem: InstagramGeneratedFeedItem = {
         id: sourceItem?.id || uid(),
-        templateId: editor.id,
+        templateId: sourceItem?.templateId || editor.id,
         templateName: editor.templateName,
         rowId: sourceRowId || findPayloadValue(["id", "ID"], `template-${Date.now()}`),
         subject: findPayloadValue(["subject", "Subject"], sourceItem?.subject || editor.templateName || "Template Draft"),
         keyword: findPayloadValue(["keyword", "Keyword", "type", "jlpt"], sourceItem?.keyword || "template"),
+        bgmEnabled: Boolean(editor.bgmEnabled && String(editor.bgmUrl || "").trim()),
+        bgmUrl: String(editor.bgmUrl || ""),
+        bgmVolume: clamp(Number(editor.bgmVolume), 0, 1, 0.18),
+        templateMode: resolveTemplateMode(editor.mode),
+        canvasPreset: editor.canvasPreset,
+        canvasWidth: editor.canvasWidth,
+        canvasHeight: editor.canvasHeight,
+        pageDurationSec: editor.pageDurationSec,
+        customFonts: editor.customFonts || [],
+        captionSourceFields: editor.captionSourceFields || [],
+        hashtagSourceFields: editor.hashtagSourceFields || [],
         caption: feedCaption,
         hashtags: feedHashtags,
         generatedAt: new Date().toISOString(),
@@ -5935,6 +7178,49 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
   }
 
+  function applyBindingRowSampleData(rowValues: Record<string, string>): Record<string, string> {
+    const shouldApplySentenceReading = isSentenceReadingMode || hasSentenceReadingRowData(rowValues);
+    const sentenceReadingRowValues = shouldApplySentenceReading
+      ? {
+          ...rowValues,
+          title: normalizeSentenceReadingCardTitle(rowValues.title || rowValues.Subject || rowValues.shortTitle || "")
+        }
+      : rowValues;
+    const nextSampleData = shouldApplySentenceReading
+      ? sentenceReadingRowValues
+      : isNewsMode
+        ? { ...sampleData, ...rowValues }
+        : sanitizeGeneralSampleData(sampleData, rowValues);
+
+    setSampleData(nextSampleData);
+
+    if (shouldApplySentenceReading) {
+      const cardSet = normalizeSentenceReadingCardSetShared(nextSampleData);
+      const pages = buildSentenceReadingPagesShared(cardSet);
+      const uploadInfo = buildSentenceReadingUploadInfo(cardSet);
+      sentencePageBodyFontBaselineRef.current = {};
+      setSentencePageFontDeltas({});
+      updateEditor(
+        (prev) => ({
+          ...prev,
+          mode: "sentence_reading",
+          sourceTitle: cardSet.postTitle,
+          sourceTopic: cardSet.title,
+          hashtags: normalizeTemplateHashtags(uploadInfo.hashtags.split(/\s+/)),
+          pageCount: pages.length,
+          pages
+        }),
+        { keepSuccess: true }
+      );
+      setSelectedPageId(pages[0]?.id || "");
+      setSelectedElementId(undefined);
+      setSelectedElementIds([]);
+      setObjectToolbarVisible(false);
+    }
+
+    return nextSampleData;
+  }
+
   async function loadSheetBindings(overrideSheetName?: string): Promise<void> {
     setBindingLoading(true);
     setError(undefined);
@@ -5963,7 +7249,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       if (nextRowOptions.length > 0) {
         const feedSourceRowKey = feedEditSourceRowKeyRef.current;
         const feedPreferredKey = feedSourceRowKey
-          ? nextRowOptions.find((item) => readBindingRowValue(item.values, "id") === feedSourceRowKey)?.key
+          ? nextRowOptions.find((item) => readBindingRowValue(item.values, "id").toLowerCase() === feedSourceRowKey.toLowerCase())?.key
           : "";
         const preferredKey =
           feedPreferredKey ||
@@ -5971,14 +7257,15 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           nextRowOptions[0].key;
         const selectedRow = nextRowOptions.find((item) => item.key === preferredKey) || nextRowOptions[0];
         setBindingSelectedRowKey(preferredKey);
-        setSampleData((prev) =>
-          isNewsMode ? { ...prev, ...selectedRow.values } : sanitizeGeneralSampleData(prev, selectedRow.values)
-        );
+        applyBindingRowSampleData(selectedRow.values);
       } else {
         setBindingSelectedRowKey("");
       }
       if (data.sheetName) {
         setSheetName(data.sheetName);
+        saveInstagramLastSheetName(data.sheetName);
+      } else if (effectiveSheetName) {
+        saveInstagramLastSheetName(effectiveSheetName);
       }
       setSuccess(
         `시트 컬럼 ${headers.length}개, row ${rows.length}개를 불러왔습니다.${data.sheetName ? ` (${data.sheetName})` : ""}`
@@ -5990,13 +7277,62 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
   }
 
-  function onSelectBindingRow(rowKey: string): void {
-    setBindingSelectedRowKey(rowKey);
+  function updateBindingSheetName(value: string): void {
+    setSheetName(value);
+    saveInstagramLastSheetName(value);
+  }
+
+  function resetBindingSheetNameToSettings(): string {
+    const nextSheetName = saveInstagramLastSheetName(settingsSheetName);
+    setSheetName(nextSheetName);
+    return nextSheetName;
+  }
+
+  async function applyBindingRowByKey(rowKey: string, options?: { showLoading?: boolean }): Promise<void> {
+    if (!rowKey) {
+      setError("적용할 row가 없습니다. 먼저 시트 row를 불러와 주세요.");
+      return;
+    }
     const selectedRow = bindingRowOptions.find((item) => item.key === rowKey);
-    if (!selectedRow) return;
-    setSampleData((prev) =>
-      isNewsMode ? { ...prev, ...selectedRow.values } : sanitizeGeneralSampleData(prev, selectedRow.values)
-    );
+    if (!selectedRow) {
+      setError("선택한 row를 찾지 못했습니다. 시트 row를 다시 불러와 주세요.");
+      return;
+    }
+    const appliedLabel =
+      readBindingRowValue(selectedRow.values, "id") ||
+      readBindingRowValue(selectedRow.values, "Subject") ||
+      selectedRow.label;
+
+    setBindingSelectedRowKey(rowKey);
+    setError(undefined);
+    setSuccess(undefined);
+    setBindingApplyMessage(`적용 중: ${appliedLabel}`);
+    if (options?.showLoading !== false) {
+      setBindingApplyLoading(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+
+    try {
+      applyBindingRowSampleData(selectedRow.values);
+      const message = isSentenceReadingMode || hasSentenceReadingRowData(selectedRow.values)
+        ? `적용 완료: ${appliedLabel} row로 문장 읽기 카드 세트를 다시 구성했습니다.`
+        : `적용 완료: ${appliedLabel} row 값을 샘플 미리보기에 반영했습니다.`;
+      setBindingApplyMessage(message);
+      setSuccess(message);
+    } finally {
+      if (options?.showLoading !== false) {
+        window.setTimeout(() => setBindingApplyLoading(false), 180);
+      }
+    }
+  }
+
+  function onSelectBindingRow(rowKey: string): void {
+    void applyBindingRowByKey(rowKey);
+  }
+
+  function applySelectedBindingRow(): void {
+    const rowKey = bindingSelectedRowKey || bindingRowOptions[0]?.key || "";
+    void applyBindingRowByKey(rowKey);
   }
 
   function onTemplateJsonFileChange(event: React.ChangeEvent<HTMLInputElement>): void {
@@ -6098,6 +7434,104 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setSuccess("현재 템플릿 JSON 다운로드를 시작했습니다.");
   }
 
+  function applySentenceReadingCardSet(): void {
+    const cardSet = normalizeSentenceReadingCardSetShared(sampleData);
+    const pages = buildSentenceReadingPagesShared(cardSet);
+    const uploadInfo = buildSentenceReadingUploadInfo(cardSet);
+    const nextHashtags = normalizeTemplateHashtags(cardSet.hashtags.split(/\s+/));
+    updateEditor(
+      (current) => ({
+        ...current,
+        mode: "sentence_reading",
+        templateName: current.templateName?.trim() ? current.templateName : "문장 읽기 카드",
+        sourceTitle: cardSet.title,
+        sourceTopic: cardSet.postTitle,
+        canvasPreset: "instagram_feed_portrait",
+        canvasWidth: DEFAULT_CANVAS_WIDTH,
+        canvasHeight: DEFAULT_CANVAS_HEIGHT,
+        pageDurationSec: 4,
+        pageCount: pages.length,
+        pages,
+        hashtags: nextHashtags,
+        captionSourceFields: ["Caption", "Subject"]
+      }),
+      { keepSuccess: true }
+    );
+    setSampleData((current) => ({
+      ...current,
+      title: cardSet.title,
+      postTitle: cardSet.postTitle,
+      Subject: cardSet.title,
+      Caption: uploadInfo.caption,
+      instagramTitle: uploadInfo.instagramTitle,
+      instagramDescription: uploadInfo.description,
+      audioScript: cardSet.audioScript,
+      hashtags: cardSet.hashtags
+    }));
+    setSelectedPageId(pages[0]?.id || "");
+    setSelectedElementId(pages[0]?.elements[0]?.id);
+    setSuccess(`문장 읽기 카드 ${pages.length}장을 생성했습니다.`);
+  }
+
+  function adjustSentenceReadingPageFont(pageId: string, delta: number): void {
+    changeSentenceReadingPageBodyFont(pageId, delta > 0 ? 1 : -1);
+  }
+
+  function resetSentenceReadingPageFont(pageId: string): void {
+    resetSentenceReadingPageBodyFont(pageId);
+  }
+
+  async function downloadSentenceReadingPagePng(page: InstagramFeedPage, index: number): Promise<void> {
+    setRenderingOutput(true);
+    setError(undefined);
+    try {
+      const dataUrl = await renderPageToPngDataUrl({
+        page,
+        sampleData,
+        canvasWidth: DEFAULT_CANVAS_WIDTH,
+        canvasHeight: DEFAULT_CANVAS_HEIGHT
+      });
+      const blob = await dataUrlToBlob(dataUrl);
+      downloadBlob(blob, sentenceReadingPngFileName(page, index));
+      setSuccess(`${page.name} PNG 다운로드를 시작했습니다.`);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "카드 PNG 다운로드에 실패했습니다.");
+    } finally {
+      setRenderingOutput(false);
+    }
+  }
+
+  async function downloadSentenceReadingZip(): Promise<void> {
+    if (editor.pages.length === 0) {
+      setError("다운로드할 카드가 없습니다.");
+      return;
+    }
+    setRenderingOutput(true);
+    setError(undefined);
+    try {
+      const zip = new JSZip();
+      for (let index = 0; index < editor.pages.length; index += 1) {
+        const page = editor.pages[index];
+        const dataUrl = await renderPageToPngDataUrl({
+          page,
+          sampleData,
+          canvasWidth: DEFAULT_CANVAS_WIDTH,
+          canvasHeight: DEFAULT_CANVAS_HEIGHT
+        });
+        zip.file(sentenceReadingPngFileName(page, index), await dataUrlToBlob(dataUrl));
+      }
+      zip.file("audio-script.txt", sentenceReadingCardSet.audioScript);
+      zip.file("instagram-caption.txt", buildSentenceReadingUploadInfo(sentenceReadingCardSet).caption);
+      const blob = await zip.generateAsync({ type: "blob" });
+      downloadBlob(blob, `${sanitizeDownloadName(sentenceReadingCardSet.postTitle || "sentence-reading-cards")}.zip`);
+      setSuccess(`문장 읽기 카드 ${editor.pages.length}장을 ZIP으로 다운로드합니다.`);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "전체 ZIP 다운로드에 실패했습니다.");
+    } finally {
+      setRenderingOutput(false);
+    }
+  }
+
   async function renderOutputPreview(): Promise<void> {
     if (!selectedPage) return;
     setRenderingOutput(true);
@@ -6148,6 +7582,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           useAudio: Boolean(selectedPage.audioEnabled),
           audioUrl: String(selectedPage.audioUrl || "").trim() || undefined,
           audioPrompt: String(selectedPage.audioPrompt || "").trim() || undefined,
+          bgmEnabled: Boolean(editor.bgmEnabled && String(editor.bgmUrl || "").trim()),
+          bgmUrl: String(editor.bgmUrl || "").trim() || undefined,
+          bgmVolume: clamp(Number(editor.bgmVolume), 0, 1, 0.18),
           ttsProvider:
             selectedPage.audioProvider === "openai" || selectedPage.audioProvider === "gemini"
               ? selectedPage.audioProvider
@@ -6238,12 +7675,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   async function onPageAudioUpload(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = event.target.files?.[0];
     if (!file) return;
-    const normalizedType = String(file.type || "").toLowerCase();
-    const normalizedName = String(file.name || "").toLowerCase();
-    const isAudioFile =
-      normalizedType.startsWith("audio/") ||
-      /\.(mp3|m4a|aac|wav|ogg|oga|flac)$/i.test(normalizedName);
-    if (!isAudioFile) {
+    if (!isSupportedAudioFile(file)) {
       event.target.value = "";
       setError("페이지 오디오는 mp3, m4a, wav, ogg 등 오디오 파일만 첨부할 수 있습니다.");
       return;
@@ -6270,6 +7702,98 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setPageAudioUploading(false);
       window.setTimeout(() => setPageAudioUploadProgress(undefined), 1200);
       event.target.value = "";
+    }
+  }
+
+  async function onTemplateBgmUpload(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!isSupportedAudioFile(file)) {
+      event.target.value = "";
+      setError("BGM은 mp3, m4a, wav, ogg 등 오디오 파일만 첨부할 수 있습니다.");
+      return;
+    }
+    setTemplateBgmUploading(true);
+    setTemplateBgmUploadProgress(1);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const bgmUrl = await uploadTemplateMediaFile(file, (percent) => {
+        setTemplateBgmUploadProgress(Math.max(1, Math.min(100, Math.round(percent))));
+      });
+      updateEditor((current) => ({
+        ...current,
+        bgmEnabled: true,
+        bgmUrl,
+        bgmVolume: clamp(Number(current.bgmVolume), 0, 1, 0.18)
+      }));
+      setSuccess("템플릿 BGM 파일을 첨부했습니다.");
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "BGM 업로드에 실패했습니다.");
+    } finally {
+      setTemplateBgmUploading(false);
+      window.setTimeout(() => setTemplateBgmUploadProgress(undefined), 1200);
+      event.target.value = "";
+    }
+  }
+
+  async function searchPixabaySoundEffects(): Promise<void> {
+    const query = pixabayQuery.trim();
+    if (query.length < 2) {
+      setPixabayError("검색어를 2자 이상 입력해 주세요.");
+      return;
+    }
+    setPixabaySearching(true);
+    setPixabayError(undefined);
+    try {
+      const response = await fetch(`/api/instagram/pixabay-sound-effects/search?q=${encodeURIComponent(query)}`, {
+        cache: "no-store"
+      });
+      const data = (await response.json()) as PixabaySoundEffectSearchResponse;
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "Pixabay Sound Effects 검색에 실패했습니다.");
+      }
+      setPixabayResults(data.results || []);
+      if (!(data.results || []).length) {
+        setPixabayError("검색 결과가 없습니다.");
+      }
+    } catch (searchError) {
+      setPixabayError(searchError instanceof Error ? searchError.message : "Pixabay Sound Effects 검색에 실패했습니다.");
+      setPixabayResults([]);
+    } finally {
+      setPixabaySearching(false);
+    }
+  }
+
+  async function applyPixabaySoundEffect(result: PixabaySoundEffectResult): Promise<void> {
+    setPixabayApplyingId(result.id);
+    setPixabayError(undefined);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const response = await fetch("/api/instagram/pixabay-sound-effects/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          audioUrl: result.audioUrl,
+          title: result.title
+        })
+      });
+      const data = (await response.json()) as PixabaySoundEffectImportResponse;
+      if (!response.ok || !data.publicUrl) {
+        throw new Error(data.error || "Pixabay Sound Effect 적용에 실패했습니다.");
+      }
+      updateEditor((current) => ({
+        ...current,
+        bgmEnabled: true,
+        bgmUrl: data.publicUrl || "",
+        bgmVolume: clamp(Number(current.bgmVolume), 0, 1, 0.18)
+      }));
+      setSuccess(`Pixabay Sound Effect를 BGM으로 적용했습니다: ${result.title}`);
+    } catch (applyError) {
+      setPixabayError(applyError instanceof Error ? applyError.message : "Pixabay Sound Effect 적용에 실패했습니다.");
+    } finally {
+      setPixabayApplyingId(undefined);
     }
   }
 
@@ -6648,7 +8172,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   fontStyle: layer.italic ? "italic" : "normal",
                   textAlign: layer.textAlign,
                   fontSize: toCanvasWidthUnit(Math.max(10, layer.fontSize), canvasWidth),
-                  lineHeight: String(clamp(layer.lineHeight, 0.8, 3, 1.2)),
+                  lineHeight: String(
+                    clamp(layer.lineHeight, 0.8, 3, 1.2) +
+                      (textHasRuby(text) ? normalizeRubyGap(layer.rubyGap) / Math.max(10, layer.fontSize) : 0)
+                  ),
                   backgroundColor:
                     layer.padding > 0 ||
                     normalizeHex(layer.backgroundColor, "#FFFFFF") !== "#FFFFFF" ||
@@ -6658,12 +8185,16 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   padding: toCanvasWidthUnit(Math.max(0, layer.padding), canvasWidth),
                   whiteSpace: layer.autoWrap === false ? "pre" : "pre-wrap",
                   overflowWrap: layer.autoWrap === false ? "normal" : "anywhere",
-                  wordBreak: layer.autoWrap === false ? "normal" : "break-word",
+                  wordBreak: layer.autoWrap === false ? "normal" : "normal",
+                  lineBreak: "strict",
+                  rubyPosition: "over",
                   textDecorationLine: getTextDecorationLine(layer),
                   textShadow: getTextShadowStyle(layer)
                 }}
               >
-                {text}
+                <div style={{ transform: `translateY(${toCanvasWidthUnit(normalizeTextOffsetY(layer.textOffsetY), canvasWidth)})` }}>
+                  {renderRubyPreviewNodes(text, toCanvasWidthUnit(normalizeRubyGap(layer.rubyGap), canvasWidth))}
+                </div>
               </div>
             );
           }
@@ -6761,6 +8292,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     }
     clearSelection();
   }
+
+  const selectedSentencePageFontDelta = selectedPage ? (sentencePageFontDeltas[selectedPage.id] ?? 0) : 0;
+  const selectedSentenceBodyLayerCount = selectedPage
+    ? selectedPage.elements.filter(isSentenceReadingBodyTextLayer).length
+    : 0;
+  const selectedSentenceFontDeltaLabel =
+    selectedSentencePageFontDelta > 0 ? `+${selectedSentencePageFontDelta}px` : `${selectedSentencePageFontDelta}px`;
 
   return (
     <section className="space-y-4" onPointerDownCapture={handleBackgroundPointerDownCapture}>
@@ -6956,12 +8494,17 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             <Label>모드</Label>
             <Select
               value={resolveTemplateMode(editor.mode)}
-              onValueChange={(value) =>
+              onValueChange={(value) => {
+                const nextMode = resolveTemplateMode(value);
+                if (nextMode === "sentence_reading") {
+                  applySentenceReadingCardSet();
+                  return;
+                }
                 updateEditor((current) => ({
                   ...current,
-                  mode: resolveTemplateMode(value)
-                }))
-              }
+                  mode: nextMode
+                }));
+              }}
             >
               <SelectTrigger className="bg-card dark:bg-zinc-900">
                 <SelectValue />
@@ -6969,6 +8512,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
               <SelectContent>
                 <SelectItem value="general">일반</SelectItem>
                 <SelectItem value="news">뉴스 전용</SelectItem>
+                <SelectItem value="sentence_reading">문장 읽기</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -7039,6 +8583,173 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                 }))
               }
             />
+          </div>
+        </div>
+        <div className="mt-3 rounded-xl border bg-muted/10 p-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Music className="h-4 w-4 text-muted-foreground" />
+                <p className="text-sm font-semibold">템플릿 BGM</p>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                페이지 오디오/TTS는 그대로 두고, 전체 페이지 MP4에 배경음악을 낮은 볼륨으로 추가합니다.
+              </p>
+            </div>
+            <label className="inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-sm">
+              <input
+                type="checkbox"
+                checked={Boolean(editor.bgmEnabled)}
+                onChange={(event) =>
+                  updateEditor((current) => ({
+                    ...current,
+                    bgmEnabled: event.target.checked,
+                    bgmVolume: clamp(Number(current.bgmVolume), 0, 1, 0.18)
+                  }))
+                }
+              />
+              BGM 사용
+            </label>
+          </div>
+          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(240px,1fr)_minmax(220px,0.8fr)]">
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => templateBgmInputRef.current?.click()}
+                  disabled={templateBgmUploading}
+                >
+                  <Upload className="h-4 w-4" />
+                  {templateBgmUploading ? "BGM 업로드 중..." : "BGM 첨부"}
+                </Button>
+                {editor.bgmUrl ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      updateEditor((current) => ({
+                        ...current,
+                        bgmEnabled: false,
+                        bgmUrl: ""
+                      }))
+                    }
+                  >
+                    제거
+                  </Button>
+                ) : null}
+                <input
+                  ref={templateBgmInputRef}
+                  type="file"
+                  accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.oga,.flac"
+                  className="hidden"
+                  onChange={(event) => void onTemplateBgmUpload(event)}
+                />
+              </div>
+              <div className="rounded-lg border bg-card p-2">
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    value={pixabayQuery}
+                    onChange={(event) => setPixabayQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void searchPixabaySoundEffects();
+                      }
+                    }}
+                    placeholder="Pixabay Sound Effects 검색 예: forest"
+                    aria-label="Pixabay Sound Effects 검색어"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="sm:h-10"
+                    onClick={() => void searchPixabaySoundEffects()}
+                    disabled={pixabaySearching}
+                  >
+                    <Search className="h-4 w-4" />
+                    {pixabaySearching ? "검색 중..." : "검색"}
+                  </Button>
+                </div>
+                {pixabayError ? <p className="mt-2 text-xs text-destructive">{pixabayError}</p> : null}
+                {pixabayResults.length > 0 ? (
+                  <div className="app-panel-scrollbar mt-2 max-h-72 space-y-2 overflow-y-auto">
+                    {pixabayResults.map((item) => (
+                      <div key={item.id} className="rounded-md border p-2">
+                        <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold">{item.title}</p>
+                            <p className="mt-0.5 text-[11px] text-muted-foreground">
+                              {[item.user, item.duration ? `${Math.round(item.duration)}초` : undefined]
+                                .filter(Boolean)
+                                .join(" · ") || "Pixabay"}
+                            </p>
+                            {item.tags ? <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">{item.tags}</p> : null}
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => void applyPixabaySoundEffect(item)}
+                            disabled={Boolean(pixabayApplyingId)}
+                          >
+                            {pixabayApplyingId === item.id ? "적용 중..." : "적용"}
+                          </Button>
+                        </div>
+                        <audio src={item.audioUrl} controls className="mt-2 h-9 w-full" />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              {typeof templateBgmUploadProgress === "number" ? (
+                <div className="rounded-lg border bg-card p-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span>{templateBgmUploading ? "BGM 업로드" : "업로드 완료"}</span>
+                    <span>{templateBgmUploadProgress}%</span>
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-emerald-500 transition-all"
+                      style={{ width: `${templateBgmUploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+              {editor.bgmUrl ? (
+                <audio
+                  src={toInstagramMediaPreviewUrl(editor.bgmUrl)}
+                  controls
+                  className="mt-1 h-10 w-full"
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground">BGM 파일을 첨부하면 피드 렌더링 시 자동으로 섞입니다.</p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label>BGM 볼륨</Label>
+                <span className="text-sm font-semibold">{Math.round(clamp(Number(editor.bgmVolume), 0, 1, 0.18) * 100)}%</span>
+              </div>
+              <Input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={String(Math.round(clamp(Number(editor.bgmVolume), 0, 1, 0.18) * 100))}
+                onChange={(event) =>
+                  updateEditor((current) => ({
+                    ...current,
+                    bgmVolume: clamp(Number(event.target.value) / 100, 0, 1, 0.18)
+                  }))
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                권장값은 10~25%입니다. 말소리가 있는 페이지에서는 BGM을 낮게 유지하세요.
+              </p>
+            </div>
           </div>
         </div>
         <div className="mt-3 rounded-xl border bg-muted/10 p-3">
@@ -7127,6 +8838,96 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             </p>
           )}
         </div>
+        {isSentenceReadingMode ? (
+          <div className="mt-3 rounded-xl border bg-muted/10 p-3">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">문장 읽기 카드 세트</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  선택한 row의 일기/ruby/뜻/한자 데이터를 1080x1350 카드 세트로 변환합니다. 데이터가 비어 있으면 샘플 구조로 생성됩니다.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={applySentenceReadingCardSet}>
+                  <Sparkles className="h-4 w-4" />
+                  카드 세트 생성
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void downloadSentenceReadingZip()}
+                  disabled={renderingOutput || editor.pages.length === 0}
+                >
+                  <Download className="h-4 w-4" />
+                  전체 PNG ZIP
+                </Button>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <div className="space-y-1">
+                <Label>오디오용 대본</Label>
+                <Textarea
+                  value={sentenceReadingCardSet.audioScript}
+                  readOnly
+                  rows={7}
+                  className="font-serif text-sm"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>인스타 제목/설명/해시태그</Label>
+                <Textarea
+                  value={buildSentenceReadingUploadInfo(sentenceReadingCardSet).caption}
+                  readOnly
+                  rows={7}
+                  className="text-sm"
+                />
+              </div>
+            </div>
+            <div className="mt-3 app-table-scrollbar flex gap-2 overflow-x-auto pb-1">
+              {editor.pages.map((page, index) => (
+                <div key={`sentence-card-tools-${page.id}`} className="min-w-[220px] rounded-lg border bg-card p-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold">{`${index + 1}. ${page.name}`}</p>
+                      <p className="text-[11px] text-muted-foreground">1080x1350 · 4:5</p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2"
+                      onClick={() => setSelectedPageId(page.id)}
+                    >
+                      편집
+                    </Button>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    <Button type="button" size="sm" variant="outline" className="h-7 px-2" onClick={() => adjustSentenceReadingPageFont(page.id, -2)}>
+                      A-
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" className="h-7 px-2" onClick={() => adjustSentenceReadingPageFont(page.id, 2)}>
+                      A+
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" className="h-7 px-2" onClick={() => resetSentenceReadingPageFont(page.id)}>
+                      초기화
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2"
+                      onClick={() => void downloadSentenceReadingPagePng(page, index)}
+                      disabled={renderingOutput}
+                    >
+                      PNG
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <div className="mt-2 flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={addPage}>
             <Plus className="h-4 w-4" />
@@ -7414,6 +9215,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                           : "border-border bg-background hover:border-primary/60"
                       }`}
                       onClick={() => {
+                        setObjectToolbarVisible(false);
                         setSelectedPageId(page.id);
                         setSelectedElementId(page.elements[0]?.id);
                       }}
@@ -7424,18 +9226,19 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         </span>
                       </div>
                       <div
-                        className="relative w-full overflow-hidden rounded-md border bg-black"
+                        className="relative flex w-full items-center justify-center overflow-hidden rounded-md border bg-black"
                         style={{ aspectRatio: `${canvasWidth} / ${canvasHeight}` }}
                       >
                         {pageThumbnailUrls[page.id] ? (
                           <img
                             src={pageThumbnailUrls[page.id]}
                             alt={`${index + 1}. ${page.name} preview`}
-                            className="h-full w-full object-contain"
+                            className="block h-full w-full object-contain object-center"
+                            style={{ objectPosition: "center center" }}
                             draggable={false}
                           />
                         ) : (
-                          <div className="h-full w-full">{renderPageMiniature(page)}</div>
+                          <div className="flex h-full w-full items-center justify-center">{renderPageMiniature(page)}</div>
                         )}
                       </div>
                       <div className="mt-1 h-4">
@@ -7464,9 +9267,59 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             }}
           >
           <div className="rounded-xl border bg-card p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-medium">{selectedPage ? `${selectedPageIndex + 1}. ${selectedPage.name}` : "현재 편집 페이지"}</p>
-              <div className="flex items-center gap-1">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="min-w-0 text-sm font-medium">{selectedPage ? `${selectedPageIndex + 1}. ${selectedPage.name}` : "현재 편집 페이지"}</p>
+              <div className="flex flex-wrap items-center justify-end gap-1">
+                {isSentenceReadingMode && selectedPage ? (
+                  <div
+                    className="flex shrink-0 items-center gap-1 rounded-full border bg-background/90 p-1 text-xs shadow-sm"
+                    data-keep-selection="true"
+                    title="문장 읽기 본문 텍스트를 페이지 단위로 2px씩 조절합니다."
+                  >
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 rounded-full px-2 text-xs"
+                      onClick={() => changeSentenceReadingPageBodyFont(selectedPage.id, -1)}
+                      disabled={
+                        selectedSentenceBodyLayerCount === 0 ||
+                        selectedSentencePageFontDelta <= SENTENCE_READING_PAGE_FONT_MIN_DELTA
+                      }
+                      title="본문 폰트 크기 줄이기"
+                    >
+                      A-
+                    </Button>
+                    <span className="min-w-10 text-center text-[11px] font-medium text-muted-foreground">
+                      {selectedSentenceFontDeltaLabel}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 rounded-full px-2 text-xs"
+                      onClick={() => changeSentenceReadingPageBodyFont(selectedPage.id, 1)}
+                      disabled={
+                        selectedSentenceBodyLayerCount === 0 ||
+                        selectedSentencePageFontDelta >= SENTENCE_READING_PAGE_FONT_MAX_DELTA
+                      }
+                      title="본문 폰트 크기 늘리기"
+                    >
+                      A+
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 rounded-full px-2 text-xs"
+                      onClick={() => resetSentenceReadingPageBodyFont(selectedPage.id)}
+                      disabled={selectedSentenceBodyLayerCount === 0 || selectedSentencePageFontDelta === 0}
+                      title="본문 폰트 크기 초기화"
+                    >
+                      초기화
+                    </Button>
+                  </div>
+                ) : null}
                 <span className="text-xs text-muted-foreground">{`${canvasWidth}x${canvasHeight}`}</span>
                 <Button
                   type="button"
@@ -7819,7 +9672,8 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                 </div>
               </div>
 
-              {selectedLayer &&
+              {objectToolbarVisible &&
+              selectedLayer &&
               !templateJsonModalOpen &&
               !outputRenderModalOpen &&
               typeof document !== "undefined" &&
@@ -8243,14 +10097,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       <select
                         value={String(normalizeTextFontSize(selectedLayer.fontSize, MIN_TEXT_FONT_SIZE))}
                         onChange={(event) =>
-                          updateLayerById(selectedLayer.id, (layer) =>
-                            layer.type === "text"
-                              ? autoExpandTextLayerIfNeeded({
-                                  ...layer,
-                                  fontSize: normalizeTextFontSize(Number(event.target.value), layer.fontSize)
-                                })
-                              : layer
-                          )
+                          updateSelectedTextLayersFontSize(Number(event.target.value))
                         }
                         className="h-8 min-w-[76px] shrink-0 rounded-md border border-white/20 bg-black/30 px-2 text-xs text-white"
                         title="폰트 크기(2단위)"
@@ -8268,17 +10115,52 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         step={1}
                         value={String(normalizeTextFontSize(selectedLayer.fontSize, MIN_TEXT_FONT_SIZE))}
                         onChange={(event) =>
-                          updateLayerById(selectedLayer.id, (layer) =>
-                            layer.type === "text"
-                              ? autoExpandTextLayerIfNeeded({
-                                  ...layer,
-                                  fontSize: normalizeTextFontSize(Number(event.target.value), layer.fontSize)
-                                })
-                              : layer
-                          )
+                          updateSelectedTextLayersFontSize(Number(event.target.value))
                         }
                         className="h-8 w-16 shrink-0 border-white/20 bg-black/30 text-xs text-white sm:w-20"
                         title="폰트 크기 직접 입력"
+                      />
+                      <Label className="shrink-0 text-[11px] text-zinc-200">루비 간격</Label>
+                      <Input
+                        type="range"
+                        min={0}
+                        max={32}
+                        step={1}
+                        value={String(normalizeRubyGap(selectedLayer.rubyGap))}
+                        onChange={(event) => updateSelectedTextLayersRubyGap(Number(event.target.value))}
+                        className="h-8 w-20 shrink-0 flex-none sm:w-28"
+                        title="루비와 한자 사이 간격"
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        max={32}
+                        step={1}
+                        value={String(normalizeRubyGap(selectedLayer.rubyGap))}
+                        onChange={(event) => updateSelectedTextLayersRubyGap(Number(event.target.value))}
+                        className="h-8 w-14 shrink-0 border-white/20 bg-black/30 text-xs text-white sm:w-16"
+                        title="루비와 한자 사이 간격(px)"
+                      />
+                      <Label className="shrink-0 text-[11px] text-zinc-200">상자 안 Y</Label>
+                      <Input
+                        type="range"
+                        min={MIN_TEXT_OFFSET_Y}
+                        max={MAX_TEXT_OFFSET_Y}
+                        step={1}
+                        value={String(normalizeTextOffsetY(selectedLayer.textOffsetY))}
+                        onChange={(event) => updateSelectedTextLayersOffsetY(Number(event.target.value))}
+                        className="h-8 w-20 shrink-0 flex-none sm:w-28"
+                        title="텍스트 상자 안에서 내용 위치를 위아래로 조정"
+                      />
+                      <Input
+                        type="number"
+                        min={MIN_TEXT_OFFSET_Y}
+                        max={MAX_TEXT_OFFSET_Y}
+                        step={1}
+                        value={String(normalizeTextOffsetY(selectedLayer.textOffsetY))}
+                        onChange={(event) => updateSelectedTextLayersOffsetY(Number(event.target.value))}
+                        className="h-8 w-14 shrink-0 border-white/20 bg-black/30 text-xs text-white sm:w-16"
+                        title="텍스트 상자 안 Y 위치(px)"
                       />
                       <Button
                         type="button"
@@ -9358,7 +11240,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         fontStyle: layer.italic ? "italic" : "normal",
                         textAlign: layer.textAlign,
                         fontSize: toCanvasWidthUnit(Math.max(10, layer.fontSize), canvasWidth),
-                        lineHeight: String(clamp(layer.lineHeight, 0.8, 3, 1.2)),
+                        lineHeight: String(
+                          clamp(layer.lineHeight, 0.8, 3, 1.2) +
+                            (textHasRuby(text) ? normalizeRubyGap(layer.rubyGap) / Math.max(10, layer.fontSize) : 0)
+                        ),
                         letterSpacing: toCanvasWidthUnit(layer.letterSpacing, canvasWidth),
                         backgroundColor:
                           layer.padding > 0 ||
@@ -9370,14 +11255,21 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                         overflow: "hidden",
                         whiteSpace: layer.autoWrap === false ? "pre" : "pre-wrap",
                         overflowWrap: layer.autoWrap === false ? "normal" : "anywhere",
-                        wordBreak: layer.autoWrap === false ? "normal" : "break-word",
+                        wordBreak: layer.autoWrap === false ? "normal" : "normal",
+                        lineBreak: "strict",
+                        rubyPosition: "over",
                         textDecorationLine: getTextDecorationLine(layer),
                         textShadow: getTextShadowStyle(layer)
                       }}
                       className="cursor-move"
                       onPointerDown={(event) => beginLayerInteraction(selectedPageId, "move", layer.id, event)}
                     >
-                      <div className="h-full w-full">{renderRubyPreviewNodes(text)}</div>
+                      <div
+                        className="h-full w-full"
+                        style={{ transform: `translateY(${toCanvasWidthUnit(normalizeTextOffsetY(layer.textOffsetY), canvasWidth)})` }}
+                      >
+                        {renderRubyPreviewNodes(text, toCanvasWidthUnit(normalizeRubyGap(layer.rubyGap), canvasWidth))}
+                      </div>
                       {isSelected ? renderResizeHandleButtons(layer.id) : null}
                     </div>
                   );
@@ -9723,7 +11615,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   fontStyle: layer.italic ? "italic" : "normal",
                                   textAlign: layer.textAlign,
                                   fontSize: toCanvasWidthUnit(Math.max(10, layer.fontSize), canvasWidth),
-                                  lineHeight: String(clamp(layer.lineHeight, 0.8, 3, 1.2)),
+                                  lineHeight: String(
+                                    clamp(layer.lineHeight, 0.8, 3, 1.2) +
+                                      (textHasRuby(text) ? normalizeRubyGap(layer.rubyGap) / Math.max(10, layer.fontSize) : 0)
+                                  ),
                                   letterSpacing: toCanvasWidthUnit(layer.letterSpacing, canvasWidth),
                                   backgroundColor:
                                     layer.padding > 0 ||
@@ -9737,10 +11632,16 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                                   overflowWrap: layer.autoWrap === false ? "normal" : "anywhere",
                                   wordBreak: layer.autoWrap === false ? "normal" : "break-word",
                                   textDecorationLine: getTextDecorationLine(layer),
-                                  textShadow: getTextShadowStyle(layer)
+                                  textShadow: getTextShadowStyle(layer),
+                                  rubyPosition: "over"
                                 }}
                               >
-                                <div className="h-full w-full">{renderRubyPreviewNodes(text)}</div>
+                                <div
+                                  className="h-full w-full"
+                                  style={{ transform: `translateY(${toCanvasWidthUnit(normalizeTextOffsetY(layer.textOffsetY), canvasWidth)})` }}
+                                >
+                                  {renderRubyPreviewNodes(text, toCanvasWidthUnit(normalizeRubyGap(layer.rubyGap), canvasWidth))}
+                                </div>
                               </div>
                             );
                           }
@@ -9856,6 +11757,35 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             </button>
             {sections.layers ? (
               <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-muted-foreground">드래그로 앞/뒤 순서를 변경</p>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-8 p-0"
+                      onClick={undoEditor}
+                      disabled={!canUndo}
+                      aria-label="Undo"
+                      title="Undo (Ctrl/Cmd+Z)"
+                    >
+                      <Undo2 className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-8 p-0"
+                      onClick={redoEditor}
+                      disabled={!canRedo}
+                      aria-label="Redo"
+                      title="Redo (Ctrl/Cmd+Shift+Z)"
+                    >
+                      <Redo2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
                 <div className="app-panel-scrollbar max-h-56 space-y-1 overflow-y-auto rounded-md border p-2">
                   {[...sortedLayers]
                     .sort((a, b) => b.zIndex - a.zIndex)
@@ -9863,15 +11793,48 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                       <button
                         key={layer.id}
                         type="button"
+                        draggable
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", layer.id);
+                          setLayerDragId(layer.id);
+                        }}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                          setLayerDragOverId(layer.id);
+                        }}
+                        onDragLeave={() => {
+                          setLayerDragOverId((current) => (current === layer.id ? undefined : current));
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const draggedId = layerDragId || event.dataTransfer.getData("text/plain");
+                          moveLayerInList(draggedId, layer.id);
+                          setLayerDragId(undefined);
+                          setLayerDragOverId(undefined);
+                        }}
+                        onDragEnd={() => {
+                          setLayerDragId(undefined);
+                          setLayerDragOverId(undefined);
+                        }}
                         onClick={() => {
+                          setObjectToolbarVisible(false);
                           setSelectedElementId(layer.id);
                           setSelectedElementIds([layer.id]);
                         }}
-                        className={`flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs ${
+                        className={`flex w-full cursor-grab items-center justify-between rounded px-2 py-1 text-left text-xs active:cursor-grabbing ${
                           selectedElementIds.includes(layer.id) ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+                        } ${
+                          layerDragOverId === layer.id && layerDragId !== layer.id ? "ring-1 ring-primary" : ""
+                        } ${
+                          layerDragId === layer.id ? "opacity-55" : ""
                         }`}
                       >
-                        <span className="truncate">{resolveElementName(layer)}</span>
+                        <span className="inline-flex min-w-0 items-center gap-1">
+                          <GripVertical className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                          <span className="truncate">{resolveElementName(layer)}</span>
+                        </span>
                         <span className="ml-2 text-[10px] opacity-70">z:{layer.zIndex}</span>
                       </button>
                     ))}
@@ -10450,14 +12413,24 @@ export function InstagramTemplatesClient(): React.JSX.Element {
             </button>
             {sections.data ? (
               <div className="mt-3 space-y-2">
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Input
+                    className="min-w-0 flex-1"
                     value={sheetName}
-                    onChange={(event) => setSheetName(event.target.value)}
+                    onChange={(event) => updateBindingSheetName(event.target.value)}
                     placeholder="인스타 Sheet Name (비우면 Settings 기본값)"
                   />
                   <Button type="button" variant="outline" onClick={() => void loadSheetBindings()} disabled={bindingLoading}>
                     {bindingLoading ? "가져오는 중..." : "컬럼 가져오기"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void loadSheetBindings(resetBindingSheetNameToSettings())}
+                    disabled={bindingLoading}
+                    title="Settings에 저장된 인스타그램 시트명으로 되돌려 다시 불러옵니다."
+                  >
+                    설정값
                   </Button>
                 </div>
                 <div className="relative">
@@ -10473,21 +12446,41 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                   <Label className="text-xs">미리보기 row 선택</Label>
                   {bindingRowOptions.length > 0 ? (
                     <>
-                      <Select value={bindingSelectedRowKey || bindingRowOptions[0].key} onValueChange={onSelectBindingRow}>
-                        <SelectTrigger className="bg-card dark:bg-zinc-900">
-                          <SelectValue placeholder="row 선택" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {bindingRowOptions.map((rowOption) => (
-                            <SelectItem key={rowOption.key} value={rowOption.key}>
-                              {rowOption.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Select value={bindingSelectedRowKey || bindingRowOptions[0].key} onValueChange={onSelectBindingRow}>
+                          <SelectTrigger className="min-w-0 flex-1 bg-card dark:bg-zinc-900">
+                            <SelectValue placeholder="row 선택" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {bindingRowOptions.map((rowOption) => (
+                              <SelectItem key={rowOption.key} value={rowOption.key}>
+                                {rowOption.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={applySelectedBindingRow}
+                          disabled={bindingApplyLoading || bindingLoading}
+                        >
+                          {bindingApplyLoading ? (
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Check className="h-4 w-4" />
+                          )}
+                          {bindingApplyLoading ? "적용 중..." : "선택 row 적용"}
+                        </Button>
+                      </div>
                       <p className="text-xs text-muted-foreground">
-                        총 {bindingRowOptions.length}개 row 중 선택한 row 값을 샘플 미리보기에 반영합니다.
+                        총 {bindingRowOptions.length}개 row 중 선택한 row 값을 샘플 미리보기에 반영합니다. row가 1개일 때는 적용 버튼을 눌러 다시 반영할 수 있습니다.
                       </p>
+                      {bindingApplyMessage ? (
+                        <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-600 dark:text-emerald-300">
+                          {bindingApplyMessage}
+                        </p>
+                      ) : null}
                     </>
                   ) : (
                     <p className="text-xs text-muted-foreground">시트 row를 불러오면 여기서 예시 row를 선택할 수 있습니다.</p>

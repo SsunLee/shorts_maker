@@ -4,9 +4,11 @@ import type {
   InstagramShapeType,
   InstagramTextElement
 } from "@/lib/instagram-types";
+import { repairMalformedRubyHtml } from "@/lib/instagram-sentence-reading";
 
 const DEFAULT_CANVAS_WIDTH = 1080;
 const DEFAULT_CANVAS_HEIGHT = 1350;
+const DEFAULT_RUBY_GAP = 6;
 
 type RubySegment =
   | { type: "plain"; text: string }
@@ -15,6 +17,14 @@ type RubySegment =
 function clamp(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeRubyGap(value: unknown): number {
+  return clamp(Number(value), 0, 32, DEFAULT_RUBY_GAP);
+}
+
+function normalizeTextOffsetY(value: unknown): number {
+  return clamp(Number(value), -120, 120, 0);
 }
 
 function normalizeCanvasWidth(value: number): number {
@@ -89,6 +99,35 @@ function buildKnownFontAliases(fontFamily: string): string[] {
 
 function buildFontFamilyStack(fontFamily: string): string {
   const primary = normalizeStoredFontFamily(fontFamily).replace(/"/g, '\\"');
+  if (normalizeFontName(primary).toLowerCase() === "문장 읽기 명조") {
+    return [
+      "Yu Mincho",
+      "Hiragino Mincho ProN",
+      "Hiragino Mincho Pro",
+      "Noto Serif CJK JP",
+      "Noto Serif JP",
+      "Noto Serif KR",
+      "Nanum Myeongjo",
+      "AppleMyungjo",
+      "Batang",
+      "serif"
+    ]
+      .map((family) => (family === "serif" ? family : `"${family}"`))
+      .join(", ");
+  }
+  if (normalizeFontName(primary).toLowerCase() === "nanum pen script") {
+    return [
+      "Nanum Pen Script",
+      "Gaegu",
+      "Kyobo Handwriting 2019",
+      "Segoe Print",
+      "Brush Script MT",
+      "Apple Chancery",
+      "cursive"
+    ]
+      .map((family) => (family === "cursive" ? family : `"${family}"`))
+      .join(", ");
+  }
   const fallbackFamilies = [
     "Noto Sans KR",
     "Malgun Gothic",
@@ -219,29 +258,40 @@ export function inferInstagramMediaTypeFromSource(source: string): "image" | "vi
   return "image";
 }
 
+function cleanRubyHtmlText(value: string): string {
+  return String(value || "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim();
+}
+
 function parseRubySegments(line: string): RubySegment[] {
+  const repairedLine = repairMalformedRubyHtml(line);
   const segments: RubySegment[] = [];
-  const regex = /\[([^\]\|]+)\|([^\]]+)\]/g;
+  const regex = /<ruby[^>]*>([\s\S]*?)<rt[^>]*>([\s\S]*?)<\/rt>\s*<\/ruby>|\[([^\]\|]+)\|([^\]]+)\]/gi;
   let lastIndex = 0;
   let matched = false;
-  let token: RegExpExecArray | null = regex.exec(line);
+  let token: RegExpExecArray | null = regex.exec(repairedLine);
   while (token) {
     matched = true;
     if (token.index > lastIndex) {
-      segments.push({ type: "plain", text: line.slice(lastIndex, token.index) });
+      segments.push({ type: "plain", text: repairedLine.slice(lastIndex, token.index) });
     }
     segments.push({
       type: "ruby",
-      base: String(token[1] || ""),
-      ruby: String(token[2] || "")
+      base: cleanRubyHtmlText(token[1] || token[3] || ""),
+      ruby: cleanRubyHtmlText(token[2] || token[4] || "")
     });
     lastIndex = token.index + token[0].length;
-    token = regex.exec(line);
+    token = regex.exec(repairedLine);
   }
-  if (lastIndex < line.length) {
-    segments.push({ type: "plain", text: line.slice(lastIndex) });
+  if (lastIndex < repairedLine.length) {
+    segments.push({ type: "plain", text: repairedLine.slice(lastIndex) });
   }
-  if (!matched) return [{ type: "plain", text: line }];
+  if (!matched) return [{ type: "plain", text: repairedLine }];
   return segments;
 }
 
@@ -255,6 +305,54 @@ function measureRubyLineWidth(ctx: CanvasRenderingContext2D, segments: RubySegme
     width += ctx.measureText(segment.type === "ruby" ? segment.base : segment.text).width;
   });
   return width;
+}
+
+function measureRubySegmentWidth(ctx: CanvasRenderingContext2D, segment: RubySegment): number {
+  return ctx.measureText(segment.type === "ruby" ? segment.base : segment.text).width;
+}
+
+function splitRubySegmentForWrapping(segment: RubySegment): RubySegment[] {
+  if (segment.type === "ruby") {
+    return [segment];
+  }
+  return Array.from(segment.text || "").map((text) => ({ type: "plain", text }));
+}
+
+function rubySegmentsToPlainText(segments: RubySegment[]): string {
+  return segments.map((segment) => (segment.type === "ruby" ? segment.base : segment.text)).join("");
+}
+
+function wrapRubySegmentsForCanvas(
+  ctx: CanvasRenderingContext2D,
+  segments: RubySegment[],
+  maxWidth: number
+): RubySegment[][] {
+  const safeMaxWidth = Math.max(4, Number(maxWidth) || 4);
+  if (segments.length === 0 || !rubySegmentsToPlainText(segments).trim()) {
+    return [[]];
+  }
+
+  const lines: RubySegment[][] = [];
+  let current: RubySegment[] = [];
+  let currentWidth = 0;
+  const pushCurrent = (): void => {
+    lines.push(current);
+    current = [];
+    currentWidth = 0;
+  };
+
+  segments.flatMap(splitRubySegmentForWrapping).forEach((segment) => {
+    const width = measureRubySegmentWidth(ctx, segment);
+    if (current.length > 0 && currentWidth + width > safeMaxWidth) {
+      pushCurrent();
+    }
+    current.push(segment);
+    currentWidth += width;
+  });
+  if (current.length > 0) {
+    pushCurrent();
+  }
+  return lines.length > 0 ? lines : [[]];
 }
 
 function wrapTextForCanvas(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
@@ -711,14 +809,17 @@ export async function renderInstagramPageToCanvas(args: {
     const rubyLines = rawLines.map((line) => parseRubySegments(line));
     const hasRuby = rubyLines.some((line) => lineHasRuby(line));
     const shouldAutoWrap = textLayer.autoWrap !== false;
-    const lines = hasRuby || !shouldAutoWrap ? rawLines : wrapTextForCanvas(ctx, text, maxTextWidth);
-    const measuredLines = hasRuby ? rubyLines : lines.map((line) => parseRubySegments(line));
-    const rubyReserve = hasRuby ? Math.max(8, textLayer.fontSize * 0.42) : 0;
+    const measuredLines = hasRuby
+      ? rubyLines.flatMap((line) => (shouldAutoWrap ? wrapRubySegmentsForCanvas(ctx, line, maxTextWidth) : [line]))
+      : (shouldAutoWrap ? wrapTextForCanvas(ctx, text, maxTextWidth) : rawLines).map((line) => parseRubySegments(line));
+    const lines = measuredLines.map((line) => rubySegmentsToPlainText(line));
+    const rubyGap = normalizeRubyGap(textLayer.rubyGap);
+    const rubyReserve = hasRuby ? Math.max(8, textLayer.fontSize * 0.42 + rubyGap) : 0;
     const lineHeight = Math.max(8, textLayer.fontSize * clamp(textLayer.lineHeight, 0.8, 3, 1.2)) + rubyReserve;
     const totalHeight = lines.length * lineHeight;
     const verticalInset = Math.max(2, Math.round(baseFontSize * 0.12));
     const availableHeight = Math.max(0, height - verticalInset * 2);
-    const startY = top + verticalInset + Math.max(0, (availableHeight - totalHeight) / 2);
+    const startY = top + verticalInset + Math.max(0, (availableHeight - totalHeight) / 2) + normalizeTextOffsetY(textLayer.textOffsetY);
     let textX = left + padding;
     if (ctx.textAlign === "center") textX = left + width / 2;
     if (ctx.textAlign === "right") textX = left + width - padding;
@@ -726,22 +827,19 @@ export async function renderInstagramPageToCanvas(args: {
     lines.forEach((line, index) => {
       const segments = measuredLines[index] || [{ type: "plain", text: line } as RubySegment];
       const lineWidth = measureRubyLineWidth(ctx, segments);
-      const lineBaseText = segments.map((segment) => (segment.type === "ruby" ? segment.base : segment.text)).join("");
-      const lineMetrics = ctx.measureText(lineBaseText || " ");
-      const leftBearing = Number(lineMetrics.actualBoundingBoxLeft) || 0;
-      const rightBearing = Number(lineMetrics.actualBoundingBoxRight) || Number(lineMetrics.width) || 0;
-      const visualWidth = Math.max(1, leftBearing + rightBearing);
       const y = startY + index * lineHeight + rubyReserve;
-      let drawX = left + padding + leftBearing;
+      let drawX = left + padding;
       let lineLeft = left + padding;
       if (ctx.textAlign === "center") {
-        drawX = textX - (rightBearing - leftBearing) / 2;
-        lineLeft = textX - visualWidth / 2;
+        drawX = textX - lineWidth / 2;
+        lineLeft = drawX;
       } else if (ctx.textAlign === "right") {
-        drawX = textX - rightBearing;
-        lineLeft = textX - visualWidth;
+        drawX = textX - lineWidth;
+        lineLeft = drawX;
       }
 
+      const segmentTextAlign = ctx.textAlign;
+      ctx.textAlign = "left";
       segments.forEach((segment) => {
         if (segment.type === "plain") {
           ctx.fillText(segment.text, drawX, y);
@@ -758,22 +856,21 @@ export async function renderInstagramPageToCanvas(args: {
           ctx.font = rubyFont;
           const rubyWidth = ctx.measureText(segment.ruby).width;
           const rubyX = drawX + (baseWidth - rubyWidth) / 2;
-          const rubyY = y - Math.max(6, rubyFontSize * 0.95);
+          const rubyY = y - Math.max(6, rubyFontSize * 0.95 + rubyGap);
           ctx.fillText(segment.ruby, rubyX, rubyY);
           ctx.font = mainFont;
         }
         drawX += baseWidth;
       });
+      ctx.textAlign = segmentTextAlign;
 
       if (textLayer.strikeThrough && line.trim()) {
         const strikeY = y + (lineHeight - rubyReserve) * 0.55;
-        const strikeWidth = Math.max(lineWidth, visualWidth);
-        ctx.fillRect(lineLeft, strikeY, strikeWidth, 2);
+        ctx.fillRect(lineLeft, strikeY, lineWidth, 2);
       }
       if (textLayer.underline && line.trim()) {
         const underlineY = y + (lineHeight - rubyReserve) - 3;
-        const underlineWidth = Math.max(lineWidth, visualWidth);
-        ctx.fillRect(lineLeft, underlineY, underlineWidth, 2);
+        ctx.fillRect(lineLeft, underlineY, lineWidth, 2);
       }
     });
 

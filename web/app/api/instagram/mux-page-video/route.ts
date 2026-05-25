@@ -12,6 +12,11 @@ const schema = z.object({
   pageName: z.string().optional(),
   videoUrl: z.string().min(1),
   audioUrl: z.string().min(1),
+  bgmUrl: z.string().optional(),
+  audioVolume: z.number().optional(),
+  bgmVolume: z.number().optional(),
+  mixWithVideoAudio: z.boolean().optional(),
+  videoAudioVolume: z.number().optional(),
   durationSec: z.number().optional()
 });
 
@@ -39,6 +44,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         jobId,
         videoPath: payload.videoUrl,
         audioPath: payload.audioUrl,
+        bgmPath: payload.bgmUrl,
+        audioVolume: payload.audioVolume,
+        bgmVolume: payload.bgmVolume,
+        mixWithVideoAudio: payload.mixWithVideoAudio,
+        videoAudioVolume: payload.videoAudioVolume,
         durationSec: payload.durationSec
       },
       userId

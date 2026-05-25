@@ -100,10 +100,6 @@ function FeedMenuIcon({ className }: { className?: string }): React.JSX.Element 
   return <BrandMenuIcon className={className} src="/icons/menu/feed.png" />;
 }
 
-function ReelsMenuIcon({ className }: { className?: string }): React.JSX.Element {
-  return <BrandMenuIcon className={className} src="/icons/menu/reels.png" />;
-}
-
 const NAV_SECTIONS: NavSection[] = [
   {
     id: "youtube",
@@ -123,11 +119,10 @@ const NAV_SECTIONS: NavSection[] = [
     links: [
       { href: "/instagram/templates", label: "템플릿", icon: TemplateMenuIcon },
       { href: "/instagram/ideas", label: "아이디어", icon: IdeaMenuIcon },
-      { href: "/instagram/news", label: "뉴스 정보 가져오기", icon: NewsMenuIcon, matchPrefixes: ["/instagram/news"] },
-      { href: "/instagram/dm", label: "DM 자동 전송", icon: DmMenuIcon, matchPrefixes: ["/instagram/dm"] },
       { href: "/instagram/feed", label: "피드", icon: FeedMenuIcon },
-      { href: "/instagram/reels", label: "릴스", icon: ReelsMenuIcon },
-      { href: "/instagram/dashboard", label: "Dashboard", icon: DashboardMenuIcon, matchPrefixes: ["/instagram/dashboard"] }
+      { href: "/instagram/dashboard", label: "Dashboard", icon: DashboardMenuIcon, matchPrefixes: ["/instagram/dashboard"] },
+      { href: "/instagram/news", label: "뉴스 정보 가져오기", icon: NewsMenuIcon, matchPrefixes: ["/instagram/news"] },
+      { href: "/instagram/dm", label: "DM 자동 전송", icon: DmMenuIcon, matchPrefixes: ["/instagram/dm"] }
     ]
   },
   {

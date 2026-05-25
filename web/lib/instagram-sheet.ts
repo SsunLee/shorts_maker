@@ -31,10 +31,30 @@ function columnToA1(index: number): string {
   return result;
 }
 
+function mergeHeaders(
+  existingHeaders: readonly string[],
+  preferredHeaders?: readonly string[]
+): string[] {
+  const output = existingHeaders.map((header) => String(header || "").trim()).filter(Boolean);
+  const seen = new Set(output.map((header) => normalizeHeader(header)).filter(Boolean));
+
+  (preferredHeaders || []).forEach((header) => {
+    const value = String(header || "").trim();
+    if (!value) return;
+    const normalized = normalizeHeader(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    output.push(value);
+  });
+
+  return output;
+}
+
 export async function appendInstagramIdeasToSheet(args: {
   sheetName?: string;
   items: Array<Record<string, string>>;
   userId?: string;
+  preferredHeaders?: readonly string[];
 }): Promise<{ inserted: number; sheetName: string }> {
   const context = await getSheetsContext(args.sheetName, args.userId);
   if (!context) {
@@ -42,9 +62,21 @@ export async function appendInstagramIdeasToSheet(args: {
   }
 
   const values = await readSheetValues(context);
-  const headers = (values[0] || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const existingHeaders = (values[0] || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const headers = mergeHeaders(existingHeaders, args.preferredHeaders);
   if (headers.length === 0) {
     throw new Error("시트 헤더가 비어 있습니다. 1행에 컬럼명을 먼저 입력해 주세요.");
+  }
+
+  if (headers.length !== existingHeaders.length) {
+    await context.sheets.spreadsheets.values.update({
+      spreadsheetId: context.spreadsheetId,
+      range: `${context.sheetName}!A1:${columnToA1(headers.length - 1)}1`,
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [headers]
+      }
+    });
   }
 
   const appendRows = args.items.map((item) =>
@@ -160,4 +192,74 @@ export async function updateInstagramSheetRowAfterUpload(args: {
   });
 
   return { updated: true, sheetName: context.sheetName };
+}
+
+export async function deleteInstagramSheetRows(args: {
+  userId?: string;
+  sheetName?: string;
+  rowIds: string[];
+}): Promise<{ deleted: number; missing: string[]; sheetName: string }> {
+  const rowIds = Array.from(new Set((args.rowIds || []).map((id) => String(id || "").trim()).filter(Boolean)));
+  if (rowIds.length === 0) {
+    throw new Error("삭제할 row를 선택해 주세요.");
+  }
+
+  const context = await getSheetsContext(args.sheetName, args.userId);
+  if (!context) {
+    throw new Error("Google Sheets 연결 정보를 찾을 수 없습니다. Settings를 확인해 주세요.");
+  }
+
+  const values = await readSheetValues(context);
+  const headers = (values[0] || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const idIndex = findColumnIndex(headers, ["id", "row_id", "rowid"]);
+  if (idIndex === undefined) {
+    throw new Error("시트에서 id 컬럼을 찾지 못해 row를 삭제할 수 없습니다.");
+  }
+
+  const sheetMeta = await context.sheets.spreadsheets.get({
+    spreadsheetId: context.spreadsheetId,
+    fields: "sheets(properties(sheetId,title))"
+  });
+  const sheet = sheetMeta.data.sheets?.find((item) => item.properties?.title === context.sheetName);
+  const sheetId = sheet?.properties?.sheetId;
+  if (typeof sheetId !== "number") {
+    throw new Error(`시트 탭 '${context.sheetName}'의 sheetId를 찾지 못했습니다.`);
+  }
+
+  const requested = new Set(rowIds.map(normalizeId));
+  const foundRows = values
+    .slice(1)
+    .map((row, bodyIndex) => ({
+      id: normalizeId(String(row[idIndex] || "")),
+      rowNumber: bodyIndex + 2
+    }))
+    .filter((row) => row.id && requested.has(row.id));
+
+  const foundIds = new Set(foundRows.map((row) => row.id));
+  const missing = rowIds.filter((id) => !foundIds.has(normalizeId(id)));
+  const rowNumbers = Array.from(new Set(foundRows.map((row) => row.rowNumber))).sort((a, b) => b - a);
+
+  if (rowNumbers.length > 0) {
+    await context.sheets.spreadsheets.batchUpdate({
+      spreadsheetId: context.spreadsheetId,
+      requestBody: {
+        requests: rowNumbers.map((rowNumber) => ({
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: "ROWS",
+              startIndex: rowNumber - 1,
+              endIndex: rowNumber
+            }
+          }
+        }))
+      }
+    });
+  }
+
+  return {
+    deleted: rowNumbers.length,
+    missing,
+    sheetName: context.sheetName
+  };
 }

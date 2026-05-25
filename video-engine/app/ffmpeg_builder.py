@@ -187,10 +187,42 @@ def probe_audio_duration(audio_path: Path) -> float:
         return 30.0
 
 
+def probe_has_audio(media_path: Path) -> bool:
+    command = [
+        FFPROBE_BIN,
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "csv=p=0",
+        str(media_path),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            check=False,
+            timeout=FFPROBE_CMD_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return completed.returncode == 0 and bool(_decode_output(completed.stdout).strip())
+
+
 def mux_video_with_audio(
     *,
     video_path: Path,
     audio_path: Path,
+    bgm_path: Path | None = None,
+    audio_volume: float = 1.0,
+    bgm_volume: float = 0.18,
+    mix_with_video_audio: bool = False,
+    video_audio_volume: float = 1.0,
     output_dir: Path,
     duration_sec: float | None = None,
 ) -> tuple[Path, list[str]]:
@@ -202,9 +234,43 @@ def mux_video_with_audio(
     safe_duration = max(1.0, min(180.0, safe_duration))
     final_output = output_dir / "final.mp4"
     duration_text = f"{safe_duration:.3f}"
+    safe_audio_volume = max(0.0, min(2.0, float(audio_volume)))
+    safe_bgm_volume = max(0.0, min(1.0, float(bgm_volume)))
+    safe_video_audio_volume = max(0.0, min(2.0, float(video_audio_volume)))
+    audio_filters: list[str] = []
+    audio_labels: list[str] = []
+
+    if mix_with_video_audio and probe_has_audio(video_path):
+        audio_filters.append(
+            f"[0:a]volume={safe_video_audio_volume:.3f},"
+            f"apad=whole_dur={duration_text},atrim=0:{duration_text}[a0]"
+        )
+        audio_labels.append("[a0]")
+
+    audio_filters.append(
+        f"[1:a]volume={safe_audio_volume:.3f},"
+        f"apad=whole_dur={duration_text},atrim=0:{duration_text}[a1]"
+    )
+    audio_labels.append("[a1]")
+
+    if bgm_path is not None:
+        audio_filters.append(
+            f"[2:a]volume={safe_bgm_volume:.3f},"
+            f"apad=whole_dur={duration_text},atrim=0:{duration_text}[abgm]"
+        )
+        audio_labels.append("[abgm]")
+
+    if len(audio_labels) == 1:
+        audio_filters.append(f"{audio_labels[0]}anull[a]")
+    else:
+        audio_filters.append(
+            f"{''.join(audio_labels)}amix=inputs={len(audio_labels)}:"
+            f"duration=first:dropout_transition=0,atrim=0:{duration_text}[a]"
+        )
+
     filter_complex = (
         "[0:v]fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[v];"
-        f"[1:a]apad=whole_dur={duration_text},atrim=0:{duration_text}[a]"
+        + ";".join(audio_filters)
     )
     command = [
         FFMPEG_BIN,
@@ -213,8 +279,16 @@ def mux_video_with_audio(
         "-1",
         "-i",
         str(video_path),
+    ]
+    if mix_with_video_audio:
+        command.extend(["-stream_loop", "-1"])
+    command.extend([
         "-i",
         str(audio_path),
+    ])
+    if bgm_path is not None:
+        command.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
+    command.extend([
         "-t",
         duration_text,
         "-filter_complex",
@@ -236,7 +310,7 @@ def mux_video_with_audio(
         "-movflags",
         "+faststart",
         str(final_output),
-    ]
+    ])
     run_cmd(command, log_path=ffmpeg_log_path, label="mux-video-audio")
     return final_output, [_to_ffmpeg_command_string(command)]
 

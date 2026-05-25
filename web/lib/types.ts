@@ -53,6 +53,7 @@ export interface AppSettings {
   geminiApiKey?: string;
   openDartApiKey?: string;
   krxApiKey?: string;
+  pixabayApiKey?: string;
   aiMode?: "auto" | "openai" | "gemini" | "mixed";
   aiTextProvider?: "openai" | "gemini";
   aiImageProvider?: "openai" | "gemini";

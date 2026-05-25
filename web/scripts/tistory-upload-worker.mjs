@@ -15,6 +15,9 @@ function parseArgs() {
 const args = parseArgs();
 const payloadPath = args.payload;
 const statusPath = args.status;
+const CAPTCHA_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+const CAPTCHA_POLL_INTERVAL_MS = 3000;
+const CAPTCHA_LOG_INTERVAL_MS = 30 * 1000;
 
 async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -35,6 +38,125 @@ async function log(message, step = "running") {
   const current = await readJson(statusPath).catch(() => ({ logs: [] }));
   const logs = [...(current.logs || []), { at: new Date().toISOString(), message }].slice(-100);
   await writeStatus({ logs, message, step });
+}
+
+function formatElapsed(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes > 0 ? `${minutes}분 ${rest}초` : `${rest}초`;
+}
+
+async function inspectCaptchaFrame(frame) {
+  return frame
+    .evaluate(() => {
+      const isVisible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          style.opacity !== "0"
+        );
+      };
+      const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const bodyText = normalize(document.body?.innerText || "");
+      const captchaTextPattern =
+        /DKAPTCHA|CAPTCHA|캡차|보안문자|자동\s*입력\s*방지|정답을\s*입력|답변\s*제출|지도에\s*있는|전체\s*명칭/i;
+      const inputPattern = /captcha|캡차|보안|정답|답변/i;
+      const hasCaptchaText = captchaTextPattern.test(bodyText);
+      const hasCaptchaInput = Array.from(document.querySelectorAll("input,textarea")).some((element) => {
+        if (!isVisible(element)) return false;
+        const hint = normalize(
+          [
+            element.id,
+            element.getAttribute("name"),
+            element.getAttribute("placeholder"),
+            element.getAttribute("aria-label"),
+            element.getAttribute("data-placeholder"),
+            element.className
+          ]
+            .filter(Boolean)
+            .join(" ")
+        );
+        return inputPattern.test(hint);
+      });
+      const hasCaptchaSubmit = Array.from(document.querySelectorAll("button,[role='button'],input[type='button'],input[type='submit']")).some(
+        (element) => {
+          if (!isVisible(element)) return false;
+          const text = normalize(element.textContent || element.getAttribute("value") || element.getAttribute("aria-label") || "");
+          return /답변\s*제출|제출|submit/i.test(text);
+        }
+      );
+
+      if (!hasCaptchaText && !(hasCaptchaInput && hasCaptchaSubmit)) {
+        return null;
+      }
+
+      const summary =
+        bodyText
+          .split(/(?<=다\.|요\.|니다\.|\?)\s+|\n+/)
+          .map(normalize)
+          .filter(Boolean)
+          .filter((line) => captchaTextPattern.test(line) || /마트|병원|학교|건물|호텔|은행|카페|약국|편의점/.test(line))
+          .slice(0, 4)
+          .join(" / ") || "캡차 입력 UI 감지";
+      return { summary };
+    })
+    .catch(() => null);
+}
+
+async function detectTistoryCaptcha(page) {
+  for (const frame of page.frames()) {
+    const detected = await inspectCaptchaFrame(frame);
+    if (detected) {
+      return detected;
+    }
+  }
+  return null;
+}
+
+async function waitForCaptchaToClear(page, contextLabel = "") {
+  const detected = await detectTistoryCaptcha(page);
+  if (!detected) {
+    return false;
+  }
+
+  const prefix = contextLabel ? `${contextLabel} ` : "";
+  const started = Date.now();
+  let lastLogAt = started;
+  await page.bringToFront().catch(() => null);
+  await log(`${prefix}티스토리 캡차가 표시되어 자동화를 대기합니다. 열린 Chrome에서 직접 캡차를 처리해 주세요.`, "captcha-wait");
+  await writeStatus({
+    state: "running",
+    step: "captcha-wait",
+    message: `${prefix}캡차 대기 중 · 감지 단서: ${detected.summary}`
+  });
+
+  while (Date.now() - started < CAPTCHA_WAIT_TIMEOUT_MS) {
+    await page.waitForTimeout(CAPTCHA_POLL_INTERVAL_MS);
+    const current = await detectTistoryCaptcha(page);
+    if (!current) {
+      await log(`${prefix}캡차 해제가 감지되어 자동화를 재개합니다.`, "captcha-resume");
+      return true;
+    }
+
+    if (Date.now() - lastLogAt >= CAPTCHA_LOG_INTERVAL_MS) {
+      lastLogAt = Date.now();
+      await writeStatus({
+        state: "running",
+        step: "captcha-wait",
+        message: `${prefix}캡차 대기 중 · 경과 ${formatElapsed(Math.floor((Date.now() - started) / 1000))}`
+      });
+    }
+  }
+
+  throw new Error(`${prefix}티스토리 캡차가 30분 동안 해제되지 않아 자동화를 중단했습니다. 열린 Chrome에서 직접 처리 후 남은 글만 다시 실행해 주세요.`);
+}
+
+async function waitForCaptchaIfPresent(page, contextLabel = "") {
+  return waitForCaptchaToClear(page, contextLabel);
 }
 
 function escapeHtml(value) {
@@ -721,12 +843,14 @@ async function setTags(page, tags) {
 }
 
 async function publishTistoryPost(page) {
+  await waitForCaptchaIfPresent(page, "발행 전");
   await log("완료 버튼을 클릭해 발행 바텀시트를 엽니다.", "publish-open");
   const opened = await clickVisibleText(page, [/^완료$/, /^Done$/i], 8000);
   if (!opened) {
     throw new Error("티스토리 완료 버튼을 찾지 못했습니다. 발행 단계는 수동 확인이 필요합니다.");
   }
   await page.waitForTimeout(1200);
+  await waitForCaptchaIfPresent(page, "발행 바텀시트");
 
   await log("발행 바텀시트에서 공개 옵션을 선택합니다.", "publish-public");
   const publicSelected = await clickVisibleText(page, [/^공개$/], 5000);
@@ -752,16 +876,22 @@ async function publishTistoryPost(page) {
   await dialogPromise;
   await clickVisibleText(page, [/^확인$/, /^OK$/i], 2000).catch(() => false);
   await page.waitForTimeout(2000);
+  await waitForCaptchaIfPresent(page, "공개 발행 후");
   await log("공개 발행 버튼을 클릭했습니다. 티스토리 화면에서 발행 결과를 최종 확인해 주세요.", "publish-submit");
 }
 
 async function waitForWriteScreen(page, timeoutMs) {
-  const started = Date.now();
+  let started = Date.now();
   let noticeShown = false;
   while (Date.now() - started < timeoutMs) {
-      const ready = await page.evaluate(() => {
-        const text = document.body?.innerText || "";
-        const hasTitle = Array.from(document.querySelectorAll("textarea,input,[contenteditable='true']")).some((element) => {
+    const captchaCleared = await waitForCaptchaIfPresent(page, "글쓰기 화면 진입 중");
+    if (captchaCleared) {
+      started = Date.now();
+      noticeShown = false;
+    }
+    const ready = await page.evaluate(() => {
+      const text = document.body?.innerText || "";
+      const hasTitle = Array.from(document.querySelectorAll("textarea,input,[contenteditable='true']")).some((element) => {
         const hint = [
           element.id,
           element.getAttribute("placeholder"),
@@ -862,8 +992,10 @@ async function main() {
       }
 
       await log(`[${postNumber}/${posts.length}] 글 작성 자동화를 시작합니다: ${post.title}`, "post-start");
+      await waitForCaptchaIfPresent(page, `[${postNumber}/${posts.length}] 입력 전`);
       await selectTistoryCategory(page, post.category);
       await switchEditorToMarkdown(page);
+      await waitForCaptchaIfPresent(page, `[${postNumber}/${posts.length}] 모드 전환 후`);
 
       await log(`[${postNumber}/${posts.length}] 제목을 입력합니다.`, "fill-title");
       const titleOk = await setTitle(page, post.title);
@@ -889,6 +1021,7 @@ async function main() {
           : `[${postNumber}/${posts.length}] 태그 입력 영역은 찾지 못했습니다. 필요하면 수동으로 확인해 주세요.`,
         "fill-tags"
       );
+      await waitForCaptchaIfPresent(page, `[${postNumber}/${posts.length}] 저장/발행 전`);
 
       if (payload.mode === "publish") {
         await publishTistoryPost(page);
@@ -896,6 +1029,7 @@ async function main() {
       } else if (payload.mode === "save-draft") {
         await log(`[${postNumber}/${posts.length}] 임시저장 버튼 클릭을 시도합니다.`, "save-draft");
         const clicked = await page.getByText("임시저장", { exact: false }).first().click({ timeout: 5000 }).then(() => true).catch(() => false);
+        await waitForCaptchaIfPresent(page, `[${postNumber}/${posts.length}] 임시저장 후`);
         await log(
           clicked
             ? `[${postNumber}/${posts.length}] 임시저장 버튼을 클릭했습니다.`

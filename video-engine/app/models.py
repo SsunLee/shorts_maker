@@ -101,6 +101,11 @@ class MuxVideoAudioRequest(BaseModel):
     jobId: str = Field(..., min_length=1)
     videoPath: str = Field(..., min_length=1)
     audioPath: str = Field(..., min_length=1)
+    bgmPath: str | None = Field(default=None)
+    audioVolume: float = Field(default=1.0, ge=0.0, le=2.0)
+    bgmVolume: float = Field(default=0.18, ge=0.0, le=1.0)
+    mixWithVideoAudio: bool = False
+    videoAudioVolume: float = Field(default=1.0, ge=0.0, le=2.0)
     durationSec: float | None = Field(default=None, ge=1, le=180)
 
 

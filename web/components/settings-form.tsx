@@ -18,6 +18,7 @@ const emptySettings: AppSettings = {
   geminiApiKey: "",
   openDartApiKey: "",
   krxApiKey: "",
+  pixabayApiKey: "",
   aiMode: "auto",
   aiTextProvider: "gemini",
   aiImageProvider: "gemini",
@@ -772,6 +773,18 @@ export function SettingsForm(): React.JSX.Element {
 
   return (
     <form className="space-y-6" onSubmit={submit}>
+      <div className="sticky top-0 z-30 -mx-1 rounded-lg border bg-background/95 p-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">Settings</p>
+            {message ? <p className="mt-0.5 text-xs text-muted-foreground">{message}</p> : null}
+          </div>
+          <Button type="submit" disabled={saving}>
+            {saving ? "Saving..." : "Save Settings"}
+          </Button>
+        </div>
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle>Theme</CardTitle>
@@ -1024,6 +1037,19 @@ export function SettingsForm(): React.JSX.Element {
               type="password"
               value={settings.krxApiKey || ""}
               onChange={(e) => update("krxApiKey", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="pixabayApiKey"
+              label="Pixabay API Key"
+              help="Pixabay Sound Effects 검색에 사용합니다. 키는 서버 설정에 저장되고 브라우저에는 직접 노출하지 않습니다."
+            />
+            <Input
+              id="pixabayApiKey"
+              type="password"
+              value={settings.pixabayApiKey || ""}
+              onChange={(e) => update("pixabayApiKey", e.target.value)}
             />
           </div>
 
@@ -1794,7 +1820,6 @@ export function SettingsForm(): React.JSX.Element {
         <Button type="submit" disabled={saving}>
           {saving ? "Saving..." : "Save Settings"}
         </Button>
-        {message ? <p className="text-sm text-muted-foreground">{message}</p> : null}
       </div>
     </form>
   );

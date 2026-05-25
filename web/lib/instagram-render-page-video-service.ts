@@ -5,7 +5,7 @@ import {
   storeGeneratedAssetFromRemote,
   toSignedStorageReadUrl
 } from "@/lib/object-storage";
-import { buildVideoWithEngine } from "@/lib/video-engine-service";
+import { buildVideoWithEngine, muxVideoAudioWithEngine } from "@/lib/video-engine-service";
 import type { BuildVideoPayload, RenderOptions } from "@/lib/types";
 import { GEMINI_VOICE_IDS, OPENAI_VOICE_IDS } from "@/lib/voice-options";
 
@@ -17,6 +17,9 @@ export type RenderInstagramPageVideoArgs = {
   useAudio?: boolean;
   audioUrl?: string;
   audioPrompt?: string;
+  bgmEnabled?: boolean;
+  bgmUrl?: string;
+  bgmVolume?: number;
   ttsProvider?: "auto" | "openai" | "gemini";
   sampleData?: Record<string, string>;
   audioVoice?: string;
@@ -37,6 +40,12 @@ function clampDurationForInstagram(value: number | undefined): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 10;
   return Math.max(10, Math.min(55, Math.round(numeric)));
+}
+
+function clampBgmVolume(value: number | undefined): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0.18;
+  return Math.max(0, Math.min(1, numeric));
 }
 
 type DataUrlPayload = {
@@ -341,7 +350,27 @@ export async function renderInstagramPageVideo(
   if (!result.outputUrl) {
     throw new Error("MP4 출력 URL을 받지 못했습니다.");
   }
-  const signedOutputUrl = await toSignedStorageReadUrl(result.outputUrl, 60 * 60 * 6);
+  let outputUrl = result.outputUrl;
+  const bgmUrl = String(args.bgmUrl || "").trim();
+  if (args.bgmEnabled && bgmUrl) {
+    const bgmMux = await muxVideoAudioWithEngine(
+      {
+        jobId: `${jobId}-bgm`,
+        videoPath: outputUrl,
+        audioPath: bgmUrl,
+        audioVolume: clampBgmVolume(args.bgmVolume),
+        mixWithVideoAudio: true,
+        videoAudioVolume: 1,
+        durationSec: safeDurationSec
+      },
+      args.userId
+    );
+    if (!bgmMux.outputUrl) {
+      throw new Error("BGM 합성 결과 URL을 받지 못했습니다.");
+    }
+    outputUrl = bgmMux.outputUrl;
+  }
+  const signedOutputUrl = await toSignedStorageReadUrl(outputUrl, 60 * 60 * 6);
   const signedAudioUrl = await toSignedStorageReadUrl(audioUrl, 60 * 60 * 6);
   return {
     jobId,

@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { Clipboard, ExternalLink } from "lucide-react";
+import { ArrowRight, CheckCircle2, Clipboard, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,9 +11,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import {
   extractPromptVariables,
+  type InstagramIdeaPromptMode,
   INSTAGRAM_IDEA_DEFAULT_PROMPT,
-  INSTAGRAM_IDEA_SHEET_HEADERS
+  INSTAGRAM_IDEA_SHEET_HEADERS,
+  INSTAGRAM_SENTENCE_READING_IDEA_PROMPT,
+  INSTAGRAM_SENTENCE_READING_SHEET_HEADERS
 } from "@/lib/instagram-ideas-prompt";
+import {
+  readInstagramLastSheetName,
+  resolveInstagramPreferredSheetName,
+  resolveInstagramSettingsSheetName,
+  saveInstagramLastSheetName
+} from "@/lib/instagram-sheet-name-storage";
 import { AppSettings, IdeaLanguage } from "@/lib/types";
 
 type PromptResponse = {
@@ -40,6 +50,17 @@ type ApplyResponse = {
 };
 
 const DRAFT_KEY = "shorts-maker:instagram:ideas:draft:v1";
+const JLPT_LEVEL_OPTIONS = ["N5", "N4", "N3", "N2", "N1"] as const;
+
+function formatJlptLevelRange(levels: string[]): string {
+  const selected = JLPT_LEVEL_OPTIONS.filter((level) => levels.includes(level));
+  return selected.length > 0 ? selected.join("~") : "N5~N4";
+}
+
+function formatJlptHashtags(levels: string[]): string {
+  const selected = JLPT_LEVEL_OPTIONS.filter((level) => levels.includes(level));
+  return selected.map((level) => `#JLPT${level}`).join(" ") || "#JLPTN5 #JLPTN4";
+}
 
 function normalizeLanguage(value: string): IdeaLanguage {
   if (value === "en" || value === "ja" || value === "es" || value === "hi") {
@@ -65,11 +86,44 @@ function isInstagramUploadCompletedStatus(status: string): boolean {
   return normalized === "업로드완료";
 }
 
+function uniqueHeaders(headers: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  headers.forEach((header) => {
+    const value = String(header || "").trim();
+    if (!value) return;
+    const normalized = value.toLowerCase().replace(/[\s_-]+/g, "");
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    output.push(value);
+  });
+  return output;
+}
+
+function isSentenceReadingPromptTemplate(value: string): boolean {
+  const text = String(value || "");
+  return (
+    text.includes("일기형 인스타그램 카드 세트") &&
+    text.includes("audioScript") &&
+    text.includes("rubyFrontLines") &&
+    text.includes("bilingualFront") &&
+    text.includes("kanjiGlossary")
+  );
+}
+
+function isQuizPromptTemplate(value: string): boolean {
+  const text = String(value || "");
+  return text.includes("일본어 학습 데이터를 생성") && text.includes("example_1_title");
+}
+
 export function InstagramIdeasClient(): React.JSX.Element {
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState("5");
   const [language, setLanguage] = useState<IdeaLanguage>("ja");
+  const [ideaMode, setIdeaMode] = useState<InstagramIdeaPromptMode>("default");
+  const [sentenceReadingJlptLevels, setSentenceReadingJlptLevels] = useState<string[]>(["N5", "N4"]);
   const [sheetName, setSheetName] = useState("");
+  const [settingsSheetName, setSettingsSheetName] = useState("");
   const [spreadsheetId, setSpreadsheetId] = useState("");
 
   const [loadingSheet, setLoadingSheet] = useState(false);
@@ -79,6 +133,7 @@ export function InstagramIdeasClient(): React.JSX.Element {
 
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
+  const [nextActionState, setNextActionState] = useState<"generated" | "applied">();
 
   const [sheetHeaders, setSheetHeaders] = useState<string[]>([]);
   const [sheetRows, setSheetRows] = useState<Record<string, string>[]>([]);
@@ -94,6 +149,10 @@ export function InstagramIdeasClient(): React.JSX.Element {
   const [selectedPreviewKeys, setSelectedPreviewKeys] = useState<string[]>([]);
 
   const promptKeys = useMemo(() => extractPromptVariables(promptTemplate), [promptTemplate]);
+  const recommendedHeaders = useMemo(
+    () => uniqueHeaders(ideaMode === "sentence_reading" ? INSTAGRAM_SENTENCE_READING_SHEET_HEADERS : INSTAGRAM_IDEA_SHEET_HEADERS),
+    [ideaMode]
+  );
   const previewHeaders = useMemo(() => {
     if (generatedHeaders.length > 0) return generatedHeaders;
     const seen = new Set<string>();
@@ -114,6 +173,14 @@ export function InstagramIdeasClient(): React.JSX.Element {
   );
   const allPreviewSelected =
     allPreviewKeys.length > 0 && allPreviewKeys.every((key) => selectedPreviewKeys.includes(key));
+  const sentenceReadingJlptLabel = useMemo(
+    () => formatJlptLevelRange(sentenceReadingJlptLevels),
+    [sentenceReadingJlptLevels]
+  );
+  const sentenceReadingJlptHashtags = useMemo(
+    () => formatJlptHashtags(sentenceReadingJlptLevels),
+    [sentenceReadingJlptLevels]
+  );
 
   const sheetShortcutUrl = useMemo(() => {
     const id = spreadsheetId.trim();
@@ -134,13 +201,29 @@ export function InstagramIdeasClient(): React.JSX.Element {
         topic?: string;
         count?: string;
         language?: IdeaLanguage;
+        ideaMode?: InstagramIdeaPromptMode;
+        sentenceReadingJlptLevels?: string[];
         sheetName?: string;
         promptVariables?: Record<string, string>;
       };
       if (typeof parsed.topic === "string") setTopic(parsed.topic);
       if (typeof parsed.count === "string" && parsed.count) setCount(parsed.count);
-      if (typeof parsed.sheetName === "string") setSheetName(parsed.sheetName);
+      if (typeof parsed.sheetName === "string") {
+        setSheetName(parsed.sheetName);
+        if (!readInstagramLastSheetName()) {
+          saveInstagramLastSheetName(parsed.sheetName);
+        }
+      }
       if (parsed.language) setLanguage(normalizeLanguage(parsed.language));
+      if (parsed.ideaMode === "sentence_reading" || parsed.ideaMode === "default") {
+        setIdeaMode(parsed.ideaMode);
+      }
+      if (Array.isArray(parsed.sentenceReadingJlptLevels)) {
+        const levels = JLPT_LEVEL_OPTIONS.filter((level) => parsed.sentenceReadingJlptLevels?.includes(level));
+        if (levels.length > 0) {
+          setSentenceReadingJlptLevels(levels);
+        }
+      }
       if (parsed.promptVariables && typeof parsed.promptVariables === "object") {
         setPromptVariables(parsed.promptVariables);
       }
@@ -156,11 +239,13 @@ export function InstagramIdeasClient(): React.JSX.Element {
         topic,
         count,
         language,
+        ideaMode,
+        sentenceReadingJlptLevels,
         sheetName,
         promptVariables
       })
     );
-  }, [topic, count, language, sheetName, promptVariables]);
+  }, [topic, count, language, ideaMode, sentenceReadingJlptLevels, sheetName, promptVariables]);
 
   useEffect(() => {
     const load = async () => {
@@ -174,11 +259,11 @@ export function InstagramIdeasClient(): React.JSX.Element {
         if (settingsRes.ok) {
           const settings = (await settingsRes.json()) as AppSettings;
           setSpreadsheetId(String(settings.gsheetSpreadsheetId || ""));
-          preferredSheetName =
-            String(settings.gsheetInstagramSheetName || "").trim() ||
-            String(settings.gsheetSheetName || "").trim();
+          const settingsResolvedSheetName = resolveInstagramSettingsSheetName(settings);
+          setSettingsSheetName(settingsResolvedSheetName);
+          preferredSheetName = resolveInstagramPreferredSheetName(settingsResolvedSheetName);
           if (preferredSheetName) {
-            setSheetName((prev) => (prev.trim() ? prev : preferredSheetName));
+            setSheetName(preferredSheetName);
           }
         }
 
@@ -198,6 +283,28 @@ export function InstagramIdeasClient(): React.JSX.Element {
     void load();
   }, []);
 
+  useEffect(() => {
+    if (
+      ideaMode === "sentence_reading" &&
+      !isSentenceReadingPromptTemplate(promptTemplate) &&
+      isQuizPromptTemplate(promptTemplate)
+    ) {
+      setPromptTemplate(INSTAGRAM_SENTENCE_READING_IDEA_PROMPT);
+    }
+  }, [ideaMode, promptTemplate]);
+
+  useEffect(() => {
+    if (ideaMode !== "sentence_reading") {
+      return;
+    }
+    setPromptVariables((prev) => ({
+      ...prev,
+      num: sentenceReadingJlptLabel,
+      jlptLevels: sentenceReadingJlptLabel,
+      jlptHashtags: sentenceReadingJlptHashtags
+    }));
+  }, [ideaMode, sentenceReadingJlptHashtags, sentenceReadingJlptLabel]);
+
   async function refreshSheetTable(overrideSheetName?: string): Promise<void> {
     setLoadingSheet(true);
     setError(undefined);
@@ -213,8 +320,13 @@ export function InstagramIdeasClient(): React.JSX.Element {
       if (!response.ok) {
         throw new Error(data.error || "시트 조회에 실패했습니다.");
       }
-      setSheetHeaders(data.headers || []);
+      setSheetHeaders(uniqueHeaders(data.headers || []));
       setSheetRows(data.rows || []);
+      const resolvedSheetName = String(data.sheetName || effectiveSheetName || "").trim();
+      if (resolvedSheetName) {
+        setSheetName(resolvedSheetName);
+        saveInstagramLastSheetName(resolvedSheetName);
+      }
       setSuccess(`시트 '${data.sheetName}'을(를) 불러왔습니다.`);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "시트 조회에 실패했습니다.");
@@ -251,6 +363,10 @@ export function InstagramIdeasClient(): React.JSX.Element {
     setError(undefined);
     setSuccess(undefined);
     try {
+      const templateForRequest =
+        ideaMode === "sentence_reading" && !isSentenceReadingPromptTemplate(promptTemplate)
+          ? INSTAGRAM_SENTENCE_READING_IDEA_PROMPT
+          : promptTemplate;
       const response = await fetch("/api/instagram/ideas/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -260,8 +376,17 @@ export function InstagramIdeasClient(): React.JSX.Element {
           sheetName: sheetName.trim() || undefined,
           idBase: topic.trim() || undefined,
           language,
-          template: promptTemplate,
-          variables: promptVariables
+          mode: ideaMode,
+          template: templateForRequest,
+          variables:
+            ideaMode === "sentence_reading"
+              ? {
+                  ...promptVariables,
+                  num: sentenceReadingJlptLabel,
+                  jlptLevels: sentenceReadingJlptLabel,
+                  jlptHashtags: sentenceReadingJlptHashtags
+                }
+              : promptVariables
         })
       });
       const data = (await response.json()) as GenerateResponse;
@@ -270,13 +395,15 @@ export function InstagramIdeasClient(): React.JSX.Element {
       }
       const items = data.items || [];
       setGeneratedRows(items);
-      setGeneratedHeaders(data.headers || []);
+      setGeneratedHeaders(uniqueHeaders(data.headers || []));
       setSelectedPreviewKeys(items.map((_, index) => `row-${index}`));
+      setNextActionState("generated");
       setSuccess(`${items.length}개 아이디어를 생성했습니다.`);
     } catch (generateError) {
       setGeneratedRows([]);
       setGeneratedHeaders([]);
       setSelectedPreviewKeys([]);
+      setNextActionState(undefined);
       setError(generateError instanceof Error ? generateError.message : "인스타 아이디어 생성에 실패했습니다.");
     } finally {
       setGenerating(false);
@@ -298,6 +425,7 @@ export function InstagramIdeasClient(): React.JSX.Element {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sheetName: sheetName.trim() || undefined,
+          mode: ideaMode,
           items: rowsToApply
         })
       });
@@ -306,6 +434,7 @@ export function InstagramIdeasClient(): React.JSX.Element {
         throw new Error(data.error || "시트 반영에 실패했습니다.");
       }
       setSuccess(`${data.inserted}개 row를 '${data.sheetName}' 시트에 반영했습니다.`);
+      setNextActionState("applied");
       setGeneratedRows((prev) => prev.filter((_, index) => !selectedSet.has(`row-${index}`)));
       setSelectedPreviewKeys([]);
       await refreshSheetTable();
@@ -323,6 +452,14 @@ export function InstagramIdeasClient(): React.JSX.Element {
     }));
   }
 
+  function toggleSentenceReadingJlptLevel(level: string): void {
+    setSentenceReadingJlptLevels((prev) => {
+      const next = prev.includes(level) ? prev.filter((item) => item !== level) : [...prev, level];
+      const normalized = JLPT_LEVEL_OPTIONS.filter((item) => next.includes(item));
+      return normalized.length > 0 ? normalized : [level];
+    });
+  }
+
   function togglePreviewRow(key: string, checked: boolean): void {
     setSelectedPreviewKeys((prev) => {
       if (checked) {
@@ -335,11 +472,32 @@ export function InstagramIdeasClient(): React.JSX.Element {
 
   async function copyRecommendedHeaders(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(INSTAGRAM_IDEA_SHEET_HEADERS.join("\t"));
+      await navigator.clipboard.writeText(recommendedHeaders.join("\t"));
       setSuccess("권장 헤더를 복사했습니다. Google Sheet 1행에 붙여넣어 주세요.");
     } catch {
       setError("헤더 복사에 실패했습니다. 브라우저 클립보드 권한을 확인해 주세요.");
     }
+  }
+
+  function applyIdeaMode(nextMode: InstagramIdeaPromptMode): void {
+    setIdeaMode(nextMode);
+    if (nextMode === "sentence_reading") {
+      setPromptTemplate(INSTAGRAM_SENTENCE_READING_IDEA_PROMPT);
+      setPromptVariables((prev) => ({ ...prev, num: sentenceReadingJlptLabel, jlptLevels: sentenceReadingJlptLabel }));
+      return;
+    }
+    setPromptTemplate(INSTAGRAM_IDEA_DEFAULT_PROMPT);
+  }
+
+  function updateSheetName(value: string): void {
+    setSheetName(value);
+    saveInstagramLastSheetName(value);
+  }
+
+  function resetSheetNameToSettings(): string {
+    const nextSheetName = saveInstagramLastSheetName(settingsSheetName);
+    setSheetName(nextSheetName);
+    return nextSheetName;
   }
 
   return (
@@ -352,7 +510,19 @@ export function InstagramIdeasClient(): React.JSX.Element {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),140px,160px,minmax(0,1fr)]">
+          <div className="grid gap-3 md:grid-cols-[180px,minmax(0,1fr),140px,160px,minmax(0,1fr)]">
+            <div className="space-y-2">
+              <Label>아이디어 유형</Label>
+              <Select value={ideaMode} onValueChange={(value) => applyIdeaMode(value === "sentence_reading" ? "sentence_reading" : "default")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">일본어 예문</SelectItem>
+                  <SelectItem value="sentence_reading">문장 읽기</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-2">
               <Label htmlFor="ig-ideas-topic">요청 기준</Label>
               <Input
@@ -397,18 +567,68 @@ export function InstagramIdeasClient(): React.JSX.Element {
               <Input
                 id="ig-ideas-sheet-name"
                 value={sheetName}
-                onChange={(event) => setSheetName(event.target.value)}
+                onChange={(event) => updateSheetName(event.target.value)}
                 placeholder="비우면 Settings의 Instagram Sheet Name"
               />
             </div>
           </div>
 
+          {ideaMode === "sentence_reading" ? (
+            <div className="rounded-lg border bg-muted/10 p-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">문장 읽기 JLPT 급수</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    선택한 급수 기준으로 어휘/문법 난이도를 제한하고, 제목/캡션의 JLPT 표기도 함께 맞춥니다.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {JLPT_LEVEL_OPTIONS.map((level) => {
+                    const selected = sentenceReadingJlptLevels.includes(level);
+                    return (
+                      <button
+                        key={level}
+                        type="button"
+                        onClick={() => toggleSentenceReadingJlptLevel(level)}
+                        className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition-colors ${
+                          selected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-background hover:bg-accent"
+                        }`}
+                        aria-pressed={selected}
+                      >
+                        {level}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-muted-foreground lg:grid-cols-3">
+                <div className="rounded-md border bg-background p-2">
+                  <p className="font-semibold text-foreground">카드 상단 제목</p>
+                  <p className="mt-1">오늘의 일본어 일기｜날씨 좋은 날, 직장인 현지인 느낌</p>
+                </div>
+                <div className="rounded-md border bg-background p-2">
+                  <p className="font-semibold text-foreground">업로드 제목</p>
+                  <p className="mt-1">JLPT {sentenceReadingJlptLabel} 일본어 일기｜날씨 좋은 날의 직장인 하루</p>
+                </div>
+                <div className="rounded-md border bg-background p-2">
+                  <p className="font-semibold text-foreground">설명 시작</p>
+                  <p className="mt-1">JLPT {sentenceReadingJlptLabel} 수준의 일본어 읽기 콘텐츠입니다.</p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap gap-2">
             <Button type="button" onClick={() => void generateIdeas()} disabled={generating || !topic.trim()}>
               {generating ? "생성 중..." : "생성"}
             </Button>
-            <Button type="button" variant="outline" onClick={() => void refreshSheetTable()} disabled={loadingSheet}>
-              {loadingSheet ? "불러오는 중..." : "시트 새로고침"}
+            <Button type="button" variant="outline" onClick={() => void refreshSheetTable(sheetName)} disabled={loadingSheet}>
+              {loadingSheet ? "불러오는 중..." : "시트 불러오기"}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => void refreshSheetTable(resetSheetNameToSettings())} disabled={loadingSheet}>
+              설정값 새로고침
             </Button>
             <Button type="button" variant="outline" onClick={() => setPromptEditorOpen((prev) => !prev)}>
               {promptEditorOpen ? "프롬프트 닫기" : "프롬프트 보기/수정"}
@@ -422,10 +642,17 @@ export function InstagramIdeasClient(): React.JSX.Element {
                 <div className="flex gap-2">
                   <Button
                     type="button"
-                    variant="outline"
-                    onClick={() => setPromptTemplate(INSTAGRAM_IDEA_DEFAULT_PROMPT)}
+                    variant={ideaMode === "sentence_reading" ? "default" : "outline"}
+                    onClick={() => applyIdeaMode("sentence_reading")}
                   >
-                    디폴트로 복원
+                    문장 읽기 프롬프트
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => applyIdeaMode("default")}
+                  >
+                    예문 프롬프트
                   </Button>
                   <Button type="button" onClick={() => void savePromptTemplate()} disabled={savingPrompt}>
                     {savingPrompt ? "저장 중..." : "프롬프트 저장"}
@@ -468,6 +695,43 @@ export function InstagramIdeasClient(): React.JSX.Element {
         </CardContent>
       </Card>
 
+      {nextActionState ? (
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0 space-y-1">
+              <p className="flex items-center gap-2 text-sm font-semibold text-primary">
+                <CheckCircle2 className="h-4 w-4" />
+                {nextActionState === "applied"
+                  ? "시트에 반영됐습니다. 방금 만든 아이디어로 피드를 작성해볼까요?"
+                  : "아이디어가 준비됐습니다. 다음 단계로 이어가볼까요?"}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {nextActionState === "applied"
+                  ? "피드 탭에서 방금 추가한 준비 row를 선택하고 템플릿을 적용해 컨테이너를 만들 수 있습니다."
+                  : "선택한 아이디어를 시트에 반영하면 피드 탭에서 바로 카드 컨테이너 생성으로 이어집니다."}
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {nextActionState === "generated" ? (
+                <Button
+                  type="button"
+                  onClick={() => void applyToSheet()}
+                  disabled={selectedPreviewKeys.length === 0 || applying}
+                >
+                  {applying ? "반영 중..." : `선택 아이디어 시트에 반영 (${selectedPreviewKeys.length})`}
+                </Button>
+              ) : null}
+              <Button type="button" variant={nextActionState === "applied" ? "default" : "outline"} asChild>
+                <Link href="/instagram/feed">
+                  피드 작성으로 이동
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -505,8 +769,8 @@ export function InstagramIdeasClient(): React.JSX.Element {
                         aria-label="전체 선택"
                       />
                     </th>
-                    {previewHeaders.map((header) => (
-                      <th key={`ig-preview-head-${header}`} className="px-3 py-2 text-left font-medium">
+                    {previewHeaders.map((header, headerIndex) => (
+                      <th key={`ig-preview-head-${headerIndex}-${header}`} className="px-3 py-2 text-left font-medium">
                         {header}
                       </th>
                     ))}
@@ -526,8 +790,8 @@ export function InstagramIdeasClient(): React.JSX.Element {
                             aria-label={`${index + 1}행 선택`}
                           />
                         </td>
-                        {previewHeaders.map((header) => (
-                          <td key={`ig-preview-cell-${rowKey}-${header}`} className="px-3 py-2 whitespace-pre-wrap break-words">
+                        {previewHeaders.map((header, headerIndex) => (
+                          <td key={`ig-preview-cell-${rowKey}-${headerIndex}-${header}`} className="px-3 py-2 whitespace-pre-wrap break-words">
                             {getCellValue(row, header)}
                           </td>
                         ))}
@@ -585,8 +849,8 @@ export function InstagramIdeasClient(): React.JSX.Element {
               <table className="min-w-full text-sm">
                 <thead className="sticky top-0 bg-muted/50">
                   <tr>
-                    {sheetHeaders.map((header) => (
-                      <th key={`ig-sheet-head-${header}`} className="px-3 py-2 text-left font-medium">
+                    {sheetHeaders.map((header, headerIndex) => (
+                      <th key={`ig-sheet-head-${headerIndex}-${header}`} className="px-3 py-2 text-left font-medium">
                         {header}
                       </th>
                     ))}
@@ -602,8 +866,8 @@ export function InstagramIdeasClient(): React.JSX.Element {
                   ) : (
                     visibleSheetRows.map((row, rowIndex) => (
                     <tr key={`ig-sheet-row-${rowIndex}`} className="border-t align-top">
-                      {sheetHeaders.map((header) => (
-                        <td key={`ig-sheet-cell-${rowIndex}-${header}`} className="px-3 py-2 whitespace-pre-wrap break-words">
+                      {sheetHeaders.map((header, headerIndex) => (
+                        <td key={`ig-sheet-cell-${rowIndex}-${headerIndex}-${header}`} className="px-3 py-2 whitespace-pre-wrap break-words">
                           {row[header] || ""}
                         </td>
                       ))}

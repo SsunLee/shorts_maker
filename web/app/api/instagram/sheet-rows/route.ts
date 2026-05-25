@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 import { getSettings } from "@/lib/settings-store";
 import { loadIdeasSheetTable } from "@/lib/ideas-sheet";
+import { deleteInstagramSheetRows } from "@/lib/instagram-sheet";
 
 export const runtime = "nodejs";
 
@@ -111,6 +112,34 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to fetch instagram sheet rows";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
+export async function DELETE(request: NextRequest): Promise<NextResponse> {
+  try {
+    const userId = await getAuthenticatedUserId();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const payload = (await request.json().catch(() => ({}))) as {
+      rowIds?: unknown;
+      sheetName?: unknown;
+    };
+    const rowIds = Array.isArray(payload.rowIds)
+      ? payload.rowIds.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const sheetName = String(payload.sheetName || "").trim() || undefined;
+    const result = await deleteInstagramSheetRows({
+      userId,
+      sheetName,
+      rowIds
+    });
+
+    return NextResponse.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to delete instagram sheet rows";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

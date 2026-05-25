@@ -184,9 +184,20 @@ def mux_video_audio(
         audio_path = assets_dir / f"source-audio{audio_ext}"
         _download_to_path(payload.audioPath, audio_path)
 
+        bgm_path = None
+        if payload.bgmPath:
+            bgm_ext = Path(urlparse(payload.bgmPath).path).suffix or ".mp3"
+            bgm_path = assets_dir / f"source-bgm{bgm_ext}"
+            _download_to_path(payload.bgmPath, bgm_path)
+
         output_path, ffmpeg_steps = mux_video_with_audio(
             video_path=video_path,
             audio_path=audio_path,
+            bgm_path=bgm_path,
+            audio_volume=payload.audioVolume,
+            bgm_volume=payload.bgmVolume,
+            mix_with_video_audio=payload.mixWithVideoAudio,
+            video_audio_volume=payload.videoAudioVolume,
             output_dir=job_dir,
             duration_sec=payload.durationSec,
         )

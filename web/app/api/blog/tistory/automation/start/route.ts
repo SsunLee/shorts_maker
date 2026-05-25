@@ -51,6 +51,26 @@ function quotePowerShellString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function canRunLocalBrowserAutomation(): boolean {
+  if (process.env.BLOG_TISTORY_AUTOMATION_FORCE_LOCAL === "1") {
+    return true;
+  }
+
+  if (process.platform === "win32") {
+    return Boolean(process.env.USERPROFILE || process.env.LOCALAPPDATA);
+  }
+
+  if (process.platform === "darwin") {
+    return Boolean(process.env.HOME);
+  }
+
+  if (process.platform === "linux") {
+    return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+  }
+
+  return false;
+}
+
 async function isTistoryChromeProfileInUse(): Promise<boolean> {
   if (process.platform !== "win32") {
     return false;
@@ -110,9 +130,9 @@ async function readStatus(): Promise<Record<string, unknown> | undefined> {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    if (process.env.VERCEL) {
+    if (!canRunLocalBrowserAutomation()) {
       return NextResponse.json(
-        { error: "티스토리 UI 자동화는 로컬 PC에서만 실행할 수 있습니다." },
+        { error: "티스토리 UI 자동화는 Chrome을 열 수 있는 PC 데스크톱 환경에서 실행할 수 있습니다." },
         { status: 400 }
       );
     }

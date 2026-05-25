@@ -3,11 +3,13 @@ import { z } from "zod";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 import { getSettings } from "@/lib/settings-store";
 import { appendInstagramIdeasToSheet } from "@/lib/instagram-sheet";
+import { INSTAGRAM_SENTENCE_READING_SHEET_HEADERS } from "@/lib/instagram-ideas-prompt";
 
 export const runtime = "nodejs";
 
 const schema = z.object({
   sheetName: z.string().optional(),
+  mode: z.enum(["default", "sentence_reading"]).optional(),
   items: z.array(z.record(z.string(), z.string())).min(1).max(50)
 });
 
@@ -29,7 +31,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const appended = await appendInstagramIdeasToSheet({
       sheetName: resolvedSheetName,
       items: payload.items,
-      userId
+      userId,
+      preferredHeaders:
+        payload.mode === "sentence_reading" ? INSTAGRAM_SENTENCE_READING_SHEET_HEADERS : undefined
     });
 
     return NextResponse.json({

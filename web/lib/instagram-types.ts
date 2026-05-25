@@ -1,5 +1,5 @@
 export type InstagramElementType = "text" | "shape" | "image" | "video";
-export type InstagramTemplateMode = "general" | "news";
+export type InstagramTemplateMode = "general" | "news" | "sentence_reading";
 export type InstagramAiImageOrientation = "vertical" | "horizontal";
 export type InstagramShapeType =
   | "rectangle"
@@ -53,6 +53,8 @@ export interface InstagramTextElement extends InstagramElementBase {
   fontSize: number;
   lineHeight: number;
   letterSpacing: number;
+  rubyGap?: number;
+  textOffsetY?: number;
   textAlign: InstagramTextAlign;
   bold: boolean;
   italic: boolean;
@@ -153,6 +155,9 @@ export interface InstagramTemplate {
   mode: InstagramTemplateMode;
   sourceTitle: string;
   sourceTopic: string;
+  bgmEnabled?: boolean;
+  bgmUrl?: string;
+  bgmVolume?: number;
   hashtags?: string[];
   hashtagSourceFields?: string[];
   captionSourceFields?: string[];
@@ -178,6 +183,17 @@ export interface InstagramGeneratedFeedItem {
   rowId: string;
   subject: string;
   keyword: string;
+  templateMode?: InstagramTemplateMode;
+  bgmEnabled?: boolean;
+  bgmUrl?: string;
+  bgmVolume?: number;
+  captionSourceFields?: string[];
+  hashtagSourceFields?: string[];
+  canvasPreset?: string;
+  canvasWidth?: number;
+  canvasHeight?: number;
+  pageDurationSec?: number;
+  customFonts?: InstagramCustomFont[];
   caption?: string;
   hashtags?: string[];
   generatedAt: string;

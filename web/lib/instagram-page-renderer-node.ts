@@ -57,6 +57,24 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
 }
 
+function buildNodeFontFamilyStack(fontFamily: string): string {
+  const primary = String(fontFamily || "").trim();
+  if (primary.toLowerCase() === "nanum pen script") {
+    return [
+      "Nanum Pen Script",
+      "Gaegu",
+      "Kyobo Handwriting 2019",
+      "Segoe Print",
+      "Brush Script MT",
+      "Apple Chancery",
+      "cursive"
+    ]
+      .map((family) => (family === "cursive" ? family : `"${family}"`))
+      .join(", ");
+  }
+  return primary || "sans-serif";
+}
+
 function resolveSampleDataValueByKey(sampleData: Record<string, string>, key: string): string | undefined {
   const normalizedKey = String(key || "").trim();
   if (!normalizedKey) {
@@ -426,7 +444,7 @@ export async function renderInstagramPageToPngDataUrlNode(args: {
     const maxTextWidth = Math.max(10, width - padding * 2);
     const fontStyle = textLayer.italic ? "italic " : "";
     const fontWeight = textLayer.bold ? 600 : 400;
-    ctx.font = `${fontStyle}${fontWeight} ${Math.max(8, textLayer.fontSize)}px ${String(textLayer.fontFamily || "sans-serif")}`;
+    ctx.font = `${fontStyle}${fontWeight} ${Math.max(8, textLayer.fontSize)}px ${buildNodeFontFamilyStack(textLayer.fontFamily)}`;
     ctx.textBaseline = "top";
     ctx.fillStyle = normalizeHex(textLayer.color, "#111111");
     ctx.textAlign = textLayer.textAlign === "left" || textLayer.textAlign === "right" ? textLayer.textAlign : "center";
@@ -437,7 +455,8 @@ export async function renderInstagramPageToPngDataUrlNode(args: {
     const textHeight = Math.max(lineHeightPx, lines.length * lineHeightPx);
     const verticalInset = Math.max(2, Math.round(baseFontSize * 0.12));
     const availableHeight = Math.max(0, height - verticalInset * 2);
-    const textBlockTop = top + verticalInset + Math.max(0, (availableHeight - textHeight) / 2);
+    const textOffsetY = clamp(Number(textLayer.textOffsetY), -120, 120, 0);
+    const textBlockTop = top + verticalInset + Math.max(0, (availableHeight - textHeight) / 2) + textOffsetY;
     const textX =
       textLayer.textAlign === "left"
         ? left + padding

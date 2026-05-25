@@ -555,6 +555,11 @@ export async function muxVideoAudioWithEngine(
     jobId: string;
     videoPath: string;
     audioPath: string;
+    bgmPath?: string;
+    audioVolume?: number;
+    bgmVolume?: number;
+    mixWithVideoAudio?: boolean;
+    videoAudioVolume?: number;
     durationSec?: number;
   },
   userId?: string
@@ -573,6 +578,11 @@ export async function muxVideoAudioWithEngine(
         jobId: asText(args.jobId, "job"),
         videoPath: await toEngineReadableAsset(args.videoPath, { preferLocalPath }),
         audioPath: await toEngineReadableAsset(args.audioPath, { preferLocalPath }),
+        bgmPath: args.bgmPath ? await toEngineReadableAsset(args.bgmPath, { preferLocalPath }) : undefined,
+        audioVolume: args.audioVolume,
+        bgmVolume: args.bgmVolume,
+        mixWithVideoAudio: args.mixWithVideoAudio,
+        videoAudioVolume: args.videoAudioVolume,
         durationSec: args.durationSec
       };
       const response = await muxVideoAudioAtEndpoint({

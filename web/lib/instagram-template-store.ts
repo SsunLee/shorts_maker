@@ -273,6 +273,8 @@ function normalizeElement(element: Partial<InstagramPageElement>, index = 0): In
       fontSize: clamp(Number(element.fontSize), 8, 144, 36),
       lineHeight: clamp(Number(element.lineHeight), 0.8, 3, 1.2),
       letterSpacing: clamp(Number(element.letterSpacing), -2, 20, 0),
+      rubyGap: clamp(Number((element as { rubyGap?: number }).rubyGap), 0, 32, 6),
+      textOffsetY: clamp(Number((element as { textOffsetY?: number }).textOffsetY), -120, 120, 0),
       textAlign:
         element.textAlign === "left" || element.textAlign === "right" ? element.textAlign : "center",
       bold: Boolean(element.bold),

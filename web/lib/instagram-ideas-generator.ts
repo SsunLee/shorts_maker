@@ -22,7 +22,10 @@ function normalizeRecord(record: unknown): Record<string, string> | null {
   const source = record as Record<string, unknown>;
   const output: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
-    output[String(key)] = String(value ?? "").trim();
+    output[String(key)] =
+      value && typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value ?? "").trim();
   }
   output.status = "준비";
   const normalizedType = String(
@@ -50,10 +53,13 @@ function normalizeHeaderKey(value: string): string {
     .replace(/[\s_-]+/g, "");
 }
 
-function headersFromRows(rows: Record<string, string>[]): string[] {
+function headersFromRows(
+  rows: Record<string, string>[],
+  preferredHeaders: readonly string[] = INSTAGRAM_IDEA_SHEET_HEADERS
+): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
-  const preferred = [...INSTAGRAM_IDEA_SHEET_HEADERS];
+  const preferred = [...preferredHeaders];
 
   preferred.forEach((key) => {
     seen.add(normalizeHeaderKey(key));
@@ -114,6 +120,7 @@ export async function generateInstagramIdeaRows(args: {
   count: number;
   language: IdeaLanguage;
   userId?: string;
+  preferredHeaders?: readonly string[];
 }): Promise<{ headers: string[]; rows: Record<string, string>[] }> {
   const provider = await resolveProviderForTask("text", args.userId);
   const rows = await requestRows(provider, args.prompt, args.userId);
@@ -121,6 +128,6 @@ export async function generateInstagramIdeaRows(args: {
     throw new Error(`${languageLabel(args.language)} 결과가 비어 있습니다. 프롬프트를 확인 후 다시 시도해 주세요.`);
   }
   const limited = rows.slice(0, Math.max(1, Math.min(10, Math.floor(args.count))));
-  const headers = headersFromRows(limited);
+  const headers = headersFromRows(limited, args.preferredHeaders || INSTAGRAM_IDEA_SHEET_HEADERS);
   return { headers, rows: limited };
 }
