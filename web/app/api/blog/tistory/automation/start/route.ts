@@ -6,6 +6,35 @@ import { z } from "zod";
 
 export const runtime = "nodejs";
 
+const allowedBrowserOrigins = [
+  /^https:\/\/shorts-maker-icux(?:-[a-z0-9-]+)?\.vercel\.app$/i,
+  /^https:\/\/shorts-maker-icux\.vercel\.app$/i,
+  /^http:\/\/localhost(?::\d+)?$/i,
+  /^http:\/\/127\.0\.0\.1(?::\d+)?$/i
+];
+
+function corsHeaders(request: NextRequest): HeadersInit {
+  const origin = request.headers.get("origin") || "";
+  const allowOrigin = allowedBrowserOrigins.some((pattern) => pattern.test(origin)) ? origin : "";
+  return {
+    ...(allowOrigin ? { "Access-Control-Allow-Origin": allowOrigin } : {}),
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Private-Network": "true",
+    Vary: "Origin"
+  };
+}
+
+function json(request: NextRequest, body: unknown, init?: ResponseInit): NextResponse {
+  return NextResponse.json(body, {
+    ...init,
+    headers: {
+      ...corsHeaders(request),
+      ...(init?.headers || {})
+    }
+  });
+}
+
 const postSchema = z.object({
   body: z.string().min(1),
   category: z.string().optional(),
@@ -131,7 +160,8 @@ async function readStatus(): Promise<Record<string, unknown> | undefined> {
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     if (!canRunLocalBrowserAutomation()) {
-      return NextResponse.json(
+      return json(
+        request,
         { error: "티스토리 UI 자동화는 Chrome을 열 수 있는 PC 데스크톱 환경에서 실행할 수 있습니다." },
         { status: 400 }
       );
@@ -149,7 +179,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           }
         ];
     if (payload.mode === "prepare" && posts.length > 1) {
-      return NextResponse.json(
+      return json(
+        request,
         { error: "입력 후 검수 모드는 다건 연속 자동화에 사용할 수 없습니다. 임시저장 또는 공개 발행까지 모드를 선택해 주세요." },
         { status: 400 }
       );
@@ -158,13 +189,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const current = await readStatus();
     if (current?.state === "running") {
-      return NextResponse.json(
+      return json(
+        request,
         { error: "이미 실행 중인 티스토리 자동화가 있습니다. 완료 후 다시 시도해 주세요." },
         { status: 409 }
       );
     }
     if (await isTistoryChromeProfileInUse()) {
-      return NextResponse.json(
+      return json(
+        request,
         {
           error:
             "티스토리 자동화 Chrome 프로필이 이미 열려 있습니다. 자동화로 열린 Chrome 창을 닫고 다시 실행해 주세요. 일반 Chrome 창은 그대로 둬도 됩니다."
@@ -202,10 +235,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     });
     child.unref();
 
-    return NextResponse.json({ ok: true, status: await readStatus() });
+    return json(request, { ok: true, status: await readStatus() });
   } catch (error) {
     const status = error instanceof z.ZodError ? 400 : 500;
     const message = error instanceof Error ? error.message : "티스토리 자동화 시작에 실패했습니다.";
-    return NextResponse.json({ error: message }, { status });
+    return json(request, { error: message }, { status });
   }
+}
+
+export async function OPTIONS(request: NextRequest): Promise<NextResponse> {
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(request)
+  });
 }

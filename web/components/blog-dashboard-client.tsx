@@ -66,6 +66,17 @@ type StockBatchStatusFilter = "all" | BlogStockQueueStatus;
 
 const BLOG_TISTORY_PENDING_BATCH_KEY = "shorts-maker:blog-tistory-pending-batch:v1";
 const BLOG_TISTORY_FINALIZED_STATUS_KEY = "shorts-maker:blog-tistory-finalized-status:v1";
+const BLOG_TISTORY_LOCAL_AUTOMATION_BASE_KEY = "shorts-maker:blog-tistory-local-automation-base:v1";
+const TISTORY_AUTOMATION_STATUS_PATH = "/api/blog/tistory/automation/status";
+const TISTORY_AUTOMATION_START_PATH = "/api/blog/tistory/automation/start";
+const TISTORY_LOCAL_AUTOMATION_BASES = [
+  "http://127.0.0.1:3000",
+  "http://localhost:3000",
+  "http://127.0.0.1:3001",
+  "http://localhost:3001",
+  "http://127.0.0.1:3005",
+  "http://localhost:3005"
+];
 const STOCK_BATCH_MAX_COUNT = 100;
 const STOCK_BATCH_RETRY_DELAYS_MS = [2500, 6000, 12000];
 const STOCK_BATCH_STATUS_LABELS: Record<BlogStockQueueStatus, string> = {
@@ -96,6 +107,98 @@ function tryWriteLocalStorage(key: string, value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function uniqStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((item) => item.trim()).filter(Boolean)));
+}
+
+function getSavedTistoryAutomationBase(): string {
+  try {
+    return window.localStorage.getItem(BLOG_TISTORY_LOCAL_AUTOMATION_BASE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveTistoryAutomationBase(baseUrl: string): void {
+  tryWriteLocalStorage(BLOG_TISTORY_LOCAL_AUTOMATION_BASE_KEY, baseUrl);
+}
+
+function getTistoryAutomationBaseCandidates(): string[] {
+  if (typeof window === "undefined") {
+    return [""];
+  }
+  if (isLoopbackHost(window.location.hostname)) {
+    return [""];
+  }
+  return uniqStrings([getSavedTistoryAutomationBase(), ...TISTORY_LOCAL_AUTOMATION_BASES]);
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 2500): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      cache: init.cache || "no-store",
+      signal: controller.signal
+    });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function fetchTistoryAutomationStatusFromBase(baseUrl: string): Promise<TistoryAutomationStatus> {
+  const response = await fetchWithTimeout(`${baseUrl}${TISTORY_AUTOMATION_STATUS_PATH}`, { cache: "no-store" }, baseUrl ? 1800 : 8000);
+  return (await response.json().catch(() => ({}))) as TistoryAutomationStatus;
+}
+
+async function startTistoryAutomationFromAvailableBase(payload: Record<string, unknown>): Promise<{
+  baseUrl: string;
+  status?: TistoryAutomationStatus;
+}> {
+  const candidates = getTistoryAutomationBaseCandidates();
+  let lastMessage = "";
+  for (const baseUrl of candidates) {
+    try {
+      const response = await fetchWithTimeout(
+        `${baseUrl}${TISTORY_AUTOMATION_START_PATH}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        },
+        baseUrl ? 2500 : 20000
+      );
+      const result = (await response.json().catch(() => ({}))) as { error?: string; status?: TistoryAutomationStatus };
+      if (!response.ok) {
+        lastMessage = result.error || "티스토리 자동화 시작에 실패했습니다.";
+        if (!baseUrl) {
+          throw new Error(lastMessage);
+        }
+        continue;
+      }
+      if (baseUrl) {
+        saveTistoryAutomationBase(baseUrl);
+      }
+      return { baseUrl, status: result.status };
+    } catch (error) {
+      lastMessage = error instanceof Error ? error.message : "티스토리 자동화 시작에 실패했습니다.";
+      if (!baseUrl) {
+        throw error;
+      }
+    }
+  }
+  throw new Error(
+    lastMessage && !/Failed to fetch|abort/i.test(lastMessage)
+      ? lastMessage
+      : "배포 사이트에서 사용자 PC의 Chrome을 직접 열 수 없습니다. 같은 PC에서 로컬 Shorts Maker(localhost:3000/3001/3005)를 실행한 뒤 다시 시도해 주세요."
+  );
 }
 
 function readPendingTistoryBatch(): PendingTistoryBatch | undefined {
@@ -335,6 +438,7 @@ export function BlogDashboardClient(): React.JSX.Element {
   const [tistoryMode, setTistoryMode] = useState<BlogTistoryAutomationMode>("prepare");
   const [automationBusy, setAutomationBusy] = useState(false);
   const [automationStatus, setAutomationStatus] = useState<TistoryAutomationStatus>({ state: "idle", message: "실행 이력이 없습니다." });
+  const [tistoryAutomationBaseUrl, setTistoryAutomationBaseUrl] = useState("");
   const [stockBatchBusy, setStockBatchBusy] = useState(false);
   const [stockBatchCount, setStockBatchCount] = useState("1");
   const [stockBatchChunkDelaySec, setStockBatchChunkDelaySec] = useState("45");
@@ -460,8 +564,22 @@ export function BlogDashboardClient(): React.JSX.Element {
 
   async function refreshAutomationStatus(): Promise<void> {
     try {
-      const response = await fetch("/api/blog/tistory/automation/status", { cache: "no-store" });
-      const payload = (await response.json().catch(() => ({}))) as TistoryAutomationStatus;
+      const candidates = Array.from(new Set([tistoryAutomationBaseUrl, getSavedTistoryAutomationBase(), ""].map((item) => item.trim())));
+      let payload: TistoryAutomationStatus | undefined;
+      let resolvedBase = "";
+      for (const baseUrl of candidates) {
+        try {
+          payload = await fetchTistoryAutomationStatusFromBase(baseUrl);
+          resolvedBase = baseUrl;
+          break;
+        } catch {
+          // Try the next known automation endpoint.
+        }
+      }
+      if (!payload) {
+        throw new Error("자동화 상태를 가져오지 못했습니다.");
+      }
+      setTistoryAutomationBaseUrl(resolvedBase);
       setAutomationStatus(payload);
       finalizeCompletedTistoryBatch(payload);
     } catch {
@@ -482,23 +600,16 @@ export function BlogDashboardClient(): React.JSX.Element {
     window.localStorage.setItem(BLOG_TISTORY_WRITE_URL_KEY, tistoryUrl.trim());
     window.localStorage.setItem(BLOG_TISTORY_AUTOMATION_MODE_KEY, tistoryMode);
     try {
-      const response = await fetch("/api/blog/tistory/automation/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: stripLegacyBlogTemplateNotice(draft.body),
-          category: "주식",
-          mode: tistoryMode,
-          tags: draft.tags || "",
-          title: draft.title,
-          writeUrl: tistoryUrl.trim()
-        })
+      const result = await startTistoryAutomationFromAvailableBase({
+        body: stripLegacyBlogTemplateNotice(draft.body),
+        category: "주식",
+        mode: tistoryMode,
+        tags: draft.tags || "",
+        title: draft.title,
+        writeUrl: tistoryUrl.trim()
       });
-      const payload = (await response.json().catch(() => ({}))) as { error?: string; status?: TistoryAutomationStatus };
-      if (!response.ok) {
-        throw new Error(payload.error || "티스토리 자동화 시작에 실패했습니다.");
-      }
-      setAutomationStatus(payload.status || { state: "running", message: "티스토리 자동화를 시작했습니다." });
+      setTistoryAutomationBaseUrl(result.baseUrl);
+      setAutomationStatus(result.status || { state: "running", message: "티스토리 자동화를 시작했습니다." });
     } catch (error) {
       setAutomationStatus({ state: "error", message: error instanceof Error ? error.message : "티스토리 자동화 시작에 실패했습니다." });
     } finally {
@@ -535,20 +646,13 @@ export function BlogDashboardClient(): React.JSX.Element {
     tryWriteLocalStorage(BLOG_TISTORY_WRITE_URL_KEY, tistoryUrl.trim());
     tryWriteLocalStorage(BLOG_TISTORY_AUTOMATION_MODE_KEY, tistoryMode);
     try {
-      const response = await fetch("/api/blog/tistory/automation/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          category: "주식",
-          mode: tistoryMode,
-          posts,
-          writeUrl: tistoryUrl.trim()
-        })
+      const result = await startTistoryAutomationFromAvailableBase({
+        category: "주식",
+        mode: tistoryMode,
+        posts,
+        writeUrl: tistoryUrl.trim()
       });
-      const payload = (await response.json().catch(() => ({}))) as { error?: string; status?: TistoryAutomationStatus };
-      if (!response.ok) {
-        throw new Error(payload.error || "티스토리 연속 자동화 시작에 실패했습니다.");
-      }
+      setTistoryAutomationBaseUrl(result.baseUrl);
       const now = new Date().toISOString();
       const selectedIds = new Set(tistoryBatchIdeas.map((idea) => idea.id));
       const pendingStored = writePendingTistoryBatch({
@@ -573,7 +677,7 @@ export function BlogDashboardClient(): React.JSX.Element {
           ? `${posts.length}건 연속 자동화를 요청했습니다. 발행 후 글 관리 화면에서 글쓰기 버튼으로 다음 글을 이어갑니다.`
           : `${posts.length}건 연속 자동화를 요청했습니다. 다만 브라우저 저장 공간이 부족해 완료 추적 정보는 이번 탭에서만 제한적으로 처리될 수 있습니다.`
       );
-      setAutomationStatus(payload.status || { state: "running", message: "티스토리 연속 자동화를 시작했습니다." });
+      setAutomationStatus(result.status || { state: "running", message: "티스토리 연속 자동화를 시작했습니다." });
     } catch (error) {
       setTistoryBatchMessage(error instanceof Error ? error.message : "티스토리 연속 자동화 시작에 실패했습니다.");
       setAutomationStatus({ state: "error", message: error instanceof Error ? error.message : "티스토리 연속 자동화 시작에 실패했습니다." });
@@ -1156,6 +1260,14 @@ export function BlogDashboardClient(): React.JSX.Element {
             <p className="mt-1 text-sm text-muted-foreground">
               티스토리 글쓰기 URL을 열고 현재 작성 Draft의 제목/본문/태그를 자동 입력합니다.
             </p>
+            {!isLoopbackHost(typeof window !== "undefined" ? window.location.hostname : "") ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                배포 사이트에서는 같은 PC의 로컬 Shorts Maker(localhost:3000/3001/3005)에 연결해 Chrome 자동화를 실행합니다.
+              </p>
+            ) : null}
+            {tistoryAutomationBaseUrl ? (
+              <p className="mt-1 text-xs text-emerald-500">로컬 자동화 연결: {tistoryAutomationBaseUrl}</p>
+            ) : null}
           </div>
           <Button type="button" variant="outline" size="sm" onClick={() => void refreshAutomationStatus()}>
             <RefreshCw className="mr-1 h-4 w-4" />
