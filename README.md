@@ -236,7 +236,7 @@ Content-row fetch (`/api/sheet-rows`) required columns:
 powershell -ExecutionPolicy Bypass -File scripts/vercel-prod-deploy.ps1
 ```
 
-스케줄 자동 실행은 `web/vercel.json`의 cron 설정(`*/5 * * * *`)으로
+스케줄 자동 실행은 `web/vercel.json`의 cron 설정(`0 0 * * *`)으로
 `/api/cron/automation`를 호출해 동작합니다.
 
 ### Expose local engine securely
