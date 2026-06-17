@@ -6,7 +6,7 @@ import { getAuthenticatedUserId } from "@/lib/auth-server";
 import { withReadableWorkflowMediaUrls } from "@/lib/workflow-media-url";
 
 export const runtime = "nodejs";
-export const maxDuration = 800;
+export const maxDuration = 300;
 
 const sceneSchema = z.object({
   index: z.number().int().min(1).max(12),

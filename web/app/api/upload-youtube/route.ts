@@ -7,7 +7,7 @@ import { getAuthenticatedUserId } from "@/lib/auth-server";
 import { appendAutomationLog, markAutomationYoutubeUploadComplete } from "@/lib/automation-runner";
 
 export const runtime = "nodejs";
-export const maxDuration = 800;
+export const maxDuration = 300;
 
 const schema = z.object({
   id: z.string().optional(),

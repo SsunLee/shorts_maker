@@ -4,7 +4,7 @@ import { enqueueGeneration, waitForGeneration } from "@/lib/generation-worker";
 import { getAuthenticatedUserId } from "@/lib/auth-server";
 
 export const runtime = "nodejs";
-export const maxDuration = 800;
+export const maxDuration = 300;
 
 const requestSchema = z.object({
   id: z.string().min(1).optional(),

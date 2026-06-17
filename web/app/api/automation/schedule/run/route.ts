@@ -3,8 +3,8 @@ import { getAuthenticatedUserId } from "@/lib/auth-server";
 import { runAutomationScheduleTick } from "@/lib/automation-scheduler";
 
 export const runtime = "nodejs";
-// A scheduled YouTube automation run can include idea generation, 10 images, rendering, and upload.
-export const maxDuration = 800;
+// Hobby plan cap. Longer scheduled work should be split or delegated.
+export const maxDuration = 300;
 
 export async function POST(): Promise<NextResponse> {
   const userId = await getAuthenticatedUserId();

@@ -9,7 +9,7 @@ import {
 } from "@/lib/openai-service";
 
 export const runtime = "nodejs";
-export const maxDuration = 600;
+export const maxDuration = 300;
 
 const payloadSchema = z.object({
   imageUrl: z.string().trim().min(1, "영상화할 이미지가 없습니다."),

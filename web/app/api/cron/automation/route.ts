@@ -3,8 +3,8 @@ import { runDueAutomationSchedules } from "@/lib/automation-scheduler";
 import { runDueInstagramAutomationSchedules } from "@/lib/instagram-automation-scheduler";
 
 export const runtime = "nodejs";
-// Keep cron invocation alive while the due automation run finishes.
-export const maxDuration = 800;
+// Hobby plan cap for cron-triggered serverless work.
+export const maxDuration = 300;
 
 function isAuthorizedCronRequest(request: NextRequest): boolean {
   const secret = String(process.env.CRON_SECRET || "").trim();
