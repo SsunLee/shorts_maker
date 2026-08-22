@@ -3922,6 +3922,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoSaveRequestSeqRef = useRef(0);
   const lastSavedSignatureRef = useRef("");
+  // 사용자가 실제로 편집한 적이 있는지 추적합니다.
+  // 저장 전 새 템플릿(`__new__`)은 이 값이 true 가 되기 전까지 자동 저장하지 않습니다.
+  // (초기 진입/삭제 직후 시작 템플릿이 목록에 유령처럼 되살아나는 것을 막습니다.)
+  const templateDirtyRef = useRef(false);
   const bindingAutoLoadedRef = useRef(false);
   const undoStackRef = useRef<InstagramTemplate[]>([]);
   const redoStackRef = useRef<InstagramTemplate[]>([]);
@@ -4898,6 +4902,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     updater: (current: InstagramTemplate) => InstagramTemplate,
     options?: { keepSuccess?: boolean; recordHistory?: boolean }
   ): void {
+    templateDirtyRef.current = true;
     setEditor((current) => {
       const before = deepCloneTemplate(current);
       const nextRaw = updater(deepCloneTemplate(current));
@@ -5696,6 +5701,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
 
       if (!selectedId) {
         const fresh = createTemplate();
+        templateDirtyRef.current = false;
         setSelectedTemplateId("__new__");
         clearHistory();
         setEditor(fresh);
@@ -5703,13 +5709,17 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         setSelectedElementId(fresh.pages[0].elements[0]?.id);
         lastSavedSignatureRef.current = buildAutosaveSignature(fresh);
         setAutoSaveStatus("idle");
-        setAutoSaveMessage("자동 저장 대기 중");
+        setAutoSaveMessage("저장된 템플릿이 없습니다. 편집하면 새 템플릿으로 저장됩니다.");
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem(LAST_USED_TEMPLATE_ID_KEY);
+        }
         return;
       }
 
       const picked = list.find((item) => item.id === selectedId);
       if (!picked) return;
       const cloned = normalizeTemplateForEditor(picked);
+      templateDirtyRef.current = false;
       setSelectedTemplateId(selectedId);
       clearHistory();
       setEditor(cloned);
@@ -5775,6 +5785,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       }
 
       const draftTemplate = normalizeTemplateForEditor(parsed.template);
+      templateDirtyRef.current = false;
       const targetPageId =
         parsed.focusPageId && draftTemplate.pages.some((page) => page.id === parsed.focusPageId)
           ? parsed.focusPageId
@@ -5853,6 +5864,14 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       return;
     }
     if (lastSavedSignatureRef.current === currentAutosaveSignature) {
+      return;
+    }
+    // 아직 한 번도 저장된 적 없는 시작 템플릿은 사용자가 직접 편집하기 전까지 저장하지 않습니다.
+    // 데이터 바인딩/텍스트 자동 확장 같은 내부 보정만으로 더미 템플릿이 생성되던 문제를 막습니다.
+    if (selectedTemplateId === "__new__" && !templateDirtyRef.current) {
+      lastSavedSignatureRef.current = currentAutosaveSignature;
+      setAutoSaveStatus("idle");
+      setAutoSaveMessage("새 템플릿입니다. 편집하면 자동 저장됩니다.");
       return;
     }
 
@@ -5995,6 +6014,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setBusy(true);
     setError(undefined);
     setSuccess(undefined);
+    // 예약된 자동 저장이 삭제 직후에 실행돼 같은 템플릿을 다시 만들지 않도록 취소합니다.
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    autoSaveRequestSeqRef.current += 1;
+    templateDirtyRef.current = false;
     try {
       const response = await fetch("/api/instagram/templates", {
         method: "DELETE",
@@ -6004,6 +6030,9 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       const data = (await response.json()) as TemplateResponse;
       if (!response.ok) {
         throw new Error(data.error || "템플릿 삭제에 실패했습니다.");
+      }
+      if (typeof window !== "undefined" && window.localStorage.getItem(LAST_USED_TEMPLATE_ID_KEY) === templateId) {
+        window.localStorage.removeItem(LAST_USED_TEMPLATE_ID_KEY);
       }
       setSuccess("템플릿을 삭제했습니다.");
       await fetchTemplates();
@@ -6043,6 +6072,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     setSuccess(undefined);
     if (templateId === "__new__") {
       const fresh = createTemplate();
+      templateDirtyRef.current = false;
       setSelectedTemplateId("__new__");
       clearHistory();
       setEditor(fresh);
@@ -6050,12 +6080,13 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setSelectedElementId(fresh.pages[0].elements[0]?.id);
       lastSavedSignatureRef.current = buildAutosaveSignature(fresh);
       setAutoSaveStatus("idle");
-      setAutoSaveMessage("자동 저장 대기 중");
+      setAutoSaveMessage("새 템플릿입니다. 편집하면 자동 저장됩니다.");
       return;
     }
     const picked = templates.find((item) => item.id === templateId);
     if (!picked) return;
     const cloned = normalizeTemplateForEditor(picked);
+    templateDirtyRef.current = false;
     setSelectedTemplateId(templateId);
     clearHistory();
     setEditor(cloned);
@@ -8307,6 +8338,11 @@ export function InstagramTemplatesClient(): React.JSX.Element {
           <div className="mr-1 min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               <h1 className="truncate text-lg font-bold sm:text-xl">Instagram 템플릿</h1>
+              {selectedTemplateId === "__new__" ? (
+                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-500">
+                  저장 안 된 새 템플릿
+                </span>
+              ) : null}
               {activeTemplateId === selectedTemplateId && selectedTemplateId !== "__new__" ? (
                 <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-400">
                   자동화 기본
@@ -8968,7 +9004,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
         <p className="mt-1 text-xs text-muted-foreground">다른 이름으로 저장: 현재 템플릿을 복제해서 새 템플릿으로 저장합니다.</p>
         {selectedTemplateId !== "__new__" ? (
           <p className="mt-1 text-xs text-muted-foreground">
-            자동화 기본 지정: 대시보드 자동화 실행 시 기본으로 선택되는 템플릿입니다.
+            자동화 기본 지정: [인스타그램 &gt; 피드]의 자동화 스케줄 실행 시 기본으로 선택되는 템플릿입니다.
           </p>
         ) : null}
         {isNewsMode ? (

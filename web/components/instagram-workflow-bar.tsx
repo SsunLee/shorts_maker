@@ -19,20 +19,15 @@ const WORKFLOW_STEPS = [
   {
     href: "/instagram/feed",
     label: "피드",
-    detail: "카드 작성"
-  },
-  {
-    href: "/instagram/dashboard",
-    label: "Dashboard",
-    detail: "결과 확인"
+    detail: "카드 작성 · 업로드"
   }
 ] as const;
 
 export function InstagramWorkflowBar(): React.JSX.Element {
   const pathname = usePathname();
-  const activeIndex = Math.max(
-    0,
-    WORKFLOW_STEPS.findIndex((step) => pathname === step.href || pathname.startsWith(`${step.href}/`))
+  // 워크플로우 밖의 화면(뉴스/DM 등)에서는 어떤 단계도 활성화하지 않습니다.
+  const activeIndex = WORKFLOW_STEPS.findIndex(
+    (step) => pathname === step.href || pathname.startsWith(`${step.href}/`)
   );
 
   return (

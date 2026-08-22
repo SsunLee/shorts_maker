@@ -36,7 +36,9 @@ const schema = z.object({
   metaFacebookPageId: z.string().optional(),
   metaAppId: z.string().optional(),
   metaAppSecret: z.string().optional(),
-  metaGraphVersion: z.string().optional()
+  metaGraphVersion: z.string().optional(),
+  // 스키마에 없으면 설정 저장 시 저장해 둔 인스타 아이디어 프롬프트가 함께 지워집니다.
+  instagramIdeaPromptTemplate: z.string().optional()
 });
 
 /** Retrieve saved local integration settings. */

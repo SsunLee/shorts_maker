@@ -33,8 +33,7 @@ export const MANAGED_MENU_SECTIONS: ManagedMenuSection[] = [
       { href: "/instagram/news", label: "뉴스 정보 가져오기" },
       { href: "/instagram/dm", label: "DM 자동 전송" },
       { href: "/instagram/feed", label: "피드" },
-      { href: "/instagram/reels", label: "릴스" },
-      { href: "/instagram/dashboard", label: "Dashboard" }
+      { href: "/instagram/reels", label: "릴스" }
     ]
   }
 ];
