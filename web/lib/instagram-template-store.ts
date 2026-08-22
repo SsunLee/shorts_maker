@@ -375,6 +375,7 @@ function normalizeTemplate(template: Partial<InstagramTemplate>): InstagramTempl
     pageCount,
     pages: normalizedPages.slice(0, pageCount),
     customFonts,
+    pinnedToGallery: Boolean((template as { pinnedToGallery?: boolean }).pinnedToGallery),
     updatedAt:
       typeof template.updatedAt === "string" && template.updatedAt.trim()
         ? template.updatedAt

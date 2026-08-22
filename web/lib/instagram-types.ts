@@ -168,6 +168,8 @@ export interface InstagramTemplate {
   pageCount: number;
   pages: InstagramFeedPage[];
   customFonts?: InstagramCustomFont[];
+  /** 템플릿 갤러리에 내 프리셋으로 노출할지 여부 */
+  pinnedToGallery?: boolean;
   updatedAt: string;
 }
 
