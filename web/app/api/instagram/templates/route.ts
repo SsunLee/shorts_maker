@@ -157,6 +157,7 @@ const templateSchema = z.object({
       })
     )
     .optional(),
+  pinnedToGallery: z.boolean().optional(),
   updatedAt: z.string()
 });
 

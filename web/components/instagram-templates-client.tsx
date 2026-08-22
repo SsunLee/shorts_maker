@@ -20,6 +20,7 @@ import {
   GripVertical,
   ImagePlus,
   Layers,
+  LayoutGrid,
   Minus,
   Move,
   Music,
@@ -58,6 +59,8 @@ import {
   saveInstagramLastSheetName
 } from "@/lib/instagram-sheet-name-storage";
 import { ensureInstagramCustomFontsLoaded } from "@/lib/instagram-font-runtime";
+import { InstagramTemplateGallery } from "@/components/instagram-template-gallery";
+import type { InstagramTemplatePreset } from "@/lib/instagram-template-presets";
 import {
   INSTAGRAM_FEED_DRAFT_KEY,
   INSTAGRAM_FEED_STORAGE_KEY,
@@ -3784,6 +3787,7 @@ export function InstagramTemplatesClient(): React.JSX.Element {
   const [templates, setTemplates] = useState<InstagramTemplate[]>([]);
   const [activeTemplateId, setActiveTemplateId] = useState<string>();
   const [selectedTemplateId, setSelectedTemplateId] = useState("__new__");
+  const [galleryOpen, setGalleryOpen] = useState(false);
   const [editor, setEditor] = useState<InstagramTemplate>(createTemplate());
   const [selectedPageId, setSelectedPageId] = useState<string>(editor.pages[0].id);
   const [selectedElementId, setSelectedElementId] = useState<string>();
@@ -5700,8 +5704,10 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       setActiveTemplateId(data.activeTemplateId);
 
       if (!selectedId) {
+        // 저장된 템플릿이 하나도 없으면 빈 에디터 대신 갤러리로 맞이합니다.
         const fresh = createTemplate();
         templateDirtyRef.current = false;
+        setGalleryOpen(true);
         setSelectedTemplateId("__new__");
         clearHistory();
         setEditor(fresh);
@@ -6038,6 +6044,69 @@ export function InstagramTemplatesClient(): React.JSX.Element {
       await fetchTemplates();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "템플릿 삭제에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 갤러리에서 고른 프리셋을 실제 템플릿으로 저장하고 에디터로 넘어갑니다. */
+  async function applyPreset(preset: InstagramTemplatePreset): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const built = normalizeTemplateForEditor(preset.build());
+      const existingNames = new Set(templates.map((item) => item.templateName.trim().toLowerCase()));
+      let name = built.templateName;
+      let suffix = 2;
+      while (existingNames.has(name.toLowerCase())) {
+        name = `${built.templateName} ${suffix}`;
+        suffix += 1;
+      }
+      const payload = buildTemplatePayload({ ...built, templateName: name }, built.id);
+      const response = await fetch("/api/instagram/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template: payload })
+      });
+      const data = await readJsonOrThrow<TemplateResponse>(response, "템플릿을 만들지 못했습니다.");
+      if (!response.ok) {
+        throw new Error(data.error || "템플릿을 만들지 못했습니다.");
+      }
+      setGalleryOpen(false);
+      await fetchTemplates(payload.id);
+      setSuccess(`'${name}' 템플릿으로 시작합니다.`);
+    } catch (presetError) {
+      setError(presetError instanceof Error ? presetError.message : "템플릿을 만들지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 현재 템플릿을 갤러리의 '내 프리셋'으로 올리거나 내립니다. */
+  async function toggleGalleryPin(): Promise<void> {
+    if (selectedTemplateId === "__new__") return;
+    const current = templates.find((item) => item.id === selectedTemplateId);
+    if (!current) return;
+    const nextPinned = !current.pinnedToGallery;
+    setBusy(true);
+    setError(undefined);
+    setSuccess(undefined);
+    try {
+      const payload = buildTemplatePayload({ ...current, pinnedToGallery: nextPinned }, current.id);
+      const response = await fetch("/api/instagram/templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template: payload })
+      });
+      const data = await readJsonOrThrow<TemplateResponse>(response, "갤러리 설정에 실패했습니다.");
+      if (!response.ok) {
+        throw new Error(data.error || "갤러리 설정에 실패했습니다.");
+      }
+      await fetchTemplates(current.id);
+      setSuccess(nextPinned ? "갤러리 '내 프리셋'에 올렸습니다." : "갤러리에서 내렸습니다.");
+    } catch (pinError) {
+      setError(pinError instanceof Error ? pinError.message : "갤러리 설정에 실패했습니다.");
     } finally {
       setBusy(false);
     }
@@ -8330,6 +8399,24 @@ export function InstagramTemplatesClient(): React.JSX.Element {
     : 0;
   const selectedSentenceFontDeltaLabel =
     selectedSentencePageFontDelta > 0 ? `+${selectedSentencePageFontDelta}px` : `${selectedSentencePageFontDelta}px`;
+  const isPinnedToGallery = Boolean(
+    templates.find((item) => item.id === selectedTemplateId)?.pinnedToGallery
+  );
+
+  if (galleryOpen && !loading) {
+    return (
+      <InstagramTemplateGallery
+        templates={templates}
+        busy={busy}
+        onUsePreset={(preset) => void applyPreset(preset)}
+        onOpenTemplate={(templateId) => {
+          selectTemplate(templateId);
+          setGalleryOpen(false);
+        }}
+        onClose={templates.length > 0 ? () => setGalleryOpen(false) : undefined}
+      />
+    );
+  }
 
   return (
     <section className="space-y-4" onPointerDownCapture={handleBackgroundPointerDownCapture}>
@@ -8353,6 +8440,19 @@ export function InstagramTemplatesClient(): React.JSX.Element {
               {editor.templateName || "새 템플릿"} · {canvasWidth}x{canvasHeight}
             </p>
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setTemplateMenuOpen(undefined);
+              setGalleryOpen(true);
+            }}
+            title="템플릿 갤러리 열기"
+          >
+            <Plus className="h-4 w-4" />
+            새로 만들기
+          </Button>
           <div className="relative" data-keep-selection="true">
             <Button
               type="button"
@@ -8439,6 +8539,19 @@ export function InstagramTemplatesClient(): React.JSX.Element {
                 >
                   <Check className="h-4 w-4" />
                   자동화 기본 지정
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                  onClick={() => {
+                    setTemplateMenuOpen(undefined);
+                    void toggleGalleryPin();
+                  }}
+                  disabled={busy || selectedTemplateId === "__new__"}
+                  title="템플릿 갤러리의 '내 프리셋'에 올립니다."
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                  {isPinnedToGallery ? "갤러리에서 내리기" : "갤러리에 올리기"}
                 </button>
                 <button
                   type="button"
