@@ -120,7 +120,6 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/instagram/templates", label: "템플릿", icon: TemplateMenuIcon },
       { href: "/instagram/ideas", label: "아이디어", icon: IdeaMenuIcon },
       { href: "/instagram/feed", label: "피드", icon: FeedMenuIcon },
-      { href: "/instagram/dashboard", label: "Dashboard", icon: DashboardMenuIcon, matchPrefixes: ["/instagram/dashboard"] },
       { href: "/instagram/news", label: "뉴스 정보 가져오기", icon: NewsMenuIcon, matchPrefixes: ["/instagram/news"] },
       { href: "/instagram/dm", label: "DM 자동 전송", icon: DmMenuIcon, matchPrefixes: ["/instagram/dm"] }
     ]

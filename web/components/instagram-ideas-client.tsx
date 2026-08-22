@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CheckCircle2, Clipboard, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { GoogleSheetsConnectDialog } from "@/components/google-sheets-connect-dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -50,6 +51,13 @@ type ApplyResponse = {
 };
 
 const DRAFT_KEY = "shorts-maker:instagram:ideas:draft:v1";
+const SHEETS_NOT_CONFIGURED_MESSAGE = "Google Sheets 연동이 아직 설정되지 않았습니다. 스프레드시트와 인증 정보를 연결해 주세요.";
+
+/** 시트 미연동 때문에 발생한 오류인지 판별합니다. */
+function isSheetsNotConfiguredError(message: string): boolean {
+  const text = String(message || "").toLowerCase();
+  return text.includes("google sheets is not configured");
+}
 const JLPT_LEVEL_OPTIONS = ["N5", "N4", "N3", "N2", "N1"] as const;
 
 function formatJlptLevelRange(levels: string[]): string {
@@ -134,6 +142,9 @@ export function InstagramIdeasClient(): React.JSX.Element {
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const [nextActionState, setNextActionState] = useState<"generated" | "applied">();
+  const [sheetsDialogOpen, setSheetsDialogOpen] = useState(false);
+  const [sheetsNotConfigured, setSheetsNotConfigured] = useState(false);
+  const sheetsDialogAutoOpenedRef = useRef(false);
 
   const [sheetHeaders, setSheetHeaders] = useState<string[]>([]);
   const [sheetRows, setSheetRows] = useState<Record<string, string>[]>([]);
@@ -327,9 +338,21 @@ export function InstagramIdeasClient(): React.JSX.Element {
         setSheetName(resolvedSheetName);
         saveInstagramLastSheetName(resolvedSheetName);
       }
+      setSheetsNotConfigured(false);
       setSuccess(`시트 '${data.sheetName}'을(를) 불러왔습니다.`);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "시트 조회에 실패했습니다.");
+      const message = loadError instanceof Error ? loadError.message : "시트 조회에 실패했습니다.";
+      if (isSheetsNotConfiguredError(message)) {
+        // 아직 연동 전이면 영어 원문 대신 안내 문구를 보여주고 연동 모달을 바로 띄웁니다.
+        setSheetsNotConfigured(true);
+        setError(SHEETS_NOT_CONFIGURED_MESSAGE);
+        if (!sheetsDialogAutoOpenedRef.current) {
+          sheetsDialogAutoOpenedRef.current = true;
+          setSheetsDialogOpen(true);
+        }
+      } else {
+        setError(message);
+      }
     } finally {
       setLoadingSheet(false);
     }
@@ -439,7 +462,14 @@ export function InstagramIdeasClient(): React.JSX.Element {
       setSelectedPreviewKeys([]);
       await refreshSheetTable();
     } catch (applyError) {
-      setError(applyError instanceof Error ? applyError.message : "시트 반영에 실패했습니다.");
+      const message = applyError instanceof Error ? applyError.message : "시트 반영에 실패했습니다.";
+      if (isSheetsNotConfiguredError(message)) {
+        setSheetsNotConfigured(true);
+        setError(SHEETS_NOT_CONFIGURED_MESSAGE);
+        setSheetsDialogOpen(true);
+      } else {
+        setError(message);
+      }
     } finally {
       setApplying(false);
     }
@@ -690,10 +720,50 @@ export function InstagramIdeasClient(): React.JSX.Element {
             </div>
           ) : null}
 
+          {sheetsNotConfigured ? (
+            <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-500">Google Sheets 연동이 필요합니다.</p>
+                <p className="text-xs text-muted-foreground">
+                  아이디어를 시트에서 읽고 쓰려면 스프레드시트와 인증 정보를 먼저 연결해 주세요.
+                </p>
+              </div>
+              <Button type="button" onClick={() => setSheetsDialogOpen(true)}>
+                지금 연동하기
+              </Button>
+            </div>
+          ) : null}
           {error ? <p className="text-sm text-destructive whitespace-pre-wrap">{error}</p> : null}
           {success ? <p className="text-sm text-muted-foreground">{success}</p> : null}
         </CardContent>
       </Card>
+
+      <GoogleSheetsConnectDialog
+        open={sheetsDialogOpen}
+        onOpenChange={setSheetsDialogOpen}
+        reason={sheetsNotConfigured ? SHEETS_NOT_CONFIGURED_MESSAGE : undefined}
+        onConnected={async () => {
+          setError(undefined);
+          // 모달에서 탭 이름을 바꿨을 수 있으므로 설정을 다시 읽어 반영한 뒤 시트를 조회합니다.
+          let nextSheetName = sheetName;
+          try {
+            const response = await fetch("/api/settings", { cache: "no-store" });
+            if (response.ok) {
+              const settings = (await response.json()) as AppSettings;
+              setSpreadsheetId(String(settings.gsheetSpreadsheetId || ""));
+              const resolved = resolveInstagramSettingsSheetName(settings);
+              setSettingsSheetName(resolved);
+              if (resolved) {
+                nextSheetName = saveInstagramLastSheetName(resolved);
+                setSheetName(nextSheetName);
+              }
+            }
+          } catch {
+            // 설정 재조회 실패 시 기존 탭 이름으로 진행합니다.
+          }
+          await refreshSheetTable(nextSheetName);
+        }}
+      />
 
       {nextActionState ? (
         <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
