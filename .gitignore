@@ -22,6 +22,8 @@ web/data/workflows.json
 web/data/automation-template.*.json
 web/data/automation-schedule.*.json
 web/data/longform-templates.*.json
+web/data/cinematic-projects.json
+web/data/cinematic-projects.*.json
 web/public/generated/*
 !web/public/generated/.gitkeep
 video-engine/outputs/*

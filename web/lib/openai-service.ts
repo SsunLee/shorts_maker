@@ -1952,3 +1952,52 @@ export async function synthesizeSpeechMp3(args: {
   });
   return Buffer.from(audio.buffer);
 }
+
+/**
+ * Run a single system+user prompt through the configured text provider and
+ * return the raw completion. Used by flows that own their own JSON schema.
+ */
+export async function generateTextCompletion(args: {
+  system: string;
+  user: string;
+  userId?: string;
+}): Promise<string> {
+  const provider = await resolveProviderForTask("text", args.userId);
+  const textModel = await resolveModelForTask(provider, "text", args.userId);
+
+  if (provider === "gemini") {
+    const client = await getGeminiClient(args.userId);
+    const response = await runGeminiWithRetry({
+      label: "Text completion",
+      task: () =>
+        client.models.generateContent({
+          model: textModel,
+          contents: `${args.system}\n\n${args.user}`
+        })
+    });
+    const text = response.text?.trim();
+    if (!text) {
+      throw new Error("Gemini did not return text.");
+    }
+    return text;
+  }
+
+  const client = await getOpenAiClient(args.userId);
+  const response = await client.responses.create({
+    model: textModel,
+    input: [
+      { role: "system", content: args.system },
+      { role: "user", content: args.user }
+    ]
+  });
+  const text = response.output_text?.trim();
+  if (!text) {
+    throw new Error("OpenAI did not return text.");
+  }
+  return text;
+}
+
+/** Strip a ```json fence from a model response. Exported for JSON-returning flows. */
+export function unwrapJsonFence(raw: string): string {
+  return stripJsonFence(raw);
+}

@@ -11,6 +11,7 @@ const schema = z.object({
   openDartApiKey: z.string().optional(),
   krxApiKey: z.string().optional(),
   pixabayApiKey: z.string().optional(),
+  elevenlabsApiKey: z.string().optional(),
   aiMode: z.enum(["auto", "openai", "gemini", "mixed"]).optional(),
   aiTextProvider: z.enum(["openai", "gemini"]).optional(),
   aiImageProvider: z.enum(["openai", "gemini"]).optional(),

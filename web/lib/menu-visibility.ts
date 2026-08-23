@@ -21,7 +21,8 @@ export const MANAGED_MENU_SECTIONS: ManagedMenuSection[] = [
       { href: "/templates", label: "템플릿" },
       { href: "/ideas", label: "아이디어" },
       { href: "/dashboard", label: "Dashboard" },
-      { href: "/create", label: "영상 생성 (단건)" }
+      { href: "/create", label: "영상 생성 (단건)" },
+      { href: "/studio", label: "시네마틱 스튜디오" }
     ]
   },
   {

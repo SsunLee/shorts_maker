@@ -1643,3 +1643,253 @@ def render_short_video(
                 f"Output video ratio mismatch (expected {out_w}x{out_h}, got {width}x{height})."
             )
     return final_output, commands
+
+
+def probe_video_duration(video_path: Path) -> float:
+    """Return a video's duration in seconds, or 0.0 when it cannot be read."""
+    command = [
+        FFPROBE_BIN,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+        return max(0.0, float((completed.stdout or "0").strip()))
+    except (subprocess.SubprocessError, ValueError):
+        return 0.0
+
+
+def _safe_gain(value: Any, fallback: float) -> float:
+    try:
+        gain = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(0.0, min(4.0, gain))
+
+
+def render_clip_sequence(
+    clip_paths: list[Path],
+    clip_weights: list[float],
+    tts_path: Path,
+    subtitle_path: Path | None,
+    output_dir: Path,
+    use_sfx: bool,
+    subtitle_options: dict[str, Any] | None = None,
+    overlay_options: dict[str, Any] | None = None,
+    title_text: str = "",
+    bgm_path: Path | None = None,
+    bgm_gain: float = 0.10,
+    clip_sfx: list[dict[str, Any]] | None = None,
+) -> tuple[Path, list[str]]:
+    """Assemble AI-generated clips into one narrated short.
+
+    The narration is the master clock: each clip gets a share of the audio
+    duration proportional to its weight (the narration length it covers), so
+    cuts land on sentence boundaries without hand-tuned timings. A clip shorter
+    than its slot holds its final frame rather than running out early.
+    """
+    if not clip_paths:
+        raise RuntimeError("No clips to assemble.")
+    if len(clip_weights) != len(clip_paths):
+        raise RuntimeError("clip_weights must match clip_paths.")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    commands: list[str] = []
+    ffmpeg_log_path = output_dir / "ffmpeg.log"
+    _append_ffmpeg_log(ffmpeg_log_path, f"Clip assembly start clips={len(clip_paths)}")
+
+    audio_duration = max(1.0, probe_audio_duration(tts_path))
+    fps = _resolve_output_fps(overlay_options)
+    out_w, out_h = _resolve_output_dimensions(overlay_options)
+
+    total_weight = sum(max(0.0, weight) for weight in clip_weights)
+    if total_weight <= 0:
+        clip_weights = [1.0] * len(clip_paths)
+        total_weight = float(len(clip_paths))
+
+    # Distribute audio time across clips, giving the remainder to the last one
+    # so the video never ends before the narration does.
+    slots: list[float] = []
+    assigned = 0.0
+    for index, weight in enumerate(clip_weights):
+        if index == len(clip_weights) - 1:
+            slots.append(max(0.4, audio_duration - assigned))
+            break
+        slot = audio_duration * (max(0.0, weight) / total_weight)
+        slot = max(0.4, round(slot, 3))
+        slots.append(slot)
+        assigned += slot
+
+    segments: list[Path] = []
+    for index, (clip_path, slot) in enumerate(zip(clip_paths, slots), start=1):
+        segment_path = output_dir / f"clip-{index}.mp4"
+        source_duration = probe_video_duration(clip_path)
+        filters = [
+            f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase",
+            f"crop={out_w}:{out_h}",
+            "setsar=1",
+        ]
+        if source_duration and source_duration < slot:
+            # Freeze the last frame to cover the gap instead of cutting early.
+            filters.append(f"tpad=stop_mode=clone:stop_duration={slot - source_duration:.3f}")
+        filters.append(f"trim=duration={slot:.3f}")
+        filters.append("setpts=PTS-STARTPTS")
+
+        command = [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(clip_path),
+            "-an",
+            "-vf",
+            ",".join(filters),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "16",
+            "-r",
+            str(fps),
+            "-pix_fmt",
+            "yuv420p",
+            str(segment_path),
+        ]
+        run_cmd(command, log_path=ffmpeg_log_path, label=f"clip-{index}")
+        commands.append(_to_ffmpeg_command_string(command))
+        segments.append(segment_path)
+
+    concat_file = output_dir / "clip-concat.txt"
+    concat_file.write_text(
+        "\n".join(f"file '{segment.as_posix()}'" for segment in segments),
+        encoding="utf-8",
+    )
+
+    subtitle_filter = ""
+    if subtitle_path is not None and subtitle_path.exists():
+        try:
+            subtitle_raw = subtitle_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            subtitle_raw = ""
+        if subtitle_raw.strip():
+            subtitle_filter = _subtitle_filter_value(subtitle_path, subtitle_options)
+
+    filter_chain: list[str] = []
+    if subtitle_filter:
+        filter_chain.append(subtitle_filter)
+    filter_chain.extend(_drawtext_filter_values(overlay_options, title_text))
+    video_filters = ",".join(filter_chain)
+
+    final_output = output_dir / "final.mp4"
+    final_command = [
+        FFMPEG_BIN,
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_file),
+        "-i",
+        str(tts_path),
+    ]
+
+    # Audio is layered in post rather than generated with the video: model audio
+    # costs 50% more, and it would be cut mid-sound at every narration boundary.
+    if bgm_path is None and use_sfx:
+        # Fall back to the ambient bed so `useSfx` keeps its old meaning.
+        bgm_path = _resolve_sfx_path(output_dir)
+    mix_labels = ["[tts]"]
+    filter_parts = [
+        f"[1:a]volume=1.0,apad=pad_dur={audio_duration:.3f},"
+        f"atrim=duration={audio_duration:.3f}[tts]"
+    ]
+    next_input = 2
+
+    if bgm_path is not None and Path(bgm_path).exists():
+        final_command.extend(["-stream_loop", "-1", "-i", str(bgm_path)])
+        filter_parts.append(
+            f"[{next_input}:a]volume={_safe_gain(bgm_gain, 0.10):.3f},"
+            f"atrim=duration={audio_duration:.3f},afade=t=out:st={max(0.0, audio_duration - 1.2):.3f}:d=1.2[bgm]"
+        )
+        mix_labels.append("[bgm]")
+        next_input += 1
+
+    # One-shot accents fired at each cut boundary. Offsets come from the slot
+    # layout above, so callers only supply a file per cut.
+    slot_starts: list[float] = []
+    running = 0.0
+    for slot in slots:
+        slot_starts.append(running)
+        running += slot
+
+    for index, accent in enumerate(clip_sfx or []):
+        source = accent.get("path")
+        if not source or not Path(source).exists():
+            continue
+        start_at = slot_starts[index] if index < len(slot_starts) else 0.0
+        gain = _safe_gain(accent.get("gain"), 0.5)
+        label = f"[sfx{index}]"
+        filter_parts.append(
+            f"[{next_input}:a]volume={gain:.3f},adelay={int(start_at * 1000)}|{int(start_at * 1000)},"
+            f"atrim=duration={audio_duration:.3f}{label}"
+        )
+        final_command.extend(["-i", str(source)])
+        mix_labels.append(label)
+        next_input += 1
+
+    if len(mix_labels) > 1:
+        filter_parts.append(
+            f"{''.join(mix_labels)}amix=inputs={len(mix_labels)}:duration=first:"
+            f"dropout_transition=0:normalize=0,"
+            f"alimiter=limit=0.95,atrim=duration={audio_duration:.3f}[aout]"
+        )
+    else:
+        filter_parts.append(f"[tts]anull[aout]")
+
+    final_command.extend(["-filter_complex", ";".join(filter_parts)])
+
+    if video_filters:
+        final_command.extend(["-vf", video_filters])
+    final_command.extend([
+        "-map",
+        "0:v",
+        "-map",
+        "[aout]",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-profile:v",
+        "high",
+        "-level:v",
+        "4.1",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-r",
+        str(fps),
+        "-c:a",
+        "aac",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-t",
+        f"{audio_duration:.3f}",
+        "-movflags",
+        "+faststart",
+        str(final_output),
+    ])
+
+    run_cmd(final_command, log_path=ffmpeg_log_path, label="clip-final-merge")
+    commands.append(_to_ffmpeg_command_string(final_command))
+    return final_output, commands

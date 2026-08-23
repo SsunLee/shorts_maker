@@ -112,6 +112,7 @@ function readSettingsFromEnv(): AppSettings {
     openDartApiKey: process.env.OPENDART_API_KEY || process.env.OPEN_DART_API_KEY || undefined,
     krxApiKey: process.env.KRX_API_KEY || process.env.KRX_AUTH_KEY || undefined,
     pixabayApiKey: process.env.PIXABAY_API_KEY || undefined,
+    elevenlabsApiKey: process.env.ELEVENLABS_API_KEY || undefined,
     aiMode:
       process.env.AI_PROVIDER === "openai" ||
       process.env.AI_PROVIDER === "gemini" ||

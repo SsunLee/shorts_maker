@@ -54,6 +54,7 @@ export interface AppSettings {
   openDartApiKey?: string;
   krxApiKey?: string;
   pixabayApiKey?: string;
+  elevenlabsApiKey?: string;
   aiMode?: "auto" | "openai" | "gemini" | "mixed";
   aiTextProvider?: "openai" | "gemini";
   aiImageProvider?: "openai" | "gemini";

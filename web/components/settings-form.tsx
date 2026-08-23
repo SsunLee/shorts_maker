@@ -19,6 +19,7 @@ const emptySettings: AppSettings = {
   openDartApiKey: "",
   krxApiKey: "",
   pixabayApiKey: "",
+  elevenlabsApiKey: "",
   aiMode: "auto",
   aiTextProvider: "gemini",
   aiImageProvider: "gemini",
@@ -1050,6 +1051,19 @@ export function SettingsForm(): React.JSX.Element {
               type="password"
               value={settings.pixabayApiKey || ""}
               onChange={(e) => update("pixabayApiKey", e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <HelpLabel
+              htmlFor="elevenlabsApiKey"
+              label="ElevenLabs API Key"
+              help="시네마틱 스튜디오의 컷별 효과음 생성에 사용합니다. 장면 설명을 그대로 효과음으로 만들며, 1.5초 효과음 기준 약 $0.006입니다."
+            />
+            <Input
+              id="elevenlabsApiKey"
+              type="password"
+              value={settings.elevenlabsApiKey || ""}
+              onChange={(e) => update("elevenlabsApiKey", e.target.value)}
             />
           </div>
 

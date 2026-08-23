@@ -137,3 +137,58 @@ class ComposePageVideoResponse(BaseModel):
 
 
 OverlayOptions.model_rebuild()
+
+
+class HiggsfieldGenerateRequest(BaseModel):
+    jobType: str = Field(..., min_length=1, max_length=80)
+    params: dict = Field(default_factory=dict)
+
+
+class HiggsfieldGenerateResponse(BaseModel):
+    jobIds: list[str]
+
+
+class HiggsfieldCostResponse(BaseModel):
+    credits: float | None = None
+
+
+class HiggsfieldJobResponse(BaseModel):
+    id: str
+    status: str
+    jobType: str = ""
+    displayName: str = ""
+    resultUrl: str | None = None
+    previewUrl: str | None = None
+    error: str | None = None
+
+
+class HiggsfieldUploadRequest(BaseModel):
+    source: str = Field(..., min_length=1)
+
+
+class ClipSequenceItem(BaseModel):
+    videoUrl: str = Field(..., min_length=1)
+    # Share of the narration this clip covers; character count works well.
+    weight: float = Field(default=1.0, ge=0.0, le=10000.0)
+    # Optional one-shot accent fired when this cut starts.
+    sfxUrl: str | None = None
+    sfxGain: float = Field(default=0.5, ge=0.0, le=4.0)
+
+
+class BuildClipVideoRequest(BaseModel):
+    jobId: str = Field(..., min_length=1)
+    clips: list[ClipSequenceItem] = Field(..., min_length=1, max_length=40)
+    ttsPath: str = Field(..., min_length=1)
+    subtitlesText: str = ""
+    titleText: str = ""
+    useSfx: bool = False
+    bgmUrl: str | None = None
+    bgmGain: float = Field(default=0.10, ge=0.0, le=2.0)
+    renderOptions: RenderOptions | None = None
+
+
+class BuildClipVideoResponse(BaseModel):
+    outputPath: str
+    outputUrl: str
+    srtPath: str
+    ffmpegSteps: list[str]

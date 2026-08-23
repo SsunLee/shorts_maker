@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   ChevronDown,
   ChevronRight,
+  Clapperboard,
   FileText,
   LogOut,
   Moon,
@@ -109,7 +110,13 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/templates", label: "템플릿", icon: TemplateMenuIcon },
       { href: "/ideas", label: "아이디어", icon: IdeaMenuIcon },
       { href: "/dashboard", label: "Dashboard", icon: DashboardMenuIcon },
-      { href: "/create", label: "영상 생성 (단건)", icon: VideoCameraMenuIcon }
+      { href: "/create", label: "영상 생성 (단건)", icon: VideoCameraMenuIcon },
+      {
+        href: "/studio",
+        label: "시네마틱 스튜디오",
+        icon: Clapperboard,
+        matchPrefixes: ["/studio"]
+      }
     ]
   },
   {
